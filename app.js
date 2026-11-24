@@ -1,0 +1,2199 @@
+/**
+ * NEXUS ONE PRO (넥서스원 프로)
+ * 기업분석(12만) · 공동주택/관공서 입찰(실시간+건설 1.2만) · 소상공인 상권지도(275만) · 부동산 청약/착공 통합 인텔리전스
+ */
+
+const CANARY = 'NEXUSONE-VAULT-OK-V1';
+const IDB_NAME = 'nexusone_pro_vault_v1';
+const IDB_STORE = 'keys';
+const PIPE_KEY = 'nexusone_pro_pipeline_v1';
+const OVERRIDE_KEYS = 'nexusone_pro_api_overrides_v1';
+const THEME_KEY = 'nexusone_pro_theme_v1';
+
+// ===== GLOBAL APPLICATION STATE =====
+const S = {
+  vault: null,
+  cryptoKey: null,
+  core: null,        // { builtAt, stats, vaultKeys, sido, corpMeta, sbizSummary }
+  map: null,         // { w, h, regions, sidos }
+  fusion: null,      // { builtAt, regions }
+  fusionByRid: new Map(),
+  opps: [],          // live + vault opportunities
+  re: null,          // { listings, starts, complexes }
+  builders: null,    // lazy loaded { industries, rows }
+  corpLoaded: false,
+  corpLoading: false,
+  corps: [],         // 120,028 rows
+  corpEnrichMap: new Map(),
+  corpTags: [],      // [{ id, label, set }]
+  corpStatusBytes: null,
+
+  // Sbiz lazy per-sido cache
+  sbizCache: new Map(), // slug -> parsed sido object
+  sbizActiveSlug: '',
+  sbizLiveStores: [],
+  leafletMap: null,
+  leafletLayer: null,
+  leafletTile: null,
+  leafletBaseMode: 'osm',
+
+  // UI Navigation & Filters
+  tab: 'overview',
+  selectedRid: -1,
+  mapMetric: 'total',
+  rankSort: 'total',
+
+  // Corp filters
+  corpQ: '', corpSd: '', corpType: '', corpTag: '', corpStatus: '', corpSort: 'rev', corpPage: 1,
+  // Bid filters
+  bidSub: 'opps', bidQ: '', bidStage: '', bidField: '', bidPage: 1,
+  bldQ: '', bldSector: '', bldPage: 1,
+  // Sbiz filters
+  sbizQ: '', sbizSgg: '', sbizL1: '', sbizOnly2026: false, sbizView: 'stores', sbizPage: 1,
+  // RealEstate filters
+  reSub: 'apt', reQ: '', reArea: '', myScore: 55, myBudgetEok: 8,
+  // Hub & Pipeline
+  pipeline: [],
+  pipeStageFilter: '',
+  diagResults: [],
+  diagTime: '',
+};
+
+// ===== DOM & FORMAT HELPERS =====
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const fmt = (n) => (Number.isFinite(Number(n)) ? Math.round(Number(n)).toLocaleString('ko-KR') : '0');
+const fmtDec = (n, d = 1) => (Number.isFinite(Number(n)) ? Number(n).toLocaleString('ko-KR', { maximumFractionDigits: d }) : '0');
+
+let toastTimer = null;
+function toast(msg) {
+  const el = $('toast');
+  el.textContent = msg;
+  el.classList.remove('hidden');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.add('hidden'), 2600);
+}
+
+function normKey(raw) {
+  const t = String(raw || '').trim();
+  if (!t) return '';
+  try { return encodeURIComponent(t.includes('%') ? decodeURIComponent(t) : t); } catch { return encodeURIComponent(t); }
+}
+
+function getApiKeys() {
+  let ov = {};
+  try { ov = JSON.parse(localStorage.getItem(OVERRIDE_KEYS) || '{}'); } catch {}
+  const dataGoRaw = ov.dataGo || S.core?.vaultKeys?.dataGo || '';
+  const vworldRaw = ov.vworld || S.core?.vaultKeys?.vworld || '';
+  return { dataGoRaw, dataGoEnc: normKey(dataGoRaw), vworld: vworldRaw };
+}
+
+function maskKey(k) {
+  if (!k) return '미등록';
+  if (k.length <= 12) return '••••';
+  return `${k.slice(0, 7)}…${k.slice(-6)} (${k.length}자)`;
+}
+
+function loadPipeline() {
+  try { S.pipeline = JSON.parse(localStorage.getItem(PIPE_KEY) || '[]'); } catch { S.pipeline = []; }
+  updatePipeBadge();
+}
+function savePipeline() {
+  localStorage.setItem(PIPE_KEY, JSON.stringify(S.pipeline));
+  updatePipeBadge();
+}
+function updatePipeBadge() {
+  const b = $('pipeBadge');
+  if (b) b.textContent = String(S.pipeline.length);
+}
+
+function addToPipeline(item) {
+  if (S.pipeline.some((p) => p.id === item.id)) {
+    toast('이미 파이프라인에 등록된 항목입니다.');
+    return;
+  }
+  S.pipeline.unshift({
+    id: item.id,
+    domain: item.domain, // corp | bid | sbiz | re
+    title: item.title,
+    sub: item.sub || '',
+    region: item.region || '',
+    valueMan: Number(item.valueMan) || 0,
+    stage: '발굴',
+    note: '',
+    addedAt: new Date().toISOString().slice(0, 10),
+  });
+  savePipeline();
+  toast(`💼 파이프라인에 추가됨: ${item.title}`);
+}
+
+// ===== WEBCRYPTO VAULT ENGINE =====
+const b64ToBytes = (b64) => Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+
+async function deriveKey(password, saltB64, iter) {
+  const mat = await crypto.subtle.importKey('raw', new TextEncoder().encode(password), 'PBKDF2', false, ['deriveKey']);
+  return crypto.subtle.deriveKey(
+    { name: 'PBKDF2', salt: b64ToBytes(saltB64), iterations: iter, hash: 'SHA-256' },
+    mat,
+    { name: 'AES-GCM', length: 256 },
+    false,
+    ['decrypt']
+  );
+}
+
+async function verifyKey(key, vault) {
+  try {
+    const plain = await crypto.subtle.decrypt(
+      { name: 'AES-GCM', iv: b64ToBytes(vault.checkIv) },
+      key,
+      b64ToBytes(vault.checkCt)
+    );
+    return new TextDecoder().decode(plain) === CANARY;
+  } catch {
+    return false;
+  }
+}
+
+async function gunzipBytes(u8) {
+  if (u8[0] === 0x1f && u8[1] === 0x8b && typeof DecompressionStream !== 'undefined') {
+    const ds = new DecompressionStream('gzip');
+    const res = new Response(new Blob([u8]).stream().pipeThrough(ds));
+    return new Uint8Array(await res.arrayBuffer());
+  }
+  return u8;
+}
+
+async function fetchDecryptJson(name) {
+  const res = await fetch(`data/${name}.enc?v=${encodeURIComponent(S.vault.builtAt || '1')}`);
+  if (!res.ok) throw new Error(`HTTP ${res.status} (${name}.enc)`);
+  const buf = new Uint8Array(await res.arrayBuffer());
+  const iv = buf.subarray(0, 12);
+  const ct = buf.subarray(12);
+  const dec = new Uint8Array(await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, S.cryptoKey, ct));
+  const plain = await gunzipBytes(dec);
+  return JSON.parse(new TextDecoder().decode(plain));
+}
+
+// IndexedDB non-extractable key cache
+function openIdb() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(IDB_NAME, 1);
+    req.onupgradeneeded = () => req.result.createObjectStore(IDB_STORE);
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+async function idbGetKey() {
+  try {
+    const db = await openIdb();
+    return await new Promise((res) => {
+      const tx = db.transaction(IDB_STORE, 'readonly');
+      const r = tx.objectStore(IDB_STORE).get('master');
+      r.onsuccess = () => res(r.result || null);
+      r.onerror = () => res(null);
+    });
+  } catch { return null; }
+}
+async function idbSetKey(key) {
+  try {
+    const db = await openIdb();
+    await new Promise((res, rej) => {
+      const tx = db.transaction(IDB_STORE, 'readwrite');
+      tx.objectStore(IDB_STORE).put(key, 'master');
+      tx.oncomplete = res;
+      tx.onerror = rej;
+    });
+  } catch {}
+}
+async function idbClearKey() {
+  try {
+    const db = await openIdb();
+    await new Promise((res) => {
+      const tx = db.transaction(IDB_STORE, 'readwrite');
+      tx.objectStore(IDB_STORE).clear();
+      tx.oncomplete = res;
+      tx.onerror = res;
+    });
+  } catch {}
+}
+
+// ===== VWORLD JSONP HELPER =====
+function jsonp(url, timeoutMs = 8000) {
+  return new Promise((resolve, reject) => {
+    const cb = `_nxJsonp_${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
+    const s = document.createElement('script');
+    let done = false;
+    const timer = setTimeout(() => {
+      if (done) return;
+      done = true;
+      cleanup();
+      reject(new Error('JSONP 시간 초과'));
+    }, timeoutMs);
+    function cleanup() {
+      clearTimeout(timer);
+      delete window[cb];
+      s.remove();
+    }
+    window[cb] = (data) => {
+      if (done) return;
+      done = true;
+      cleanup();
+      resolve(data);
+    };
+    s.onerror = () => {
+      if (done) return;
+      done = true;
+      cleanup();
+      reject(new Error('JSONP 로드 실패'));
+    };
+    const sep = url.includes('?') ? '&' : '?';
+    s.src = `${url}${sep}callback=${cb}`;
+    document.head.appendChild(s);
+  });
+}
+
+async function queryVworldPoint(lon, lat) {
+  const { vworld } = getApiKeys();
+  if (!vworld) throw new Error('브이월드 키가 없습니다.');
+  const isLocal = /^(127\.0\.0\.1|localhost)$/.test(location.hostname);
+  const dom = encodeURIComponent((!isLocal && location.origin && /^https?:/.test(location.origin)) ? location.origin : 'https://heebonpark.github.io');
+  const [addrRes, landRes, zoneRes] = await Promise.all([
+    jsonp(`https://api.vworld.kr/req/address?service=address&request=getAddress&version=2.0&crs=epsg:4326&point=${lon},${lat}&format=json&type=both&key=${vworld}&domain=${dom}`),
+    jsonp(`https://api.vworld.kr/req/data?service=data&request=GetFeature&data=LP_PA_CBND_BUBUN&key=${vworld}&domain=${dom}&geomFilter=POINT(${lon}%20${lat})&size=1&format=json`).catch(() => null),
+    jsonp(`https://api.vworld.kr/req/data?service=data&request=GetFeature&data=LT_C_UQ111&key=${vworld}&domain=${dom}&geomFilter=POINT(${lon}%20${lat})&size=5&format=json`).catch(() => null),
+  ]);
+  const addrText = addrRes?.response?.result?.[0]?.text || '주소 조회 결과 없음';
+  const props = landRes?.response?.result?.featureCollection?.features?.[0]?.properties || {};
+  const zFeats = zoneRes?.response?.result?.featureCollection?.features || [];
+  const zoning = [...new Set(zFeats.map((f) => f?.properties?.uname).filter(Boolean))].join(', ');
+  return {
+    addr: addrText,
+    jiga: props.jiga ? `${fmt(props.jiga)}원/㎡` : '미제공',
+    zoning: zoning || '미제공',
+    pnu: props.pnu || '',
+  };
+}
+
+// ===== CORE BOOTSTRAP =====
+async function unlockAndBoot(key) {
+  S.cryptoKey = key;
+  const [core, map, fusion, oppsObj, reObj] = await Promise.all([
+    fetchDecryptJson('core'),
+    fetchDecryptJson('map'),
+    fetchDecryptJson('fusion'),
+    fetchDecryptJson('opportunities'),
+    fetchDecryptJson('realestate'),
+  ]);
+  S.core = core;
+  S.map = map;
+  S.fusion = fusion;
+  S.fusionByRid = new Map((fusion.regions || []).map((r) => [r.rid, r]));
+  S.opps = (oppsObj.items || []).map(enrichOpp);
+  S.re = reObj;
+
+  // Pick initial spotlight region (#1 Fusion Score or 부평구)
+  const sorted = [...fusion.regions].sort((a, b) => b.scores.total - a.scores.total);
+  S.selectedRid = sorted[0]?.rid ?? 0;
+
+  // Update Nav badges
+  $('cntCorp').textContent = `${(core.stats.corpCount / 10000).toFixed(1)}만`;
+  $('cntBid').textContent = fmt(S.opps.length);
+  $('cntSbiz').textContent = `${(core.stats.sbizCount / 10000).toFixed(0)}만`;
+  $('cntRe').textContent = fmt((reObj.listings?.length || 0) + (reObj.starts?.length || 0) + (reObj.complexes?.length || 0));
+  $('brandMeta').textContent = `법인 ${fmt(core.stats.corpCount)} · 상가 ${fmt(core.stats.sbizCount)} · 입찰 ${fmt(S.opps.length)} · 청약 ${fmt(reObj.listings?.length || 0)}`;
+
+  $('lockScreen').classList.add('hidden');
+  $('appShell').classList.remove('hidden');
+  renderCurrentTab();
+}
+
+function classifyField(text) {
+  const t = String(text || '').toLowerCase();
+  if (/cctv|보안|경비|출입통제|무인경비|방범|영상감시/.test(t)) return '보안·CCTV';
+  if (/ai|스마트|주차관제|지능형|관제|iot|빅데이터/.test(t)) return 'AI·스마트';
+  if (/승강기|엘리베이터|기계설비|냉난방|보일러/.test(t)) return '승강기·설비';
+  if (/전기|통신|소방|정보통신|네트워크|구내통신/.test(t)) return '전기·통신·소방';
+  if (/시설|청소|미화|위탁관리|조경|소독|용역/.test(t)) return '시설·경비·미화';
+  return '건축·리모델링';
+}
+
+function calcDday(closeDate) {
+  if (!closeDate) return null;
+  const d = new Date(String(closeDate).slice(0, 10) + 'T23:59:59');
+  if (Number.isNaN(d.getTime())) return null;
+  return Math.ceil((d.getTime() - Date.now()) / 86400000);
+}
+
+function enrichOpp(o) {
+  const field = o.field || classifyField(`${o.title} ${o.method || ''} ${o.org || ''}`);
+  const dday = calcDday(o.closeDate);
+  let score = 62;
+  if (o.stageType === 'prespec') score += 16;
+  else if (o.stageType === 'permit') score += 14;
+  else if (o.stageType === 'complex') score += 10;
+  if (o.budgetMan >= 50000) score += 14;
+  else if (o.budgetMan >= 10000) score += 9;
+  else if (o.budgetMan > 0) score += 4;
+  if (field === '보안·CCTV' || field === 'AI·스마트') score += 8;
+  if (dday !== null && dday >= 0 && dday <= 7) score += 7;
+  score = Math.min(99, score);
+  return { ...o, field, dday, icpScore: score };
+}
+
+// ===== LAZY LOADERS =====
+async function ensureCorpLoaded(onProgress) {
+  if (S.corpLoaded) return true;
+  if (S.corpLoading) return false;
+  S.corpLoading = true;
+  try {
+    const names = ['corp_c0', 'corp_c1', 'corp_c2', 'corp_enrich', 'corp_status'];
+    const res = [];
+    for (let i = 0; i < names.length; i++) {
+      onProgress?.(Math.round(((i + 0.5) / names.length) * 100), `${names[i]}.enc 복호화 중 (${i + 1}/${names.length})…`);
+      res.push(await fetchDecryptJson(names[i]));
+    }
+    const [c0, c1, c2, enrich, status] = res;
+    S.corps = [...c0, ...c1, ...c2];
+    S.corpEnrichMap = new Map(enrich.list || []);
+    S.corpTags = Object.entries(enrich.tags || {}).map(([id, obj]) => ({
+      id, label: obj.label, set: new Set(obj.b || []),
+    }));
+    S.corpStatusBytes = status.codesB64 ? b64ToBytes(status.codesB64) : null;
+    S.corpLoaded = true;
+    onProgress?.(100, '완료!');
+    return true;
+  } finally {
+    S.corpLoading = false;
+  }
+}
+
+async function ensureBuildersLoaded() {
+  if (S.builders) return S.builders;
+  S.builders = await fetchDecryptJson('builders');
+  return S.builders;
+}
+
+async function loadSbizSido(slug) {
+  if (S.sbizCache.has(slug)) {
+    S.sbizActiveSlug = slug;
+    return S.sbizCache.get(slug);
+  }
+  const sInfo = (S.core.sbizSummary.sidos || []).find((x) => x.slug === slug);
+  toast(`🏪 ${sInfo?.name || slug} 상권 볼트 복호화 중 (${((sInfo?.bytes || 0) / 1048576).toFixed(1)} MB)…`);
+  const data = await fetchDecryptJson(`sido_${slug}`);
+  S.sbizCache.set(slug, data);
+  S.sbizActiveSlug = slug;
+  S.sbizSgg = '';
+  S.sbizL1 = '';
+  S.sbizPage = 1;
+  toast(`✓ ${data.name} ${fmt(data.n)}개 상가 로드 완료`);
+  return data;
+}
+
+// ===== TAB ROUTER =====
+function switchTab(tab) {
+  S.tab = tab;
+  document.querySelectorAll('[data-tab]').forEach((el) => {
+    el.classList.toggle('active', el.dataset.tab === tab);
+  });
+  window.scrollTo({ top: 0, behavior: 'instant' });
+  renderCurrentTab();
+}
+
+function renderCurrentTab() {
+  if (S.tab !== 'sbiz' && S.leafletMap) {
+    S.leafletMap.remove();
+    S.leafletMap = null;
+    S.leafletLayer = null;
+  }
+  if (S.tab === 'overview') renderOverview();
+  else if (S.tab === 'corp') renderCorpTab();
+  else if (S.tab === 'bid') renderBidTab();
+  else if (S.tab === 'sbiz') renderSbizTab();
+  else if (S.tab === 'realestate') renderRealEstateTab();
+  else if (S.tab === 'hub') renderHubTab();
+}
+
+// =========================================================================
+// TAB 1: ⚡ 통합 360° 커맨드 센터 (4-WAY CROSS-DOMAIN FUSION ENGINE)
+// =========================================================================
+function renderOverview() {
+  const st = S.core.stats;
+  const reg = S.fusionByRid.get(S.selectedRid) || S.fusion.regions[0];
+  const quickRids = ['송파구', '강남구', '부평구', '계양구', '화성시', '수원시', '성남시', '해운대구']
+    .map((nm) => S.fusion.regions.find((r) => r.name === nm))
+    .filter(Boolean);
+
+  $('mainStage').innerHTML = `
+    <div class="kpi-strip">
+      <div class="kpi-card" style="--kpi-c:var(--c-corp)" data-jump="corp">
+        <div class="kpi-label"><span>🏢 기업분석 (DART·국민연금)</span><span class="tag tag-corp">풀DB</span></div>
+        <div class="kpi-val">${fmt(st.corpCount)}<span style="font-size:13px;font-weight:600;color:var(--muted)"> 사</span></div>
+        <div class="kpi-sub">재무 3개년 · 국민연금 · 국세청 사업자상태</div>
+      </div>
+      <div class="kpi-card" style="--kpi-c:var(--c-bid)" data-jump="bid">
+        <div class="kpi-label"><span>🎯 입찰·사전규격·인허가</span><span class="tag tag-bid">실API</span></div>
+        <div class="kpi-val">${fmt(S.opps.length)}<span style="font-size:13px;font-weight:600;color:var(--muted)"> 건</span></div>
+        <div class="kpi-sub">건설·시설 ${fmt(st.builderCount)}사 · 사전규격·건축인허가</div>
+      </div>
+      <div class="kpi-card" style="--kpi-c:var(--c-sbiz)" data-jump="sbiz">
+        <div class="kpi-label"><span>🏪 전국 소상공인 상권</span><span class="tag tag-sbiz">16시도</span></div>
+        <div class="kpi-val">${(st.sbizCount / 10000).toFixed(1)}<span style="font-size:13px;font-weight:600;color:var(--muted)"> 만개</span></div>
+        <div class="kpi-sub">2026 신규개업 ${fmt(st.sbizNew2026)}개 · 건물별 그룹</div>
+      </div>
+      <div class="kpi-card" style="--kpi-c:var(--c-re)" data-jump="realestate">
+        <div class="kpi-label"><span>🏠 부동산 청약·착공·K-apt</span><span class="tag tag-re">6종API</span></div>
+        <div class="kpi-val">${fmt((S.re.listings?.length || 0) + (S.re.starts?.length || 0) + (S.re.complexes?.length || 0))}<span style="font-size:13px;font-weight:600;color:var(--muted)"> 건</span></div>
+        <div class="kpi-sub">청약분양 ${fmt(S.re.listings?.length || 0)} · 착공 ${fmt(S.re.starts?.length || 0)} · K-apt ${fmt(S.re.complexes?.length || 0)}</div>
+      </div>
+    </div>
+
+    <div class="grid-2">
+      <!-- LEFT: Interactive Korea 229 Sigungu Map -->
+      <div class="card">
+        <div class="card-head">
+          <div>
+            <h2 class="card-title">🗺️ 대한민국 229 시군구 통합 히트맵</h2>
+            <p class="card-sub">시군구를 클릭하면 4대 도메인(기업·입찰·상권·부동산) 360° 분석이 즉시 갱신됩니다.</p>
+          </div>
+          <select id="ovMapMetric" class="select">
+            <option value="total" ${S.mapMetric === 'total' ? 'selected' : ''}>🏆 통합 융합지수</option>
+            <option value="corp" ${S.mapMetric === 'corp' ? 'selected' : ''}>🏢 기업 활력</option>
+            <option value="bid" ${S.mapMetric === 'bid' ? 'selected' : ''}>🎯 입찰·인허가·건설</option>
+            <option value="sbiz" ${S.mapMetric === 'sbiz' ? 'selected' : ''}>🏪 상권 밀도·신규개업</option>
+            <option value="re" ${S.mapMetric === 're' ? 'selected' : ''}>🏠 청약·착공·K-apt</option>
+          </select>
+        </div>
+
+        <div class="chips" style="margin-bottom:10px">
+          ${quickRids.map((r) => `<button class="chip ${r.rid === reg.rid ? 'active' : ''}" data-pick-rid="${r.rid}">${esc(r.sidoShort)} ${esc(r.name)}</button>`).join('')}
+        </div>
+
+        <div class="korea-map-box">
+          <div id="koreaMapTooltip" class="map-tooltip hidden"></div>
+          ${renderKoreaSvg(reg.rid)}
+        </div>
+      </div>
+
+      <!-- RIGHT: Selected District 360° Cross-Domain Spotlight -->
+      <div class="card" id="spotlightCard">
+        ${renderSpotlightHtml(reg)}
+      </div>
+    </div>
+
+    <!-- TOP 25 RANKING TABLE -->
+    <div class="card" style="margin-top:16px">
+      <div class="card-head">
+        <div>
+          <h2 class="card-title">🏆 전국 229 시군구 4-Way 통합 기회 랭킹 TOP 25</h2>
+          <p class="card-sub">기업·입찰·상권·부동산 데이터를 교차 점수화한 핵심 영업/투자 거점 순위</p>
+        </div>
+        <div class="chips">
+          ${[
+            ['total', '통합점수'],
+            ['corp', '법인수'],
+            ['bid', '입찰·인허가'],
+            ['sbiz', '소상공인'],
+            ['new26', '2026신규개업'],
+            ['re', '청약·착공'],
+          ].map(([k, lb]) => `<button class="chip ${S.rankSort === k ? 'active' : ''}" data-rank-sort="${k}">${lb}</button>`).join('')}
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>시군구</th>
+              <th>통합지수</th>
+              <th>🏢 법인(상장/강소)</th>
+              <th>🎯 입찰·사전·인허가</th>
+              <th>🏪 상가(2026신규)</th>
+              <th>🏠 분양·착공·K-apt</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${getSortedFusion(S.rankSort).slice(0, 25).map((r, i) => `
+              <tr data-pick-rid="${r.rid}" ${r.rid === reg.rid ? 'style="background:var(--c-corp-bg)"' : ''}>
+                <td><b>${i + 1}</b></td>
+                <td><b>${esc(r.fullName)}</b></td>
+                <td><span class="tag tag-corp">${r.scores.total}점</span></td>
+                <td>${fmt(r.corp.cnt)} <span style="color:var(--muted)">(${r.corp.listed}/${r.corp.strong})</span></td>
+                <td>${fmt(r.bid.bidCnt + r.bid.preSpecCnt + r.bid.archCnt + r.bid.aptOppCnt)}건 <span style="color:var(--muted)">· 건설 ${fmt(r.bid.builderCnt)}</span></td>
+                <td>${fmt(r.sbiz.cnt)} <span style="color:var(--c-sbiz)">(+${fmt(r.sbiz.new2026)})</span></td>
+                <td>분양 ${r.re.aptCnt + r.re.remndrCnt} · 착공 ${r.re.startCnt} · K-apt ${r.re.kaptCnt}</td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+
+  // Wire Overview Events
+  $('mainStage').querySelectorAll('[data-jump]').forEach((el) => {
+    el.addEventListener('click', () => switchTab(el.dataset.jump));
+  });
+  $('ovMapMetric').addEventListener('change', (e) => {
+    S.mapMetric = e.target.value;
+    renderOverview();
+  });
+  $('mainStage').querySelectorAll('[data-pick-rid]').forEach((el) => {
+    el.addEventListener('click', () => {
+      S.selectedRid = Number(el.dataset.pickRid);
+      renderOverview();
+    });
+  });
+  $('mainStage').querySelectorAll('[data-rank-sort]').forEach((el) => {
+    el.addEventListener('click', () => {
+      S.rankSort = el.dataset.rankSort;
+      renderOverview();
+    });
+  });
+  wireMapTooltips();
+  wireSpotlightButtons(reg);
+}
+
+function getSortedFusion(sortKey) {
+  const arr = [...S.fusion.regions];
+  if (sortKey === 'corp') return arr.sort((a, b) => b.corp.cnt - a.corp.cnt);
+  if (sortKey === 'bid') return arr.sort((a, b) => (b.bid.bidCnt + b.bid.preSpecCnt + b.bid.archCnt + b.bid.aptOppCnt + b.bid.builderCnt * 0.1) - (a.bid.bidCnt + a.bid.preSpecCnt + a.bid.archCnt + a.bid.aptOppCnt + a.bid.builderCnt * 0.1));
+  if (sortKey === 'sbiz') return arr.sort((a, b) => b.sbiz.cnt - a.sbiz.cnt);
+  if (sortKey === 'new26') return arr.sort((a, b) => b.sbiz.new2026 - a.sbiz.new2026);
+  if (sortKey === 're') return arr.sort((a, b) => (b.re.aptCnt + b.re.remndrCnt + b.re.startCnt + b.re.kaptCnt) - (a.re.aptCnt + a.re.remndrCnt + a.re.startCnt + a.re.kaptCnt));
+  return arr.sort((a, b) => b.scores.total - a.scores.total);
+}
+
+function scoreColor(val, metric) {
+  const t = Math.max(0, Math.min(1, val / 100));
+  const palettes = {
+    total: ['#e2e8f0', '#c7d2fe', '#818cf8', '#4f46e5', '#312e81'],
+    corp: ['#e2e8f0', '#ddd6fe', '#8b5cf6', '#5b21b6', '#3b0764'],
+    bid: ['#e2e8f0', '#fde68a', '#f59e0b', '#d97706', '#92400e'],
+    sbiz: ['#e2e8f0', '#a7f3d0', '#34d399', '#059669', '#064e3b'],
+    re: ['#e2e8f0', '#fecdd3', '#fb7185', '#e11d48', '#881337'],
+  };
+  const pal = palettes[metric] || palettes.total;
+  const idx = Math.min(pal.length - 1, Math.floor(t * (pal.length - 0.01)));
+  return pal[idx];
+}
+
+function renderKoreaSvg(selectedRid) {
+  const { w, h, regions } = S.map;
+  const paths = regions.map((r) => {
+    const f = S.fusionByRid.get(r.id);
+    const val = f ? (f.scores[S.mapMetric] ?? f.scores.total) : 0;
+    const fill = scoreColor(val, S.mapMetric);
+    return `<path d="${r.d}" fill="${fill}" class="${r.id === selectedRid ? 'selected' : ''}" data-rid="${r.id}"></path>`;
+  }).join('');
+  return `<svg class="korea-svg" viewBox="0 0 ${w} ${h}" aria-label="대한민국 229 시군구 통합 지도">${paths}</svg>`;
+}
+
+function wireMapTooltips() {
+  const svg = document.querySelector('.korea-svg');
+  const tip = $('koreaMapTooltip');
+  if (!svg || !tip) return;
+  svg.querySelectorAll('path[data-rid]').forEach((p) => {
+    p.addEventListener('mouseenter', () => {
+      const f = S.fusionByRid.get(Number(p.dataset.rid));
+      if (!f) return;
+      tip.innerHTML = `<b>${esc(f.fullName)}</b> · 통합 ${f.scores.total}점<br/>법인 ${fmt(f.corp.cnt)} · 상가 ${fmt(f.sbiz.cnt)} · 입찰/기회 ${fmt(f.bid.bidCnt + f.bid.preSpecCnt + f.bid.archCnt + f.bid.aptOppCnt)} · 분양/착공 ${fmt(f.re.aptCnt + f.re.remndrCnt + f.re.startCnt)}`;
+      tip.classList.remove('hidden');
+    });
+    p.addEventListener('mousemove', (e) => {
+      const box = svg.parentElement.getBoundingClientRect();
+      tip.style.left = `${Math.min(box.width - 210, Math.max(8, e.clientX - box.left + 12))}px`;
+      tip.style.top = `${Math.max(8, e.clientY - box.top - 48)}px`;
+    });
+    p.addEventListener('mouseleave', () => tip.classList.add('hidden'));
+    p.addEventListener('click', () => {
+      S.selectedRid = Number(p.dataset.rid);
+      renderOverview();
+    });
+  });
+}
+
+function renderRadarSvg(scores) {
+  const cx = 115, cy = 88, R = 52;
+  const axes = [
+    { label: '기업', val: scores.corp, ang: -Math.PI / 2, color: '#4f46e5', dx: 0, dy: -12 },
+    { label: '입찰', val: scores.bid, ang: 0, color: '#d97706', dx: 26, dy: 4 },
+    { label: '상권', val: scores.sbiz, ang: Math.PI / 2, color: '#059669', dx: 0, dy: 18 },
+    { label: '부동산', val: scores.re, ang: Math.PI, color: '#e11d48', dx: -28, dy: 4 },
+  ];
+  const pt = (ang, ratio) => `${(cx + Math.cos(ang) * R * ratio).toFixed(1)},${(cy + Math.sin(ang) * R * ratio).toFixed(1)}`;
+  const rings = [0.33, 0.66, 1].map((r) => `<polygon points="${axes.map((a) => pt(a.ang, r)).join(' ')}" fill="none" stroke="var(--border-strong)" stroke-width="0.9" stroke-dasharray="${r < 1 ? '2 2' : ''}"/>`).join('');
+  const poly = `<polygon points="${axes.map((a) => pt(a.ang, Math.max(0.12, a.val / 100))).join(' ')}" fill="rgba(79,70,229,0.22)" stroke="#4f46e5" stroke-width="2.2"/>`;
+  const dots = axes.map((a) => {
+    const x = cx + Math.cos(a.ang) * R * Math.max(0.12, a.val / 100);
+    const y = cy + Math.sin(a.ang) * R * Math.max(0.12, a.val / 100);
+    const lx = cx + Math.cos(a.ang) * R + a.dx;
+    const ly = cy + Math.sin(a.ang) * R + a.dy;
+    return `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="4" fill="${a.color}"/>
+      <text x="${lx.toFixed(1)}" y="${ly.toFixed(1)}" text-anchor="middle" font-size="10.5" font-weight="700" fill="var(--text-2)">${a.label} ${a.val}</text>`;
+  }).join('');
+  return `<svg width="230" height="176" viewBox="0 0 230 176" style="max-width:100%">${rings}${poly}${dots}</svg>`;
+}
+
+function renderSpotlightHtml(r) {
+  const oppSum = r.bid.bidCnt + r.bid.preSpecCnt + r.bid.archCnt + r.bid.aptOppCnt;
+  return `
+    <div class="card-head">
+      <div>
+        <h2 class="card-title">⚡ ${esc(r.fullName)} — 360° 통합 스캔</h2>
+        <p class="card-sub">기업 · 입찰 · 상권 · 부동산 4대 데이터 실시간 교차 요약</p>
+      </div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap">
+        <button id="btnCopyBrief" class="btn btn-sm btn-primary" type="button">📋 브리핑 복사</button>
+        <button id="btnAddRegionPipe" class="btn btn-sm" type="button">+ 파이프라인</button>
+      </div>
+    </div>
+
+    <div class="fusion-hero">
+      <div>
+        <div style="font-size:11.5px;font-weight:700;color:var(--muted)">4-WAY 융합 기회 종합지수</div>
+        <div style="display:flex;align-items:baseline;gap:8px;margin:4px 0 8px">
+          <span class="fusion-score-big">${r.scores.total}</span>
+          <span style="font-size:13px;font-weight:700;color:var(--muted)">/ 100점</span>
+          <span class="tag ${r.scores.total >= 80 ? 'tag-corp' : r.scores.total >= 65 ? 'tag-sbiz' : 'tag-gray'}">
+            ${r.scores.total >= 80 ? 'S등급 초핵심 거점' : r.scores.total >= 65 ? 'A등급 유망 거점' : 'B등급 성장 거점'}
+          </span>
+        </div>
+        <div style="font-size:12px;color:var(--text-2);line-height:1.55">
+          법인 <b>${fmt(r.corp.cnt)}사</b> · 소상공인 <b>${fmt(r.sbiz.cnt)}개</b>(2026 신규 <b>+${fmt(r.sbiz.new2026)}</b>) · 입찰/인허가 <b>${fmt(oppSum)}건</b> · 청약/착공/단지 <b>${fmt(r.re.aptCnt + r.re.remndrCnt + r.re.startCnt + r.re.kaptCnt)}건</b>
+        </div>
+      </div>
+      <div style="display:flex;justify-content:center">${renderRadarSvg(r.scores)}</div>
+    </div>
+
+    <div class="domain-box-grid">
+      <!-- 1. Corp -->
+      <div class="domain-box">
+        <h4><span style="color:var(--c-corp)">🏢 기업 생태계</span><button class="btn btn-sm" data-go-domain="corp">상세 →</button></h4>
+        <div class="domain-stat-row"><span>총 법인 수</span><b>${fmt(r.corp.cnt)}사</b></div>
+        <div class="domain-stat-row"><span>상장 · 강소/산단</span><b>상장 ${fmt(r.corp.listed)} · 강소 ${fmt(r.corp.strong)}</b></div>
+        <div class="domain-stat-row"><span>확인 매출 / 인원</span><b>${fmt(r.corp.revBillion)}억 · ${fmt(r.corp.empSum)}명</b></div>
+        ${r.corp.top.length ? `<div style="margin-top:6px;padding-top:6px;border-top:1px dashed var(--border);font-size:11.5px;color:var(--muted)">
+          대표기업: ${r.corp.top.slice(0, 3).map((t) => `<b style="color:var(--text)">${esc(t[0])}</b>`).join(', ')}
+        </div>` : ''}
+      </div>
+
+      <!-- 2. Bid -->
+      <div class="domain-box">
+        <h4><span style="color:var(--c-bid)">🎯 입찰·사전규격·인허가</span><button class="btn btn-sm" data-go-domain="bid">상세 →</button></h4>
+        <div class="domain-stat-row"><span>입찰공고 · 사전규격</span><b>입찰 ${fmt(r.bid.bidCnt)} · 사전 ${fmt(r.bid.preSpecCnt)}</b></div>
+        <div class="domain-stat-row"><span>건축인허가 · K-apt</span><b>인허가 ${fmt(r.bid.archCnt)} · 단지 ${fmt(r.bid.aptOppCnt)}</b></div>
+        <div class="domain-stat-row"><span>포착 예산 / 건설사</span><b>${r.bid.budgetMan > 0 ? `${fmtDec(r.bid.budgetMan / 10000, 1)}억` : '-'} · ${fmt(r.bid.builderCnt)}사</b></div>
+      </div>
+
+      <!-- 3. Sbiz -->
+      <div class="domain-box">
+        <h4><span style="color:var(--c-sbiz)">🏪 소상공인 상권</span><button class="btn btn-sm" data-go-domain="sbiz">지도 열기 →</button></h4>
+        <div class="domain-stat-row"><span>총 상가 / 건물 수</span><b>${fmt(r.sbiz.cnt)}개 · ${fmt(r.sbiz.bldCnt)}동</b></div>
+        <div class="domain-stat-row"><span>2026 신규개업</span><b style="color:var(--c-sbiz)">+${fmt(r.sbiz.new2026)}개소</b></div>
+        <div style="margin-top:6px;display:flex;flex-wrap:wrap;gap:4px">
+          ${(r.sbiz.topL1 || []).slice(0, 4).map(([nm, cnt]) => `<span class="tag tag-sbiz">${esc(nm)} ${fmt(cnt)}</span>`).join('')}
+        </div>
+      </div>
+
+      <!-- 4. RealEstate -->
+      <div class="domain-box">
+        <h4><span style="color:var(--c-re)">🏠 부동산·청약·착공</span><button class="btn btn-sm" data-go-domain="realestate">상세 →</button></h4>
+        <div class="domain-stat-row"><span>신축 APT · 무순위</span><b>APT ${fmt(r.re.aptCnt)} · 줍줍 ${fmt(r.re.remndrCnt)}</b></div>
+        <div class="domain-stat-row"><span>착공현장 · K-apt</span><b>착공 ${fmt(r.re.startCnt)} · 단지 ${fmt(r.re.kaptCnt)}</b></div>
+        <div class="domain-stat-row"><span>평균 평당가</span><b>${r.re.avgPyeongMan > 0 ? `${fmt(r.re.avgPyeongMan)}만원` : '실시간 조회 가능'}</b></div>
+      </div>
+    </div>
+  `;
+}
+
+function wireSpotlightButtons(r) {
+  $('btnCopyBrief')?.addEventListener('click', () => {
+    const oppSum = r.bid.bidCnt + r.bid.preSpecCnt + r.bid.archCnt + r.bid.aptOppCnt;
+    const text = `[넥서스원 PRO 360° 지역 브리핑] ${r.fullName}
+• 4-Way 통합 기회지수: ${r.scores.total}/100 (기업 ${r.scores.corp} · 입찰 ${r.scores.bid} · 상권 ${r.scores.sbiz} · 부동산 ${r.scores.re})
+• 🏢 기업 생태계: 총 ${fmt(r.corp.cnt)}사 (상장 ${fmt(r.corp.listed)} / 강소·산단 ${fmt(r.corp.strong)} / 대표: ${r.corp.top.slice(0, 3).map((x) => x[0]).join(', ') || '-'})
+• 🎯 입찰·인허가: ${fmt(oppSum)}건 (입찰 ${r.bid.bidCnt}, 사전규격 ${r.bid.preSpecCnt}, 건축인허가 ${r.bid.archCnt}, K-apt ${r.bid.aptOppCnt}) · 지역 건설·시설사 ${fmt(r.bid.builderCnt)}사
+• 🏪 소상공인 상권: ${fmt(r.sbiz.cnt)}개 상가 / ${fmt(r.sbiz.bldCnt)}개 건물 / 2026 신규개업 +${fmt(r.sbiz.new2026)}개 (핵심: ${r.sbiz.topL1.slice(0, 3).map(([k, v]) => `${k} ${fmt(v)}`).join(', ')})
+• 🏠 부동산 공급: 신축분양 ${r.re.aptCnt} · 무순위 ${r.re.remndrCnt} · 착공 ${r.re.startCnt} · K-apt ${r.re.kaptCnt}`;
+    navigator.clipboard?.writeText(text).then(() => toast('📋 360° 통합 브리핑이 클립보드에 복사되었습니다!')).catch(() => toast('클립보드 복사 실패'));
+  });
+
+  $('btnAddRegionPipe')?.addEventListener('click', () => {
+    addToPipeline({
+      id: `region:${r.rid}`,
+      domain: 'corp',
+      title: `[360° 거점] ${r.fullName}`,
+      sub: `통합 ${r.scores.total}점 · 법인 ${fmt(r.corp.cnt)} · 상가 ${fmt(r.sbiz.cnt)}`,
+      region: r.fullName,
+      valueMan: r.bid.budgetMan,
+    });
+  });
+
+  document.querySelectorAll('[data-go-domain]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const dom = btn.dataset.goDomain;
+      if (dom === 'corp') { S.corpQ = r.name; S.corpSd = r.sd; S.corpPage = 1; switchTab('corp'); }
+      else if (dom === 'bid') { S.bidQ = r.name; S.bidSub = 'opps'; switchTab('bid'); }
+      else if (dom === 'sbiz') {
+        switchTab('sbiz');
+        await loadSbizSido(r.sidoSlug);
+        S.sbizSgg = r.name;
+        renderSbizTab();
+      } else if (dom === 'realestate') { S.reQ = r.name.replace(/시$|군$|구$/, ''); switchTab('realestate'); }
+    });
+  });
+}
+
+// =========================================================================
+// TAB 2: 🏢 기업분석 PRO (120,028개 법인 + 재무·국민연금·국세청)
+// =========================================================================
+function renderCorpTab() {
+  if (!S.corpLoaded) {
+    $('mainStage').innerHTML = `
+      <div class="card" style="max-width:560px;margin:24px auto;text-align:center;padding:28px">
+        <div style="font-size:36px;margin-bottom:8px">🏢</div>
+        <h2 style="margin:0 0 6px">전국 법인 120,028사 암호화 DB 복호화</h2>
+        <p style="color:var(--muted);font-size:13px;margin:0 0 14px">DART 개황 · 3개년 재무 · 국민연금 · 국세청 상태 (9.5 MB)를 브라우저 메모리로 안전하게 로드합니다.</p>
+        <div class="progress-bar"><div id="corpProgFill" class="progress-fill" style="width:10%"></div></div>
+        <div id="corpProgMsg" style="font-size:12px;color:var(--muted)">준비 중…</div>
+      </div>
+    `;
+    ensureCorpLoaded((pct, msg) => {
+      const f = $('corpProgFill'), m = $('corpProgMsg');
+      if (f) f.style.width = `${pct}%`;
+      if (m) m.textContent = msg;
+    }).then(() => { if (S.tab === 'corp') renderCorpTab(); })
+      .catch((e) => toast(`기업 DB 로드 실패: ${e.message}`));
+    return;
+  }
+
+  const sidos = S.core.sido || [];
+  const corpTypes = S.core.corpMeta.corp || [];
+  const inds = S.core.corpMeta.industries || [];
+  const q = S.corpQ.trim().toLowerCase();
+  const tagObj = S.corpTag ? S.corpTags.find((t) => t.id === S.corpTag) : null;
+
+  const filtered = [];
+  for (let i = 0; i < S.corps.length; i++) {
+    const r = S.corps[i];
+    if (S.corpSd && String(r[16]) !== S.corpSd) continue;
+    if (S.corpType !== '' && String(r[5]) !== S.corpType) continue;
+    const bizClean = String(r[6] || '').replace(/\D/g, '');
+    if (tagObj && !tagObj.set.has(bizClean)) continue;
+    const stCode = S.corpStatusBytes ? S.corpStatusBytes[i] : 0;
+    if (S.corpStatus && String(stCode) !== S.corpStatus) continue;
+    if (q) {
+      const hay = `${r[0]} ${r[4]} ${r[6]} ${r[7]} ${inds[r[12]] || ''}`.toLowerCase();
+      if (!hay.includes(q)) continue;
+    }
+    const enr = S.corpEnrichMap.get(bizClean);
+    filtered.push({ i, r, bizClean, enr, stCode });
+  }
+
+  if (S.corpSort === 'rev') filtered.sort((a, b) => (b.enr?.[0] || 0) - (a.enr?.[0] || 0));
+  else if (S.corpSort === 'emp') filtered.sort((a, b) => (b.enr?.[12] || b.enr?.[9] || 0) - (a.enr?.[12] || a.enr?.[9] || 0));
+  else if (S.corpSort === 'net') filtered.sort((a, b) => ((b.enr?.[13] || 0) - (b.enr?.[14] || 0)) - ((a.enr?.[13] || 0) - (a.enr?.[14] || 0)));
+  else if (S.corpSort === 'est') filtered.sort((a, b) => (b.r[13] || 0) - (a.r[13] || 0));
+
+  const perPage = 40;
+  const maxPage = Math.max(1, Math.ceil(filtered.length / perPage));
+  S.corpPage = Math.min(S.corpPage, maxPage);
+  const pageRows = filtered.slice((S.corpPage - 1) * perPage, S.corpPage * perPage);
+  const stLabel = (c) => (c === 1 ? '<span class="tag tag-sbiz">계속</span>' : c === 2 ? '<span class="tag tag-bid">휴업</span>' : c === 3 ? '<span class="tag tag-re">폐업</span>' : '<span class="tag tag-gray">미확인</span>');
+
+  $('mainStage').innerHTML = `
+    <div class="card">
+      <div class="card-head">
+        <div>
+          <h2 class="card-title">🏢 전국 기업분석 PRO <span class="tag tag-corp">${fmt(filtered.length)}사</span></h2>
+          <p class="card-sub">DART 법인 120,028사 · 3개년 재무 · 국민연금 고용·급여 · 국세청 사업자상태 통합 조회</p>
+        </div>
+        <button id="btnCorpReset" class="btn btn-sm" type="button">초기화</button>
+      </div>
+
+      <div class="toolbar">
+        <input id="fCorpQ" class="input" style="flex:1;min-width:190px" value="${esc(S.corpQ)}" placeholder="기업명 · 대표자 · 사업자번호 · 주소 · 업종 검색" />
+        <select id="fCorpSd" class="select">
+          <option value="">전국 시도</option>
+          ${sidos.map((s) => `<option value="${s.sd}" ${S.corpSd === s.sd ? 'selected' : ''}>${esc(s.n)}</option>`).join('')}
+        </select>
+        <select id="fCorpType" class="select">
+          <option value="">전체 시장</option>
+          ${corpTypes.map((c, idx) => `<option value="${idx}" ${S.corpType === String(idx) ? 'selected' : ''}>${esc(c)}</option>`).join('')}
+        </select>
+        <select id="fCorpTag" class="select">
+          <option value="">전체 태그</option>
+          ${S.corpTags.map((t) => `<option value="${t.id}" ${S.corpTag === t.id ? 'selected' : ''}>${esc(t.label)} (${fmt(t.set.size)})</option>`).join('')}
+        </select>
+        <select id="fCorpStatus" class="select">
+          <option value="">국세청 전체</option>
+          <option value="1" ${S.corpStatus === '1' ? 'selected' : ''}>계속사업자</option>
+          <option value="2" ${S.corpStatus === '2' ? 'selected' : ''}>휴업자</option>
+          <option value="3" ${S.corpStatus === '3' ? 'selected' : ''}>폐업자</option>
+        </select>
+        <select id="fCorpSort" class="select">
+          <option value="rev" ${S.corpSort === 'rev' ? 'selected' : ''}>매출 높은순</option>
+          <option value="emp" ${S.corpSort === 'emp' ? 'selected' : ''}>국민연금 인원순</option>
+          <option value="net" ${S.corpSort === 'net' ? 'selected' : ''}>최근 순증(채용)순</option>
+          <option value="est" ${S.corpSort === 'est' ? 'selected' : ''}>최근 설립순</option>
+        </select>
+      </div>
+
+      <div class="table-wrap">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>기업명</th><th>시장</th><th>대표자</th><th>업종</th><th>매출액</th><th>국민연금(순증)</th><th>국세청</th><th>소재지</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${pageRows.map((x) => {
+              const rev = x.enr?.[0] ? `${fmtDec(x.enr[0] / 1e8, 1)}억` : '-';
+              const emp = x.enr?.[12] || x.enr?.[9] || 0;
+              const net = (x.enr?.[13] || 0) - (x.enr?.[14] || 0);
+              return `
+                <tr data-corp-idx="${x.i}">
+                  <td><b>${esc(x.r[0])}</b>${x.r[3] ? ` <span class="mono" style="font-size:11px;color:var(--muted)">${esc(x.r[3])}</span>` : ''}</td>
+                  <td><span class="tag ${x.r[5] <= 1 ? 'tag-corp' : 'tag-gray'}">${esc(corpTypes[x.r[5]] || '기타')}</span></td>
+                  <td>${esc(x.r[4] || '-')}</td>
+                  <td style="max-width:170px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(inds[x.r[12]] || '-')}</td>
+                  <td><b>${rev}</b></td>
+                  <td>${emp ? `${fmt(emp)}명` : '-'}${net ? ` <span style="color:${net > 0 ? 'var(--c-sbiz)' : 'var(--c-re)'}">(${net > 0 ? '+' : ''}${net})</span>` : ''}</td>
+                  <td>${stLabel(x.stCode)}</td>
+                  <td style="max-width:210px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--muted)">${esc(x.r[7] || '-')}</td>
+                </tr>`;
+            }).join('') || '<tr><td colspan="8" style="text-align:center;padding:24px;color:var(--muted)">조건에 맞는 법인이 없습니다.</td></tr>'}
+          </tbody>
+        </table>
+      </div>
+
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-top:12px">
+        <span style="font-size:12px;color:var(--muted)">페이지 ${S.corpPage} / ${fmt(maxPage)} (총 ${fmt(filtered.length)}사)</span>
+        <div style="display:flex;gap:6px">
+          <button id="corpPrev" class="btn btn-sm" ${S.corpPage <= 1 ? 'disabled' : ''}>← 이전</button>
+          <button id="corpNext" class="btn btn-sm" ${S.corpPage >= maxPage ? 'disabled' : ''}>다음 →</button>
+        </div>
+      </div>
+    </div>
+  `;
+
+  let timer = null;
+  $('fCorpQ').addEventListener('input', (e) => { clearTimeout(timer); timer = setTimeout(() => { S.corpQ = e.target.value; S.corpPage = 1; renderCorpTab(); }, 220); });
+  $('fCorpSd').addEventListener('change', (e) => { S.corpSd = e.target.value; S.corpPage = 1; renderCorpTab(); });
+  $('fCorpType').addEventListener('change', (e) => { S.corpType = e.target.value; S.corpPage = 1; renderCorpTab(); });
+  $('fCorpTag').addEventListener('change', (e) => { S.corpTag = e.target.value; S.corpPage = 1; renderCorpTab(); });
+  $('fCorpStatus').addEventListener('change', (e) => { S.corpStatus = e.target.value; S.corpPage = 1; renderCorpTab(); });
+  $('fCorpSort').addEventListener('change', (e) => { S.corpSort = e.target.value; S.corpPage = 1; renderCorpTab(); });
+  $('btnCorpReset').addEventListener('click', () => { S.corpQ = ''; S.corpSd = ''; S.corpType = ''; S.corpTag = ''; S.corpStatus = ''; S.corpPage = 1; renderCorpTab(); });
+  $('corpPrev').addEventListener('click', () => { if (S.corpPage > 1) { S.corpPage--; renderCorpTab(); } });
+  $('corpNext').addEventListener('click', () => { if (S.corpPage < maxPage) { S.corpPage++; renderCorpTab(); } });
+  $('mainStage').querySelectorAll('tr[data-corp-idx]').forEach((tr) => {
+    tr.addEventListener('click', () => openCorpDrawer(Number(tr.dataset.corpIdx)));
+  });
+}
+
+function openCorpDrawer(idx) {
+  const r = S.corps[idx];
+  if (!r) return;
+  const bizClean = String(r[6] || '').replace(/\D/g, '');
+  const enr = S.corpEnrichMap.get(bizClean);
+  const inds = S.core.corpMeta.industries || [];
+  const corpTypes = S.core.corpMeta.corp || [];
+  const tags = S.corpTags.filter((t) => t.set.has(bizClean)).map((t) => t.label);
+  const reg = S.fusionByRid.get(r[15]);
+
+  // 3-year revenue SVG bars
+  let chartHtml = '<div style="font-size:12px;color:var(--muted)">재무 데이터 미수록 법인</div>';
+  if (enr && (enr[0] || enr[1] || enr[2])) {
+    const vals = [
+      { yr: '전전기', rev: (enr[2] || 0) / 1e8, op: (enr[5] || 0) / 1e8 },
+      { yr: '전기', rev: (enr[1] || 0) / 1e8, op: (enr[4] || 0) / 1e8 },
+      { yr: '당기', rev: (enr[0] || 0) / 1e8, op: (enr[3] || 0) / 1e8 },
+    ];
+    const maxV = Math.max(1, ...vals.map((v) => Math.abs(v.rev)));
+    chartHtml = `
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;align-items:end;height:120px;padding:12px 10px 4px;background:var(--surface-2);border-radius:10px;border:1px solid var(--border)">
+        ${vals.map((v) => {
+          const h = Math.max(8, Math.round(Math.abs(v.rev) / maxV * 70));
+          return `<div style="text-align:center">
+            <div style="font-size:11px;font-weight:700">${v.rev ? fmtDec(v.rev, 0) + '억' : '-'}</div>
+            <div style="height:${h}px;background:linear-gradient(180deg,#4f46e5,#818cf8);border-radius:6px 6px 2px 2px;margin:4px auto;width:44px"></div>
+            <div style="font-size:11px;color:var(--muted)">${v.yr}</div>
+          </div>`;
+        }).join('')}
+      </div>
+    `;
+  }
+
+  openDrawer({
+    title: `${r[0]}`,
+    sub: `${corpTypes[r[5]] || '기타법인'} · ${inds[r[12]] || '업종 미상'}`,
+    body: `
+      <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px">
+        <span class="tag tag-corp">사업자 ${esc(r[6] || '-')}</span>
+        ${r[3] ? `<span class="tag tag-gray">종목 ${esc(r[3])}</span>` : ''}
+        ${tags.map((t) => `<span class="tag tag-sbiz">✦ ${esc(t)}</span>`).join('')}
+      </div>
+      <div class="domain-box" style="margin-bottom:12px">
+        <div class="domain-stat-row"><span>대표이사</span><b>${esc(r[4] || '-')}</b></div>
+        <div class="domain-stat-row"><span>설립일</span><b>${r[13] ? String(r[13]).replace(/(\d{4})(\d{2})(\d{2})/, '$1-$2-$3') : '-'}</b></div>
+        <div class="domain-stat-row"><span>주소</span><b style="text-align:right;max-width:70%">${esc(r[7] || '-')}</b></div>
+        <div class="domain-stat-row"><span>전화 / 홈페이지</span><b>${esc(r[8] || '-')} ${r[10] ? `· <a href="https://${esc(r[10].replace(/^https?:\/\//, ''))}" target="_blank" rel="noopener">웹사이트</a>` : ''}</b></div>
+      </div>
+
+      <h4 style="margin:12px 0 6px;font-size:13px">📊 3개년 매출 추이 (DART)</h4>
+      ${chartHtml}
+
+      ${enr ? `<div class="domain-box" style="margin-top:12px">
+        <div class="domain-stat-row"><span>당기 영업이익 / 순이익</span><b>${enr[3] ? fmtDec(enr[3] / 1e8, 1) + '억' : '-'} / ${enr[6] ? fmtDec(enr[6] / 1e8, 1) + '억' : '-'}</b></div>
+        <div class="domain-stat-row"><span>국민연금 가입자</span><b>${fmt(enr[12] || enr[9] || 0)}명 (신규 +${fmt(enr[13] || 0)} / 퇴사 -${fmt(enr[14] || 0)})</b></div>
+        <div class="domain-stat-row"><span>추정 평균연봉 / 월급</span><b>${enr[10] ? fmtDec(enr[10] / 1e4, 0) + '만원' : (enr[15] ? `월 ${fmtDec(enr[15] / 1e4, 0)}만원` : '-')}</b></div>
+      </div>` : ''}
+
+      <div id="ntsLiveBox" style="margin-top:12px"></div>
+    `,
+    foot: `
+      <button id="dwPipe" class="btn btn-primary btn-sm">💼 파이프라인 담기</button>
+      ${bizClean.length === 10 ? `<button id="dwNts" class="btn btn-emerald btn-sm">🧾 국세청 실시간 상태 조회</button>` : ''}
+      ${reg ? `<button id="dw360" class="btn btn-sm">⚡ ${esc(reg.name)} 360° 보기</button>` : ''}
+    `,
+    onMount: () => {
+      $('dwPipe')?.addEventListener('click', () => addToPipeline({
+        id: `corp:${bizClean || idx}`, domain: 'corp', title: r[0],
+        sub: `${r[4] || ''} · ${inds[r[12]] || ''}`, region: reg?.fullName || r[7] || '',
+        valueMan: enr?.[0] ? Math.round(enr[0] / 1e4) : 0,
+      }));
+      $('dw360')?.addEventListener('click', () => { closeDrawer(); S.selectedRid = reg.rid; switchTab('overview'); });
+      $('dwNts')?.addEventListener('click', async () => {
+        const box = $('ntsLiveBox');
+        box.innerHTML = '<div class="tag tag-gray">국세청 API 실시간 조회 중…</div>';
+        try {
+          const { dataGoEnc } = getApiKeys();
+          const res = await fetch(`https://api.odcloud.kr/api/nts-businessman/v1/status?serviceKey=${dataGoEnc}&returnType=JSON`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ b_no: [bizClean] }),
+          });
+          const j = await res.json();
+          const d = j?.data?.[0];
+          box.innerHTML = d ? `<div class="diag-card ok"><div class="diag-title">🟢 국세청 실시간 상태: ${esc(d.b_stt || '확인')}</div><div class="diag-detail">과세유형: ${esc(d.tax_type || '-')} · 폐업일: ${esc(d.end_dt || '해당없음')}</div></div>` : '<div class="diag-card err">조회 결과 없음</div>';
+        } catch (e) {
+          box.innerHTML = `<div class="diag-card err">조회 오류: ${esc(e.message)}</div>`;
+        }
+      });
+    },
+  });
+}
+
+// =========================================================================
+// TAB 3: 🎯 입찰 · 사전규격 · 건축인허가 · 건설사(12,198사)
+// =========================================================================
+function renderBidTab() {
+  const isOpps = S.bidSub === 'opps';
+  $('mainStage').innerHTML = `
+    <div class="card">
+      <div class="card-head">
+        <div>
+          <h2 class="card-title">🎯 공동주택 · 관공서 입찰 & 사전규격 PRO</h2>
+          <p class="card-sub">나라장터 입찰(02) · 사전규격(ao) · 국토부 건축인허가 · K-apt · 건설·시설관리 12,198사 통합</p>
+        </div>
+        <div class="chips">
+          <button class="chip ${isOpps ? 'active' : ''}" data-bid-sub="opps">📡 실시간 입찰·사전규격·인허가 (${fmt(S.opps.length)})</button>
+          <button class="chip ${!isOpps ? 'active' : ''}" data-bid-sub="builders">🏗️ 건설·시설관리 DB (${fmt(S.core.stats.builderCount)}사)</button>
+        </div>
+      </div>
+
+      <div id="bidBody"></div>
+    </div>
+  `;
+
+  $('mainStage').querySelectorAll('[data-bid-sub]').forEach((b) => {
+    b.addEventListener('click', () => { S.bidSub = b.dataset.bidSub; renderBidTab(); });
+  });
+
+  if (isOpps) renderBidOppsBody();
+  else renderBidBuildersBody();
+}
+
+function renderBidOppsBody() {
+  const q = S.bidQ.trim().toLowerCase();
+  const list = S.opps.filter((o) => {
+    if (S.bidStage && o.stageType !== S.bidStage) return false;
+    if (S.bidField && o.field !== S.bidField) return false;
+    if (q && !`${o.title} ${o.org} ${o.region} ${o.source} ${o.field}`.toLowerCase().includes(q)) return false;
+    return true;
+  }).sort((a, b) => b.icpScore - a.icpScore);
+
+  const perPage = 30;
+  const maxPage = Math.max(1, Math.ceil(list.length / perPage));
+  S.bidPage = Math.min(S.bidPage, maxPage);
+  const pageItems = list.slice((S.bidPage - 1) * perPage, S.bidPage * perPage);
+
+  const stageLabel = (st) => ({
+    bid: '<span class="tag tag-bid">입찰공고</span>',
+    prespec: '<span class="tag tag-corp">🔭 사전규격</span>',
+    permit: '<span class="tag tag-re">🏗️ 건축인허가</span>',
+    complex: '<span class="tag tag-sbiz">🏘️ K-apt 단지</span>',
+  }[st] || '<span class="tag tag-gray">기회</span>');
+
+  $('bidBody').innerHTML = `
+    <div class="toolbar">
+      <input id="fBidQ" class="input" style="flex:1;min-width:190px" value="${esc(S.bidQ)}" placeholder="공고명 · 발주처 · 지역 · CCTV/승강기/전기 키워드" />
+      <select id="fBidStage" class="select">
+        <option value="">전체 단계 (${fmt(S.opps.length)})</option>
+        <option value="bid" ${S.bidStage === 'bid' ? 'selected' : ''}>입찰공고</option>
+        <option value="prespec" ${S.bidStage === 'prespec' ? 'selected' : ''}>🔭 사전규격 (조기포착)</option>
+        <option value="permit" ${S.bidStage === 'permit' ? 'selected' : ''}>🏗️ 국토부 건축인허가</option>
+        <option value="complex" ${S.bidStage === 'complex' ? 'selected' : ''}>🏘️ K-apt 공동주택</option>
+      </select>
+      <select id="fBidField" class="select">
+        <option value="">전체 분야</option>
+        ${['보안·CCTV', 'AI·스마트', '시설·경비·미화', '전기·통신·소방', '건축·리모델링', '승강기·설비'].map((f) => `<option value="${f}" ${S.bidField === f ? 'selected' : ''}>${f}</option>`).join('')}
+      </select>
+      <button id="btnLiveG2b" class="btn btn-amber btn-sm" type="button">🔄 나라장터 입찰·사전규격 실시간 수집</button>
+    </div>
+
+    <div class="item-list">
+      ${pageItems.map((o) => `
+        <div class="item-card" data-opp-id="${esc(o.id)}">
+          <div class="item-card-main">
+            <div style="display:flex;flex-wrap:wrap;gap:5px;margin-bottom:5px">
+              ${stageLabel(o.stageType)}
+              <span class="tag tag-gray">${esc(o.field)}</span>
+              ${o.dday !== null && o.dday >= 0 && o.dday <= 7 ? `<span class="tag tag-re">D-${o.dday} 긴급</span>` : ''}
+            </div>
+            <div class="item-card-title">${esc(o.title)}</div>
+            <div class="item-card-meta">
+              <span>🏛️ ${esc(o.org || '-')}</span>
+              <span>📍 ${esc(o.region || '전국')}</span>
+              <span>📅 공고 ${esc(o.pubDate || '-')} ${o.closeDate ? `· 마감 ${esc(o.closeDate)}` : ''}</span>
+            </div>
+          </div>
+          <div class="item-card-right">
+            <span class="tag tag-sbiz">ICP ${o.icpScore}점</span>
+            <div style="font-weight:800;font-size:14px;color:var(--c-bid)">${o.budgetMan > 0 ? `${fmtDec(o.budgetMan / 10000, 1)}억` : '예산 미기재'}</div>
+          </div>
+        </div>
+      `).join('') || '<div style="text-align:center;padding:28px;color:var(--muted)">조건에 맞는 영업기회가 없습니다.</div>'}
+    </div>
+
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-top:12px">
+      <span style="font-size:12px;color:var(--muted)">페이지 ${S.bidPage} / ${maxPage} (총 ${fmt(list.length)}건)</span>
+      <div style="display:flex;gap:6px">
+        <button id="bidPrev" class="btn btn-sm" ${S.bidPage <= 1 ? 'disabled' : ''}>← 이전</button>
+        <button id="bidNext" class="btn btn-sm" ${S.bidPage >= maxPage ? 'disabled' : ''}>다음 →</button>
+      </div>
+    </div>
+  `;
+
+  let t = null;
+  $('fBidQ').addEventListener('input', (e) => { clearTimeout(t); t = setTimeout(() => { S.bidQ = e.target.value; S.bidPage = 1; renderBidOppsBody(); }, 200); });
+  $('fBidStage').addEventListener('change', (e) => { S.bidStage = e.target.value; S.bidPage = 1; renderBidOppsBody(); });
+  $('fBidField').addEventListener('change', (e) => { S.bidField = e.target.value; S.bidPage = 1; renderBidOppsBody(); });
+  $('bidPrev').addEventListener('click', () => { if (S.bidPage > 1) { S.bidPage--; renderBidOppsBody(); } });
+  $('bidNext').addEventListener('click', () => { if (S.bidPage < maxPage) { S.bidPage++; renderBidOppsBody(); } });
+  $('btnLiveG2b').addEventListener('click', fetchLiveG2bAndPrespec);
+  $('bidBody').querySelectorAll('[data-opp-id]').forEach((card) => {
+    card.addEventListener('click', () => {
+      const o = S.opps.find((x) => x.id === card.dataset.oppId);
+      if (o) openOppDrawer(o);
+    });
+  });
+}
+
+async function fetchLiveG2bAndPrespec() {
+  const { dataGoEnc } = getApiKeys();
+  if (!dataGoEnc) return toast('공공데이터포털 키가 없습니다.');
+  toast('🔄 나라장터 입찰(02) + 사전규격(ao) 실시간 수집 중…');
+  const now = new Date();
+  const bgn = new Date(now.getTime() - 3 * 86400000);
+  const ymd = (d) => `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
+  const bgnDt = ymd(bgn) + '0000', endDt = ymd(now) + '2359';
+  const urls = [
+    ['bid', `https://apis.data.go.kr/1230000/ad/BidPublicInfoService02/getBidPblancListInfoServc02?serviceKey=${dataGoEnc}&numOfRows=30&pageNo=1&type=json&inqryDiv=1&inqryBgnDt=${bgnDt}&inqryEndDt=${endDt}`],
+    ['bid', `https://apis.data.go.kr/1230000/ad/BidPublicInfoService02/getBidPblancListInfoCnstwk02?serviceKey=${dataGoEnc}&numOfRows=30&pageNo=1&type=json&inqryDiv=1&inqryBgnDt=${bgnDt}&inqryEndDt=${endDt}`],
+    ['prespec', `https://apis.data.go.kr/1230000/ao/HrcspSsstndrdInfoService/getPublicPrcureThngInfoServc?serviceKey=${dataGoEnc}&numOfRows=30&pageNo=1&type=json&inqryDiv=1&inqryBgnDt=${bgnDt}&inqryEndDt=${endDt}`],
+    ['prespec', `https://apis.data.go.kr/1230000/ao/HrcspSsstndrdInfoService/getPublicPrcureThngInfoCnstwk?serviceKey=${dataGoEnc}&numOfRows=30&pageNo=1&type=json&inqryDiv=1&inqryBgnDt=${bgnDt}&inqryEndDt=${endDt}`],
+  ];
+  const map = new Map(S.opps.map((o) => [o.id, o]));
+  let added = 0;
+  await Promise.all(urls.map(async ([st, u]) => {
+    try {
+      const r = await fetch(u);
+      const j = await r.json();
+      const raw = j?.response?.body?.items;
+      const arr = Array.isArray(raw) ? raw : (raw?.item ? (Array.isArray(raw.item) ? raw.item : [raw.item]) : []);
+      for (const it of arr) {
+        const isPre = st === 'prespec';
+        const id = isPre ? `pre-${it.bfSpecRgstNo || it.prdctClsfcNoNm}` : `g2b-${it.bidNtceNo}-${it.bidNtceOrd || '00'}`;
+        if (map.has(id)) continue;
+        const budgetWon = Number(isPre ? it.asignBdgtAmt : (it.presmptPrce || it.asignBdgtAmt || 0)) || 0;
+        const obj = enrichOpp({
+          id,
+          source: isPre ? '나라장터 사전규격(실시간)' : '나라장터 입찰(실시간)',
+          stageType: st,
+          title: isPre ? `[사전규격] ${it.prdctClsfcNoNm || it.bsnsDivNm || ''}` : (it.bidNtceNm || ''),
+          org: it.dminsttNm || it.orderInsttNm || it.ntceInsttNm || '',
+          region: it.dminsttOfclAddr || it.ntceInsttNm || '전국',
+          budgetMan: Math.round(budgetWon / 10000),
+          pubDate: String(it.bidNtceDt || it.rcptDt || '').slice(0, 10),
+          closeDate: String(it.bidClseDt || it.opninRgstClseDt || '').slice(0, 10),
+          method: it.bidMethdNm || (isPre ? '사전규격 의견수렴' : ''),
+          url: it.bidNtceDtlUrl || 'https://www.g2b.go.kr/',
+        });
+        map.set(id, obj);
+        added++;
+      }
+    } catch {}
+  }));
+  S.opps = [...map.values()];
+  $('cntBid').textContent = fmt(S.opps.length);
+  toast(`✓ 실시간 수집 완료 (+${added}건 신규 병합, 총 ${fmt(S.opps.length)}건)`);
+  if (S.tab === 'bid') renderBidTab();
+}
+
+function openOppDrawer(o) {
+  const reg = S.fusionByRid.get(o._fusionRid ?? o.rid);
+  openDrawer({
+    title: o.title,
+    sub: `${o.source} · ${o.field}`,
+    body: `
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px">
+        <span class="tag tag-sbiz">ICP 적합도 ${o.icpScore}점</span>
+        <span class="tag tag-bid">${o.budgetMan > 0 ? `예산 ${fmtDec(o.budgetMan / 10000, 1)}억 (${fmt(o.budgetMan)}만원)` : '예산 미기재'}</span>
+        ${o.dday !== null && o.dday >= 0 ? `<span class="tag tag-re">마감 D-${o.dday}</span>` : ''}
+      </div>
+      <div class="domain-box">
+        <div class="domain-stat-row"><span>발주/관리기관</span><b>${esc(o.org || '-')}</b></div>
+        <div class="domain-stat-row"><span>지역</span><b>${esc(o.region || '전국')}</b></div>
+        <div class="domain-stat-row"><span>방식/구분</span><b>${esc(o.method || '-')}</b></div>
+        <div class="domain-stat-row"><span>공고일 / 마감일</span><b>${esc(o.pubDate || '-')} / ${esc(o.closeDate || '-')}</b></div>
+      </div>
+      ${o.meta ? `<div class="domain-box" style="margin-top:10px"><h4>추가 메타정보</h4>${Object.entries(o.meta).map(([k, v]) => `<div class="domain-stat-row"><span>${esc(k)}</span><b>${esc(v)}</b></div>`).join('')}</div>` : ''}
+    `,
+    foot: `
+      <button id="dwOppPipe" class="btn btn-primary btn-sm">💼 파이프라인 담기</button>
+      ${o.url ? `<a class="btn btn-amber btn-sm" href="${esc(o.url)}" target="_blank" rel="noopener">🔗 원문 공고 열기</a>` : ''}
+      ${reg ? `<button id="dwOpp360" class="btn btn-sm">⚡ ${esc(reg.name)} 360° 보기</button>` : ''}
+    `,
+    onMount: () => {
+      $('dwOppPipe')?.addEventListener('click', () => addToPipeline({
+        id: `opp:${o.id}`, domain: 'bid', title: o.title, sub: `${o.org} · ${o.field}`, region: o.region, valueMan: o.budgetMan,
+      }));
+      $('dwOpp360')?.addEventListener('click', () => { closeDrawer(); S.selectedRid = reg.rid; switchTab('overview'); });
+    },
+  });
+}
+
+async function renderBidBuildersBody() {
+  if (!S.builders) {
+    $('bidBody').innerHTML = '<div style="padding:24px;text-align:center;color:var(--muted)">🏗️ 건설·시설관리 12,198사 볼트 복호화 중…</div>';
+    await ensureBuildersLoaded();
+  }
+  const rows = S.builders.rows || [];
+  const inds = S.builders.industries || [];
+  const q = S.bldQ.trim().toLowerCase();
+  const list = rows.filter((r) => {
+    if (S.bldSector && r[13] !== S.bldSector) return false;
+    if (q && !`${r[0]} ${r[2]} ${r[4]} ${r[5]} ${inds[r[8]] || ''}`.toLowerCase().includes(q)) return false;
+    return true;
+  });
+  const perPage = 40;
+  const maxPage = Math.max(1, Math.ceil(list.length / perPage));
+  S.bldPage = Math.min(S.bldPage, maxPage);
+  const pageRows = list.slice((S.bldPage - 1) * perPage, S.bldPage * perPage);
+
+  $('bidBody').innerHTML = `
+    <div class="toolbar">
+      <input id="fBldQ" class="input" style="flex:1;min-width:190px" value="${esc(S.bldQ)}" placeholder="건설사 · 전기·통신 · 시설관리사명 · 주소 검색" />
+      <select id="fBldSec" class="select">
+        <option value="">전체 업종 (${fmt(rows.length)}사)</option>
+        <option value="general" ${S.bldSector === 'general' ? 'selected' : ''}>종합건설</option>
+        <option value="special" ${S.bldSector === 'special' ? 'selected' : ''}>전문건설</option>
+        <option value="elec" ${S.bldSector === 'elec' ? 'selected' : ''}>전기·통신·소방</option>
+        <option value="facility" ${S.bldSector === 'facility' ? 'selected' : ''}>시설·경비·관리</option>
+      </select>
+    </div>
+    <div class="table-wrap">
+      <table class="data-table">
+        <thead><tr><th>기업명</th><th>분야</th><th>대표자</th><th>매출액</th><th>국민연금</th><th>주소</th><th>액션</th></tr></thead>
+        <tbody>
+          ${pageRows.map((r) => `
+            <tr>
+              <td><b>${esc(r[0])}</b></td>
+              <td><span class="tag tag-bid">${esc(r[13] || '-')}</span></td>
+              <td>${esc(r[2] || '-')}</td>
+              <td><b>${r[14] ? fmtDec(r[14], 1) + '억' : '-'}</b></td>
+              <td>${r[17] ? fmt(r[17]) + '명' : '-'}</td>
+              <td style="max-width:220px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--muted)">${esc(r[5] || '-')}</td>
+              <td><button class="btn btn-sm" data-add-bld="${esc(r[4] || r[0])}">+ 담기</button></td>
+            </tr>`).join('')}
+        </tbody>
+      </table>
+    </div>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-top:12px">
+      <span style="font-size:12px;color:var(--muted)">페이지 ${S.bldPage} / ${maxPage} (총 ${fmt(list.length)}사)</span>
+      <div style="display:flex;gap:6px">
+        <button id="bldPrev" class="btn btn-sm" ${S.bldPage <= 1 ? 'disabled' : ''}>← 이전</button>
+        <button id="bldNext" class="btn btn-sm" ${S.bldPage >= maxPage ? 'disabled' : ''}>다음 →</button>
+      </div>
+    </div>
+  `;
+  let t = null;
+  $('fBldQ').addEventListener('input', (e) => { clearTimeout(t); t = setTimeout(() => { S.bldQ = e.target.value; S.bldPage = 1; renderBidBuildersBody(); }, 200); });
+  $('fBldSec').addEventListener('change', (e) => { S.bldSector = e.target.value; S.bldPage = 1; renderBidBuildersBody(); });
+  $('bldPrev').addEventListener('click', () => { if (S.bldPage > 1) { S.bldPage--; renderBidBuildersBody(); } });
+  $('bldNext').addEventListener('click', () => { if (S.bldPage < maxPage) { S.bldPage++; renderBidBuildersBody(); } });
+  $('bidBody').querySelectorAll('[data-add-bld]').forEach((b) => {
+    b.addEventListener('click', () => {
+      const row = pageRows.find((r) => (r[4] || r[0]) === b.dataset.addBld);
+      if (row) addToPipeline({ id: `bld:${row[4] || row[0]}`, domain: 'bid', title: row[0], sub: `건설·시설 (${row[13]}) · ${row[2]}`, region: row[5] || '', valueMan: Math.round((row[14] || 0) * 10000) });
+    });
+  });
+}
+
+// =========================================================================
+// TAB 4: 🏪 소상공인 상권지도 PRO (전국 275만 3,778개 · 16개 시도 온디맨드)
+// =========================================================================
+function parseSbizStore(sido, i) {
+  const parts = String(sido.strs[i] || '').split('\t');
+  const id = parts[0] || '';
+  return {
+    i,
+    id,
+    name: parts[1] || '',
+    branch: parts[2] || '',
+    road: parts[3] || '',
+    bld: parts[4] || '',
+    ho: parts[5] || '',
+    jibun: parts[6] || '',
+    l1: sido.dicts.l1[sido.cols.l1[i]] || '',
+    l2: sido.dicts.l2[sido.cols.l2[i]] || '',
+    l3: sido.dicts.l3[sido.cols.l3[i]] || '',
+    sgg: sido.dicts.sgg[sido.cols.sgg[i]] || '',
+    dong: sido.dicts.dong[sido.cols.dong[i]] || '',
+    bldId: sido.bldId[i] || 0,
+    lat: sido.lat[i] / 1e6,
+    lon: sido.lon[i] / 1e6,
+    isNew2026: id.slice(6, 10) === '2026',
+  };
+}
+
+function renderSbizTab() {
+  const sidos = S.core.sbizSummary.sidos || [];
+  const active = S.sbizActiveSlug ? S.sbizCache.get(S.sbizActiveSlug) : null;
+
+  $('mainStage').innerHTML = `
+    <div class="card" style="margin-bottom:14px">
+      <div class="card-head">
+        <div>
+          <h2 class="card-title">🏪 전국 소상공인 상권지도 PRO <span class="tag tag-sbiz">총 ${fmt(S.core.stats.sbizCount)}개 상가</span></h2>
+          <p class="card-sub">원하는 시도를 클릭하면 해당 시도 암호화 볼트만 즉시 복호화하여 지도·건물·2026 신규개업을 분석합니다.</p>
+        </div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap">
+          <button id="btnSbizLiveRadius" class="btn btn-emerald btn-sm" type="button">📡 지도 중심 500m 실시간 API</button>
+          <button id="btnSbizVworld" class="btn btn-sm" type="button">📍 중심 공시지가(브이월드)</button>
+        </div>
+      </div>
+
+      <div class="sido-grid">
+        ${sidos.map((s) => {
+          const isLoaded = S.sbizCache.has(s.slug);
+          const isAct = S.sbizActiveSlug === s.slug;
+          return `<button class="sido-btn ${isLoaded ? 'loaded' : ''} ${isAct ? 'active' : ''}" data-load-sido="${s.slug}">
+            <div class="s-nm"><span>${esc(s.short)}</span><span>${(s.bytes / 1048576).toFixed(1)}MB</span></div>
+            <div class="s-cnt">${fmt(s.count)}개 · +${fmt(s.new2026)}신규</div>
+          </button>`;
+        }).join('')}
+      </div>
+
+      ${active ? renderSbizControlsHtml(active) : `
+        <div style="padding:14px;border-radius:11px;background:var(--c-sbiz-bg);font-size:13px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:12px">
+          <span>💡 위 시도 버튼을 눌러 상권 데이터를 여세요. 빠른 테스트는 <b>세종(0.7MB)</b> 또는 <b>인천(6.7MB)</b>을 추천합니다!</span>
+          <div style="display:flex;gap:6px">
+            <button class="btn btn-emerald btn-sm" data-load-sido="incheon">인천 열기 (6.7MB)</button>
+            <button class="btn btn-sm" data-load-sido="sejong">세종 열기 (0.7MB)</button>
+          </div>
+        </div>
+      `}
+
+      <div id="sbizVworldRes" style="margin-bottom:10px"></div>
+      <div id="sbizMap" class="leaflet-box"></div>
+    </div>
+
+    <div id="sbizListCard"></div>
+  `;
+
+  $('mainStage').querySelectorAll('[data-load-sido]').forEach((b) => {
+    b.addEventListener('click', async () => {
+      await loadSbizSido(b.dataset.loadSido);
+      renderSbizTab();
+    });
+  });
+
+  initSbizLeaflet(active);
+
+  $('btnSbizLiveRadius').addEventListener('click', async () => {
+    if (!S.leafletMap) return;
+    const c = S.leafletMap.getCenter();
+    const { dataGoEnc } = getApiKeys();
+    toast('📡 소상공인 반경 500m 실시간 상가 조회 중…');
+    try {
+      const r = await fetch(`https://apis.data.go.kr/B553077/api/open/sdsc2/storeListInRadius?serviceKey=${dataGoEnc}&pageNo=1&numOfRows=100&radius=500&cx=${c.lng.toFixed(6)}&cy=${c.lat.toFixed(6)}&type=json`);
+      const j = await r.json();
+      const items = j?.body?.items || [];
+      S.sbizLiveStores = items;
+      plotLiveSbizMarkers(items);
+      toast(`✓ 반경 500m 실시간 상가 ${items.length}개 표시됨!`);
+    } catch (e) {
+      toast(`실시간 상권 조회 오류: ${e.message}`);
+    }
+  });
+
+  $('btnSbizVworld').addEventListener('click', async () => {
+    if (!S.leafletMap) return;
+    const c = S.leafletMap.getCenter();
+    const box = $('sbizVworldRes');
+    box.innerHTML = '<div class="tag tag-gray">📍 브이월드 주소·공시지가 조회 중…</div>';
+    try {
+      const info = await queryVworldPoint(c.lng.toFixed(6), c.lat.toFixed(6));
+      box.innerHTML = `<div class="diag-card ok"><div class="diag-title">📍 ${esc(info.addr)}</div><div class="diag-detail">개별공시지가: <b>${esc(info.jiga)}</b> · 좌표 (${c.lat.toFixed(5)}, ${c.lng.toFixed(5)})</div></div>`;
+    } catch (e) {
+      box.innerHTML = `<div class="diag-card err">조회 실패: ${esc(e.message)}</div>`;
+    }
+  });
+
+  if (active) {
+    wireSbizFilters(active);
+    updateSbizView(active);
+  }
+}
+
+function renderSbizControlsHtml(active) {
+  const sggs = (active.dicts.sgg || []).filter(Boolean);
+  const l1s = (active.dicts.l1 || []).filter(Boolean);
+  return `
+    <div class="toolbar">
+      <input id="fSbizQ" class="input" style="flex:1;min-width:170px" value="${esc(S.sbizQ)}" placeholder="상호명 · 건물명 · 도로명 검색 (${esc(active.name)})" />
+      <select id="fSbizSgg" class="select">
+        <option value="">전체 시군구</option>
+        ${sggs.map((g) => `<option value="${esc(g)}" ${S.sbizSgg === g ? 'selected' : ''}>${esc(g)}</option>`).join('')}
+      </select>
+      <select id="fSbizL1" class="select">
+        <option value="">전체 업종 대분류</option>
+        ${l1s.map((l) => `<option value="${esc(l)}" ${S.sbizL1 === l ? 'selected' : ''}>${esc(l)}</option>`).join('')}
+      </select>
+      <label style="display:inline-flex;align-items:center;gap:5px;font-size:12.5px;font-weight:700;cursor:pointer">
+        <input id="fSbiz2026" type="checkbox" ${S.sbizOnly2026 ? 'checked' : ''} /> 🆕 2026 신규개업만
+      </label>
+      <div class="chips">
+        <button class="chip ${S.sbizView === 'stores' ? 'active' : ''}" data-sbiz-view="stores">개별 상가</button>
+        <button class="chip ${S.sbizView === 'buildings' ? 'active' : ''}" data-sbiz-view="buildings">🏢 대형상가 건물별</button>
+      </div>
+    </div>
+  `;
+}
+
+function initSbizLeaflet(active) {
+  const el = $('sbizMap');
+  if (!el || typeof L === 'undefined') return;
+  const sInfo = (S.core.sbizSummary.sidos || []).find((x) => x.slug === S.sbizActiveSlug);
+  const lat = sInfo?.lat || 37.498;
+  const lon = sInfo?.lon || 126.724;
+  S.leafletMap = L.map(el, { preferCanvas: true }).setView([lat, lon], active ? 12 : 11);
+  S.leafletTile = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 19, attribution: '&copy; OpenStreetMap',
+  }).addTo(S.leafletMap);
+  S.leafletLayer = L.layerGroup().addTo(S.leafletMap);
+}
+
+function plotLiveSbizMarkers(items) {
+  if (!S.leafletMap || !S.leafletLayer) return;
+  items.forEach((it) => {
+    const lat = Number(it.lat), lon = Number(it.lon);
+    if (!lat || !lon) return;
+    L.circleMarker([lat, lon], { radius: 6, color: '#e11d48', fillColor: '#fb7185', fillOpacity: 0.85, weight: 1.5 })
+      .bindPopup(`<b>${esc(it.bizesNm)}</b> ${esc(it.brchNm || '')}<br/><small>${esc(it.indsLclsNm)} &gt; ${esc(it.indsSclsNm)}</small><br/><small>${esc(it.rdnmAdr || it.lnoAdr || '')}</small>`)
+      .addTo(S.leafletLayer);
+  });
+}
+
+function wireSbizFilters(active) {
+  let t = null;
+  $('fSbizQ')?.addEventListener('input', (e) => { clearTimeout(t); t = setTimeout(() => { S.sbizQ = e.target.value; S.sbizPage = 1; updateSbizView(active); }, 220); });
+  $('fSbizSgg')?.addEventListener('change', (e) => { S.sbizSgg = e.target.value; S.sbizPage = 1; updateSbizView(active); });
+  $('fSbizL1')?.addEventListener('change', (e) => { S.sbizL1 = e.target.value; S.sbizPage = 1; updateSbizView(active); });
+  $('fSbiz2026')?.addEventListener('change', (e) => { S.sbizOnly2026 = e.target.checked; S.sbizPage = 1; updateSbizView(active); });
+  document.querySelectorAll('[data-sbiz-view]').forEach((b) => {
+    b.addEventListener('click', () => {
+      S.sbizView = b.dataset.sbizView;
+      document.querySelectorAll('[data-sbiz-view]').forEach((x) => x.classList.toggle('active', x.dataset.sbizView === S.sbizView));
+      updateSbizView(active);
+    });
+  });
+}
+
+function updateSbizView(active) {
+  const sggIdx = S.sbizSgg ? active.dicts.sgg.indexOf(S.sbizSgg) : -1;
+  const l1Idx = S.sbizL1 ? active.dicts.l1.indexOf(S.sbizL1) : -1;
+  const q = S.sbizQ.trim().toLowerCase();
+  const n = active.n;
+  const matchedIdx = [];
+
+  for (let i = 0; i < n; i++) {
+    if (sggIdx >= 0 && active.cols.sgg[i] !== sggIdx) continue;
+    if (l1Idx >= 0 && active.cols.l1[i] !== l1Idx) continue;
+    const raw = active.strs[i] || '';
+    if (S.sbizOnly2026 && raw.slice(6, 10) !== '2026') continue;
+    if (q && !raw.toLowerCase().includes(q)) continue;
+    matchedIdx.push(i);
+  }
+
+  // Plot up to 1,200 markers on Canvas Leaflet cleanly
+  if (S.leafletLayer) {
+    S.leafletLayer.clearLayers();
+    const step = Math.max(1, Math.floor(matchedIdx.length / 1200));
+    const bounds = [];
+    for (let k = 0; k < matchedIdx.length; k += step) {
+      const st = parseSbizStore(active, matchedIdx[k]);
+      if (!st.lat || !st.lon) continue;
+      bounds.push([st.lat, st.lon]);
+      L.circleMarker([st.lat, st.lon], {
+        radius: st.isNew2026 ? 5.5 : 4,
+        color: st.isNew2026 ? '#d97706' : '#059669',
+        fillColor: st.isNew2026 ? '#fbbf24' : '#34d399',
+        fillOpacity: 0.78,
+        weight: 1,
+      }).bindPopup(`<b>${esc(st.name)} ${esc(st.branch)}</b>${st.isNew2026 ? ' <span style="color:#d97706">[2026신규]</span>' : ''}<br/><small>${esc(st.l1)} &gt; ${esc(st.l3)}</small><br/><small>${esc(st.road || st.jibun)} ${esc(st.bld)}</small>`)
+        .addTo(S.leafletLayer);
+    }
+    if (bounds.length > 0 && bounds.length < 1500 && (S.sbizSgg || S.sbizQ)) {
+      S.leafletMap.fitBounds(bounds, { maxZoom: 15, padding: [24, 24] });
+    }
+  }
+
+  const card = $('sbizListCard');
+  if (S.sbizView === 'buildings') {
+    // Aggregate by bldId
+    const bMap = new Map();
+    for (const idx of matchedIdx) {
+      const bid = active.bldId[idx];
+      if (!bid) continue;
+      let b = bMap.get(bid);
+      if (!b) {
+        const st = parseSbizStore(active, idx);
+        b = { bid, bld: st.bld || st.road || st.jibun, road: st.road, sgg: st.sgg, dong: st.dong, lat: st.lat, lon: st.lon, cnt: 0, new26: 0 };
+        bMap.set(bid, b);
+      }
+      b.cnt++;
+      if ((active.strs[idx] || '').slice(6, 10) === '2026') b.new26++;
+    }
+    const topBlds = [...bMap.values()].sort((a, b) => b.cnt - a.cnt).slice(0, 60);
+    card.innerHTML = `
+      <div class="card">
+        <div class="card-head">
+          <h3 class="card-title">🏢 대형상가·밀집건물 TOP 60 <span class="tag tag-sbiz">입점 상가 ${fmt(matchedIdx.length)}개</span></h3>
+        </div>
+        <div class="table-wrap">
+          <table class="data-table">
+            <thead><tr><th>건물명 / 도로명</th><th>시군구·동</th><th>입점 상가</th><th>2026 신규</th><th>액션</th></tr></thead>
+            <tbody>
+              ${topBlds.map((b) => `
+                <tr>
+                  <td><b>${esc(b.bld)}</b><div style="font-size:11px;color:var(--muted)">${esc(b.road)}</div></td>
+                  <td>${esc(b.sgg)} ${esc(b.dong)}</td>
+                  <td><span class="tag tag-sbiz">${fmt(b.cnt)}개소</span></td>
+                  <td>${b.new26 ? `<span class="tag tag-bid">+${b.new26}</span>` : '-'}</td>
+                  <td>
+                    <button class="btn btn-sm" data-fly="${b.lat},${b.lon}">📍 지도</button>
+                    <button class="btn btn-sm" data-pipe-bld="${esc(b.bld)}|${esc(b.sgg)}|${b.cnt}">+ 담기</button>
+                  </td>
+                </tr>`).join('')}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    `;
+    card.querySelectorAll('[data-fly]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const [la, lo] = btn.dataset.fly.split(',').map(Number);
+        S.leafletMap?.setView([la, lo], 17);
+        window.scrollTo({ top: 180, behavior: 'smooth' });
+      });
+    });
+    card.querySelectorAll('[data-pipe-bld]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const [bld, sgg, cnt] = btn.dataset.pipeBld.split('|');
+        addToPipeline({ id: `sbizbld:${sgg}:${bld}`, domain: 'sbiz', title: `[대형상가] ${bld}`, sub: `입점 ${cnt}개소 · 보안/통신/시설 영업타깃`, region: `${active.name} ${sgg}`, valueMan: 0 });
+      });
+    });
+    return;
+  }
+
+  const perPage = 40;
+  const maxPage = Math.max(1, Math.ceil(matchedIdx.length / perPage));
+  S.sbizPage = Math.min(S.sbizPage, maxPage);
+  const pageStores = matchedIdx.slice((S.sbizPage - 1) * perPage, S.sbizPage * perPage).map((idx) => parseSbizStore(active, idx));
+
+  card.innerHTML = `
+    <div class="card">
+      <div class="card-head">
+        <h3 class="card-title">📋 ${esc(active.name)} 상가 목록 <span class="tag tag-sbiz">${fmt(matchedIdx.length)}개 검색됨</span></h3>
+        <span style="font-size:12px;color:var(--muted)">지도에는 최대 1,200개 대표 마커가 고속 렌더링됩니다</span>
+      </div>
+      <div class="table-wrap">
+        <table class="data-table">
+          <thead><tr><th>상호명</th><th>업종</th><th>시군구·동</th><th>도로명주소 / 건물</th><th>구분</th></tr></thead>
+          <tbody>
+            ${pageStores.map((st) => `
+              <tr data-fly-store="${st.lat},${st.lon}">
+                <td><b>${esc(st.name)}</b> ${esc(st.branch)}</td>
+                <td><span class="tag tag-sbiz">${esc(st.l1)}</span> <span style="color:var(--muted)">${esc(st.l3)}</span></td>
+                <td>${esc(st.sgg)} ${esc(st.dong)}</td>
+                <td style="max-width:240px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(st.road || st.jibun)} ${st.bld ? `<b>(${esc(st.bld)})</b>` : ''}</td>
+                <td>${st.isNew2026 ? '<span class="tag tag-bid">🆕 2026</span>' : '<span class="tag tag-gray">기존</span>'}</td>
+              </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-top:12px">
+        <span style="font-size:12px;color:var(--muted)">페이지 ${S.sbizPage} / ${fmt(maxPage)}</span>
+        <div style="display:flex;gap:6px">
+          <button id="sbPrev" class="btn btn-sm" ${S.sbizPage <= 1 ? 'disabled' : ''}>← 이전</button>
+          <button id="sbNext" class="btn btn-sm" ${S.sbizPage >= maxPage ? 'disabled' : ''}>다음 →</button>
+        </div>
+      </div>
+    </div>
+  `;
+  $('sbPrev')?.addEventListener('click', () => { if (S.sbizPage > 1) { S.sbizPage--; updateSbizView(active); } });
+  $('sbNext')?.addEventListener('click', () => { if (S.sbizPage < maxPage) { S.sbizPage++; updateSbizView(active); } });
+  card.querySelectorAll('[data-fly-store]').forEach((tr) => {
+    tr.addEventListener('click', () => {
+      const [la, lo] = tr.dataset.flyStore.split(',').map(Number);
+      S.leafletMap?.setView([la, lo], 17);
+      window.scrollTo({ top: 180, behavior: 'smooth' });
+    });
+  });
+}
+
+// =========================================================================
+// TAB 5: 🏠 부동산 · 청약 · 분양가 · 착공 PRO (홈레이더 엔진)
+// =========================================================================
+function renderRealEstateTab() {
+  const listings = S.re.listings || [];
+  const starts = S.re.starts || [];
+  const complexes = S.re.complexes || [];
+  const archPermits = S.opps.filter((o) => o.stageType === 'permit');
+
+  $('mainStage').innerHTML = `
+    <div class="card">
+      <div class="card-head">
+        <div>
+          <h2 class="card-title">🏠 부동산 · 청약 · 분양가 · 착공 PRO</h2>
+          <p class="card-sub">청약홈 6종 실시간 API · 내 청약가점/예산 적합도 · 지자체 착공 + 국토부 건축인허가 통합</p>
+        </div>
+        <button id="btnReRefresh" class="btn btn-rose btn-sm" type="button">🔄 청약홈 6종 API 실시간 새로고침</button>
+      </div>
+
+      <div class="toolbar">
+        <div class="chips" style="margin-right:auto">
+          <button class="chip ${S.reSub === 'apt' ? 'active' : ''}" data-re-sub="apt">🏢 APT 분양 (${listings.filter((x) => x.kind === 'apt').length})</button>
+          <button class="chip ${S.reSub === 'remndr' ? 'active' : ''}" data-re-sub="remndr">🎯 무순위·오피스텔 (${listings.filter((x) => x.kind !== 'apt').length})</button>
+          <button class="chip ${S.reSub === 'starts' ? 'active' : ''}" data-re-sub="starts">🏗️ 착공·건축인허가 (${starts.length + archPermits.length})</button>
+          <button class="chip ${S.reSub === 'kapt' ? 'active' : ''}" data-re-sub="kapt">🏘️ K-apt 기축단지 (${complexes.length})</button>
+        </div>
+        <input id="fReQ" class="input" style="min-width:170px" value="${esc(S.reQ)}" placeholder="단지명 · 지역 · 시공사 검색" />
+        <label style="font-size:12px;font-weight:700;display:inline-flex;align-items:center;gap:4px">
+          내 가점 <input id="fMyScore" class="input" type="number" min="0" max="84" value="${S.myScore}" style="width:64px;padding:6px 8px" />
+        </label>
+        <label style="font-size:12px;font-weight:700;display:inline-flex;align-items:center;gap:4px">
+          예산(억) <input id="fMyBudget" class="input" type="number" min="1" max="100" value="${S.myBudgetEok}" style="width:64px;padding:6px 8px" />
+        </label>
+      </div>
+
+      <div id="reBody"></div>
+    </div>
+  `;
+
+  $('mainStage').querySelectorAll('[data-re-sub]').forEach((b) => {
+    b.addEventListener('click', () => { S.reSub = b.dataset.reSub; renderRealEstateTab(); });
+  });
+  let t = null;
+  $('fReQ').addEventListener('input', (e) => { clearTimeout(t); t = setTimeout(() => { S.reQ = e.target.value; renderReSubBody(); }, 180); });
+  $('fMyScore').addEventListener('change', (e) => { S.myScore = Number(e.target.value) || 0; renderReSubBody(); });
+  $('fMyBudget').addEventListener('change', (e) => { S.myBudgetEok = Number(e.target.value) || 0; renderReSubBody(); });
+  $('btnReRefresh').addEventListener('click', refreshLiveRealEstate);
+
+  renderReSubBody();
+}
+
+function renderReSubBody() {
+  const q = S.reQ.trim().toLowerCase();
+  const box = $('reBody');
+
+  if (S.reSub === 'apt' || S.reSub === 'remndr') {
+    const items = (S.re.listings || []).filter((l) => {
+      if (S.reSub === 'apt' && l.kind !== 'apt') return false;
+      if (S.reSub === 'remndr' && l.kind === 'apt') return false;
+      if (q && !`${l.name} ${l.addr} ${l.area} ${l.builder}`.toLowerCase().includes(q)) return false;
+      return true;
+    }).slice(0, 60);
+
+    box.innerHTML = `<div class="item-list">
+      ${items.map((l) => {
+        const minEok = l.minPriceMan ? l.minPriceMan / 10000 : (l.maxPriceMan ? l.maxPriceMan / 10000 : 0);
+        const fitBudget = !minEok || minEok <= S.myBudgetEok;
+        const cut = l.minScore || l.avgScore || 0;
+        const fitScore = !cut || S.myScore >= cut;
+        return `<div class="item-card" data-re-id="${esc(l.id)}">
+          <div class="item-card-main">
+            <div style="display:flex;gap:5px;flex-wrap:wrap;margin-bottom:5px">
+              <span class="tag ${l.kind === 'apt' ? 'tag-re' : 'tag-bid'}">${l.kind === 'apt' ? 'APT 분양' : (l.kind === 'remndr' ? '🎯 무순위(줍줍)' : '오피스텔/도시형')}</span>
+              <span class="tag tag-gray">${esc(l.area || '-')}</span>
+              ${minEok ? `<span class="tag ${fitBudget ? 'tag-sbiz' : 'tag-gray'}">${fitBudget ? '✓ 예산적합' : '예산초과'}</span>` : ''}
+              ${cut ? `<span class="tag ${fitScore ? 'tag-corp' : 'tag-gray'}">당첨가점 ${cut}점</span>` : ''}
+            </div>
+            <div class="item-card-title">${esc(l.name)}</div>
+            <div class="item-card-meta">
+              <span>📍 ${esc(l.addr || '-')}</span>
+              <span>🏗️ ${esc(l.builder || '-')} · ${fmt(l.units || 0)}세대</span>
+              <span>📅 접수 ${esc(l.rcptBgn || l.pubDate || '-')} ~ ${esc(l.rcptEnd || '')}</span>
+            </div>
+          </div>
+          <div class="item-card-right">
+            <div style="font-weight:800;font-size:14px;color:var(--c-re)">${minEok ? `${fmtDec(minEok, 2)}억~` : '분양가 조회'}</div>
+            <div style="font-size:11.5px;color:var(--muted)">${l.avgPyeongMan ? `평당 ${fmt(l.avgPyeongMan)}만` : (l.maxCmpet ? `최고 ${l.maxCmpet}:1` : '')}</div>
+          </div>
+        </div>`;
+      }).join('') || '<div style="text-align:center;padding:24px;color:var(--muted)">검색 결과가 없습니다.</div>'}
+    </div>`;
+
+    box.querySelectorAll('[data-re-id]').forEach((el) => {
+      el.addEventListener('click', () => {
+        const l = S.re.listings.find((x) => x.id === el.dataset.reId);
+        if (!l) return;
+        openDrawer({
+          title: l.name,
+          sub: `${l.area || ''} · ${l.builder || '시공사 미기재'}`,
+          body: `
+            <div class="domain-box">
+              <div class="domain-stat-row"><span>위치</span><b>${esc(l.addr || '-')}</b></div>
+              <div class="domain-stat-row"><span>공급규모</span><b>${fmt(l.units || 0)}세대</b></div>
+              <div class="domain-stat-row"><span>청약접수</span><b>${esc(l.rcptBgn || '-')} ~ ${esc(l.rcptEnd || '-')}</b></div>
+              <div class="domain-stat-row"><span>입주예정</span><b>${esc(l.moveIn || '-')}</b></div>
+              <div class="domain-stat-row"><span>최저~최고 분양가</span><b>${l.minPriceMan ? `${fmtDec(l.minPriceMan / 10000, 2)}억 ~ ${fmtDec((l.maxPriceMan || l.minPriceMan) / 10000, 2)}억` : '상세 미제공'}</b></div>
+              <div class="domain-stat-row"><span>평당가 / 최고경쟁률</span><b>${l.avgPyeongMan ? fmt(l.avgPyeongMan) + '만원/평' : '-'} / ${l.maxCmpet ? l.maxCmpet + ':1' : '-'}</b></div>
+            </div>
+            ${Array.isArray(l.models) && l.models.length ? `<h4 style="margin:12px 0 6px;font-size:13px">📐 주택형별 분양가</h4>
+              <div class="table-wrap"><table class="data-table"><thead><tr><th>타입</th><th>세대</th><th>최고분양가</th><th>평당가</th></tr></thead><tbody>
+              ${l.models.map((m) => `<tr><td><b>${esc(m.type || m.HOUSE_TY || '-')}</b></td><td>${fmt(m.units || m.SUPLY_HSHLDCO || 0)}</td><td>${m.priceMan ? fmtDec(m.priceMan / 10000, 2) + '억' : '-'}</td><td>${m.pyeongMan ? fmt(m.pyeongMan) + '만' : '-'}</td></tr>`).join('')}
+              </tbody></table></div>` : ''}
+          `,
+          foot: `
+            <button id="dwRePipe" class="btn btn-primary btn-sm">💼 파이프라인 담기</button>
+            ${l.url ? `<a class="btn btn-rose btn-sm" href="${esc(l.url)}" target="_blank" rel="noopener">🔗 청약홈 공고</a>` : ''}
+          `,
+          onMount: () => {
+            $('dwRePipe')?.addEventListener('click', () => addToPipeline({
+              id: `re:${l.id}`, domain: 're', title: l.name, sub: `${l.builder || ''} · ${fmt(l.units || 0)}세대`, region: l.addr || l.area || '', valueMan: l.minPriceMan || 0,
+            }));
+          },
+        });
+      });
+    });
+    return;
+  }
+
+  if (S.reSub === 'starts') {
+    const archPermits = S.opps.filter((o) => o.stageType === 'permit').map((o) => ({
+      id: o.id, source: '국토부 건축인허가', name: o.title, addr: o.region, builder: o.org, startDate: o.pubDate, usage: o.method,
+    }));
+    const combined = [...starts, ...archPermits].filter((s) => !q || `${s.name} ${s.addr} ${s.builder} ${s.source}`.toLowerCase().includes(q)).slice(0, 80);
+    box.innerHTML = `<div class="table-wrap"><table class="data-table">
+      <thead><tr><th>출처</th><th>현장명 / 허가건</th><th>시공사 / 기관</th><th>주소</th><th>일자</th><th>액션</th></tr></thead>
+      <tbody>${combined.map((s) => `
+        <tr>
+          <td><span class="tag ${s.source.includes('국토부') ? 'tag-corp' : 'tag-re'}">${esc(s.source)}</span></td>
+          <td><b>${esc(s.name)}</b></td>
+          <td>${esc(s.builder || '-')}</td>
+          <td style="max-width:210px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--muted)">${esc(s.addr || '-')}</td>
+          <td>${esc(s.startDate || '-')}</td>
+          <td><button class="btn btn-sm" data-add-st="${esc(s.id)}">+ 담기</button></td>
+        </tr>`).join('')}
+      </tbody></table></div>`;
+    box.querySelectorAll('[data-add-st]').forEach((b) => {
+      b.addEventListener('click', () => {
+        const s = combined.find((x) => x.id === b.dataset.addSt);
+        if (s) addToPipeline({ id: `start:${s.id}`, domain: 're', title: s.name, sub: `${s.source} · ${s.builder || ''}`, region: s.addr || '', valueMan: 0 });
+      });
+    });
+    return;
+  }
+
+  // K-apt complexes
+  const list = (S.re.complexes || []).filter((c) => !q || `${c.name} ${c.sido} ${c.sgg} ${c.dong}`.toLowerCase().includes(q)).slice(0, 80);
+  box.innerHTML = `<div class="table-wrap"><table class="data-table">
+    <thead><tr><th>단지코드</th><th>단지명</th><th>시도 · 시군구 · 동</th><th>액션</th></tr></thead>
+    <tbody>${list.map((c) => `
+      <tr>
+        <td class="mono" style="font-size:11.5px">${esc(c.code)}</td>
+        <td><b>${esc(c.name)}</b></td>
+        <td>${esc(c.sido)} ${esc(c.sgg)} ${esc(c.dong)}</td>
+        <td><button class="btn btn-sm" data-add-kapt="${esc(c.code)}">+ 담기</button></td>
+      </tr>`).join('')}
+    </tbody></table></div>`;
+  box.querySelectorAll('[data-add-kapt]').forEach((b) => {
+    b.addEventListener('click', () => {
+      const c = list.find((x) => x.code === b.dataset.addKapt);
+      if (c) addToPipeline({ id: `kapt:${c.code}`, domain: 're', title: c.name, sub: `K-apt 기축단지 (${c.code})`, region: `${c.sido} ${c.sgg} ${c.dong}`, valueMan: 0 });
+    });
+  });
+}
+
+async function refreshLiveRealEstate() {
+  const { dataGoEnc } = getApiKeys();
+  if (!dataGoEnc) return toast('공공데이터포털 키가 없습니다.');
+  toast('🔄 청약홈 APT·무순위·오피스텔·분양가·경쟁률 6종 실시간 갱신 중…');
+  try {
+    const [apt, rem, urb, mdl, cmp] = await Promise.all([
+      fetch(`https://api.odcloud.kr/api/ApplyhomeInfoDetailSvc/v1/getAPTLttotPblancDetail?page=1&perPage=60&serviceKey=${dataGoEnc}`).then((r) => r.json()),
+      fetch(`https://api.odcloud.kr/api/ApplyhomeInfoDetailSvc/v1/getRemndrLttotPblancDetail?page=1&perPage=30&serviceKey=${dataGoEnc}`).then((r) => r.json()),
+      fetch(`https://api.odcloud.kr/api/ApplyhomeInfoDetailSvc/v1/getUrbtyOfctlLttotPblancDetail?page=1&perPage=30&serviceKey=${dataGoEnc}`).then((r) => r.json()),
+      fetch(`https://api.odcloud.kr/api/ApplyhomeInfoDetailSvc/v1/getAPTLttotPblancMdl?page=1&perPage=250&serviceKey=${dataGoEnc}`).then((r) => r.json()),
+      fetch(`https://api.odcloud.kr/api/ApplyhomeInfoCmpetRtSvc/v1/getAPTLttotPblancCmpet?page=1&perPage=200&serviceKey=${dataGoEnc}`).then((r) => r.json()),
+    ]);
+    const mdlMap = new Map();
+    for (const m of (mdl?.data || [])) {
+      const k = String(m.HOUSE_MANAGE_NO || '');
+      if (!mdlMap.has(k)) mdlMap.set(k, []);
+      const priceMan = Number(String(m.LTTOT_TOP_AMOUNT || '').replace(/\D/g, '')) || 0;
+      const areaM2 = Number(m.SUPLY_AR || m.EXCLUSE_AR || 0);
+      const pyeongMan = (priceMan && areaM2) ? Math.round(priceMan / (areaM2 / 3.3058)) : 0;
+      mdlMap.get(k).push({ type: m.HOUSE_TY, units: Number(m.SUPLY_HSHLDCO || 0), priceMan, pyeongMan });
+    }
+    const cmpMap = new Map();
+    for (const c of (cmp?.data || [])) {
+      const k = String(c.HOUSE_MANAGE_NO || '');
+      const rt = parseFloat(c.CMPET_RATE || '0') || 0;
+      if (rt > (cmpMap.get(k) || 0)) cmpMap.set(k, rt);
+    }
+    const normList = (arr, kind) => (arr || []).map((x) => {
+      const mno = String(x.HOUSE_MANAGE_NO || '');
+      const models = mdlMap.get(mno) || [];
+      const prices = models.map((m) => m.priceMan).filter(Boolean);
+      const pyeongs = models.map((m) => m.pyeongMan).filter(Boolean);
+      return {
+        id: `${kind}:${mno}`,
+        manageNo: mno,
+        kind,
+        name: x.HOUSE_NM || '',
+        area: x.SUBSCRPT_AREA_CODE_NM || '',
+        addr: x.HSSPLY_ADRES || '',
+        units: Number(x.TOT_SUPLY_HSHLDCO || 0),
+        builder: x.CNSTRCT_ENTRPS_NM || x.BSNS_MBY_NM || '',
+        pubDate: x.RCRIT_PBLANC_DE || '',
+        rcptBgn: x.RCEPT_BGNDE || x.SUBSCRPT_RCEPT_BGNDE || '',
+        rcptEnd: x.RCEPT_ENDDE || x.SUBSCRPT_RCEPT_ENDDE || '',
+        moveIn: x.MVN_PREARNGE_YM || '',
+        url: x.PBLANC_URL || '',
+        models,
+        minPriceMan: prices.length ? Math.min(...prices) : 0,
+        maxPriceMan: prices.length ? Math.max(...prices) : 0,
+        avgPyeongMan: pyeongs.length ? Math.round(pyeongs.reduce((a, b) => a + b, 0) / pyeongs.length) : 0,
+        maxCmpet: cmpMap.get(mno) || 0,
+      };
+    });
+    S.re.listings = [...normList(apt?.data, 'apt'), ...normList(rem?.data, 'remndr'), ...normList(urb?.data, 'urbty')];
+    toast(`✓ 청약홈 최신 ${S.re.listings.length}건 실시간 반영 완료!`);
+    if (S.tab === 'realestate') renderRealEstateTab();
+  } catch (e) {
+    toast(`청약홈 갱신 오류: ${e.message}`);
+  }
+}
+
+// =========================================================================
+// TAB 6: 🔌 통합 API 10종 진단 · 파이프라인 CRM · 전문앱 허브
+// =========================================================================
+function renderHubTab() {
+  const { dataGoRaw, vworld } = getApiKeys();
+  const stages = ['발굴', '검토', '답사·컨택', '제안·청약', '계약·성사', '보류'];
+  const pipeFiltered = S.pipeStageFilter ? S.pipeline.filter((p) => p.stage === S.pipeStageFilter) : S.pipeline;
+  const totalValMan = pipeFiltered.reduce((a, p) => a + (Number(p.valueMan) || 0), 0);
+
+  $('mainStage').innerHTML = `
+    <!-- 1. 10-API DIAGNOSTIC BOARD -->
+    <div class="card" style="margin-bottom:16px">
+      <div class="card-head">
+        <div>
+          <h2 class="card-title">🩺 통합 10종 공공·GIS API 실시간 연결 진단</h2>
+          <p class="card-sub">암호화 볼트 내장 키 자동 적용 · 공공데이터: <span class="mono">${esc(maskKey(dataGoRaw))}</span> · 브이월드: <span class="mono">${esc(maskKey(vworld))}</span></p>
+        </div>
+        <button id="btnRunDiag10" class="btn btn-primary" type="button">🩺 전체 10종 API 실시간 진단 실행</button>
+      </div>
+
+      <div id="diagBoard" class="diag-grid">
+        ${S.diagResults.length ? S.diagResults.map((d) => `
+          <div class="diag-card ${d.ok ? 'ok' : 'err'}">
+            <div class="diag-title">${d.ok ? '🟢' : '🔴'} ${esc(d.name)}</div>
+            <div class="diag-status">${esc(d.status)}</div>
+            <div class="diag-detail">${esc(d.detail)}</div>
+          </div>`).join('') : `<div style="grid-column:1/-1;padding:14px;border-radius:10px;background:var(--surface-2);color:var(--muted);font-size:13px">
+            상단 <b>[🩺 전체 10종 API 실시간 진단 실행]</b>을 누르면 브이월드(2) · 나라장터(2) · K-apt(1) · 청약홈(3) · 소상공인(1) · 지자체착공(1) 연결 상태를 즉시 검증합니다.
+          </div>`}
+      </div>
+    </div>
+
+    <!-- 2. UNIFIED 4-DOMAIN PIPELINE CRM -->
+    <div class="card" style="margin-bottom:16px">
+      <div class="card-head">
+        <div>
+          <h2 class="card-title">💼 4대 도메인 통합 영업·투자 파이프라인 CRM <span class="tag tag-corp">${fmt(S.pipeline.length)}건</span></h2>
+          <p class="card-sub">기업 · 입찰 · 대형상가 · 신축분양에서 담은 타깃을 한곳에서 관리합니다 · 합계 규모 <b>${fmtDec(totalValMan / 10000, 1)}억원</b></p>
+        </div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap">
+          <button id="btnPipeCsv" class="btn btn-sm">📥 CSV 내보내기</button>
+          <button id="btnPipeJson" class="btn btn-sm">💾 JSON 백업</button>
+        </div>
+      </div>
+
+      <div class="chips" style="margin-bottom:12px">
+        <button class="chip ${!S.pipeStageFilter ? 'active' : ''}" data-ps="">전체 (${S.pipeline.length})</button>
+        ${stages.map((st) => `<button class="chip ${S.pipeStageFilter === st ? 'active' : ''}" data-ps="${st}">${st} (${S.pipeline.filter((p) => p.stage === st).length})</button>`).join('')}
+      </div>
+
+      <div class="table-wrap">
+        <table class="data-table">
+          <thead><tr><th>도메인</th><th>타깃명</th><th>지역</th><th>단계</th><th>메모</th><th>삭제</th></tr></thead>
+          <tbody>
+            ${pipeFiltered.map((p) => `
+              <tr>
+                <td><span class="tag tag-${p.domain}">${({ corp: '🏢 기업', bid: '🎯 입찰', sbiz: '🏪 상권', re: '🏠 부동산' })[p.domain] || p.domain}</span></td>
+                <td><b>${esc(p.title)}</b><div style="font-size:11px;color:var(--muted)">${esc(p.sub)}</div></td>
+                <td>${esc(p.region || '-')}</td>
+                <td>
+                  <select class="select" style="padding:4px 6px;font-size:12px" data-pipe-stage="${esc(p.id)}">
+                    ${stages.map((st) => `<option value="${st}" ${p.stage === st ? 'selected' : ''}>${st}</option>`).join('')}
+                  </select>
+                </td>
+                <td><input class="input" style="padding:5px 8px;font-size:12px;width:160px" value="${esc(p.note || '')}" placeholder="영업/투자 메모" data-pipe-note="${esc(p.id)}" /></td>
+                <td><button class="btn btn-sm" data-pipe-del="${esc(p.id)}">✕</button></td>
+              </tr>`).join('') || '<tr><td colspan="6" style="text-align:center;padding:24px;color:var(--muted)">아직 담은 파이프라인 항목이 없습니다. 각 탭에서 [+ 파이프라인] 버튼을 눌러 추가하세요.</td></tr>'}
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- 3. INDIVIDUAL PRO APPS LAUNCHPAD -->
+    <div class="card">
+      <div class="card-head">
+        <div>
+          <h2 class="card-title">🚀 개별 전문 앱 바로가기 (동일 비밀번호 연동)</h2>
+          <p class="card-sub">각 도메인별 풀-특화 단독 앱도 새 탭에서 바로 열 수 있습니다.</p>
+        </div>
+      </div>
+      <div class="grid-4">
+        <a class="domain-box" href="https://heebonpark.github.io/ca-v8x4k2/" target="_blank" rel="noopener">
+          <h4 style="color:var(--c-corp)">🏢 기업분석앱 ↗</h4>
+          <div style="font-size:12px;color:var(--muted)">12만 법인 · EDA · 브이월드</div>
+        </a>
+        <a class="domain-box" href="https://heebonpark.github.io/bid-p9m3r7/" target="_blank" rel="noopener">
+          <h4 style="color:var(--c-bid)">🎯 입찰·영업기회 ↗</h4>
+          <div style="font-size:12px;color:var(--muted)">나라장터 · 사전규격 · 건설사</div>
+        </a>
+        <a class="domain-box" href="https://heebonpark.github.io/sbiz-m4q8w2/" target="_blank" rel="noopener">
+          <h4 style="color:var(--c-sbiz)">🏪 소상공인지도 ↗</h4>
+          <div style="font-size:12px;color:var(--muted)">275만 상가 · 16시도 GIS</div>
+        </a>
+        <a class="domain-box" href="https://heebonpark.github.io/hr-k7m2x9/" target="_blank" rel="noopener">
+          <h4 style="color:var(--c-re)">🏠 홈레이더 ↗</h4>
+          <div style="font-size:12px;color:var(--muted)">청약 · 분양가 · 경쟁률 · 착공</div>
+        </a>
+      </div>
+    </div>
+  `;
+
+  $('btnRunDiag10').addEventListener('click', runFull10ApiDiag);
+  $('mainStage').querySelectorAll('[data-ps]').forEach((b) => {
+    b.addEventListener('click', () => { S.pipeStageFilter = b.dataset.ps; renderHubTab(); });
+  });
+  $('mainStage').querySelectorAll('[data-pipe-stage]').forEach((sel) => {
+    sel.addEventListener('change', () => {
+      const p = S.pipeline.find((x) => x.id === sel.dataset.pipeStage);
+      if (p) { p.stage = sel.value; savePipeline(); renderHubTab(); }
+    });
+  });
+  $('mainStage').querySelectorAll('[data-pipe-note]').forEach((inp) => {
+    inp.addEventListener('change', () => {
+      const p = S.pipeline.find((x) => x.id === inp.dataset.pipeNote);
+      if (p) { p.note = inp.value; savePipeline(); toast('메모 저장됨'); }
+    });
+  });
+  $('mainStage').querySelectorAll('[data-pipe-del]').forEach((b) => {
+    b.addEventListener('click', () => {
+      S.pipeline = S.pipeline.filter((x) => x.id !== b.dataset.pipeDel);
+      savePipeline();
+      renderHubTab();
+    });
+  });
+  $('btnPipeCsv').addEventListener('click', () => {
+    const header = '도메인,타깃명,세부정보,지역,단계,예상규모(만원),메모,등록일\n';
+    const rows = S.pipeline.map((p) => [p.domain, p.title, p.sub, p.region, p.stage, p.valueMan, p.note, p.addedAt].map((v) => `"${String(v ?? '').replace(/"/g, '""')}"`).join(',')).join('\n');
+    const blob = new Blob(['\uFEFF' + header + rows], { type: 'text/csv;charset=utf-8' });
+    const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `nexusone_pipeline_${new Date().toISOString().slice(0, 10)}.csv`; a.click();
+  });
+  $('btnPipeJson').addEventListener('click', () => {
+    const blob = new Blob([JSON.stringify(S.pipeline, null, 2)], { type: 'application/json' });
+    const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `nexusone_pipeline_${new Date().toISOString().slice(0, 10)}.json`; a.click();
+  });
+}
+
+async function runFull10ApiDiag() {
+  const btn = $('btnRunDiag10');
+  if (btn) { btn.disabled = true; btn.textContent = '🩺 10종 실시간 진단 중…'; }
+  const { dataGoEnc, vworld } = getApiKeys();
+  const isLocal = /^(127\.0\.0\.1|localhost)$/.test(location.hostname);
+  const dom = encodeURIComponent((!isLocal && location.origin && /^https?:/.test(location.origin)) ? location.origin : 'https://heebonpark.github.io');
+  const now = new Date();
+  const bgn = new Date(now.getTime() - 2 * 86400000);
+  const ymd = (d) => `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
+  const bgnDt = ymd(bgn) + '0000', endDt = ymd(now) + '2359';
+
+  const checks = [
+    {
+      name: '1. 브이월드 지오코더',
+      fn: async () => {
+        const j = await jsonp(`https://api.vworld.kr/req/address?service=address&request=getAddress&version=2.0&crs=epsg:4326&point=126.7239,37.4925&format=json&type=both&key=${vworld}&domain=${dom}`);
+        const ok = j?.response?.status === 'OK';
+        return { ok, status: ok ? '정상 연결 (JSONP)' : '오류', detail: j?.response?.result?.[0]?.text || j?.response?.error?.text || '응답 확인' };
+      },
+    },
+    {
+      name: '2. 브이월드 지적·공시지가',
+      fn: async () => {
+        const [j, z] = await Promise.all([
+          jsonp(`https://api.vworld.kr/req/data?service=data&request=GetFeature&data=LP_PA_CBND_BUBUN&key=${vworld}&domain=${dom}&geomFilter=POINT(126.7239%2037.4925)&size=1&format=json`),
+          jsonp(`https://api.vworld.kr/req/data?service=data&request=GetFeature&data=LT_C_UQ111&key=${vworld}&domain=${dom}&geomFilter=POINT(126.7239%2037.4925)&size=3&format=json`).catch(() => null),
+        ]);
+        const ok = j?.response?.status === 'OK';
+        const jiga = j?.response?.result?.featureCollection?.features?.[0]?.properties?.jiga;
+        const uname = z?.response?.result?.featureCollection?.features?.[0]?.properties?.uname || '';
+        return { ok, status: ok ? '정상 연결 (JSONP)' : '오류', detail: [uname, jiga ? `${fmt(jiga)}원/㎡` : ''].filter(Boolean).join(' · ') || j?.response?.error?.text || '지적 조회 응답' };
+      },
+    },
+    {
+      name: '3. 나라장터 입찰 (02)',
+      url: `https://apis.data.go.kr/1230000/ad/BidPublicInfoService02/getBidPblancListInfoServc02?serviceKey=${dataGoEnc}&numOfRows=1&pageNo=1&type=json&inqryDiv=1&inqryBgnDt=${bgnDt}&inqryEndDt=${endDt}`,
+      parse: (j) => `조회 가능 ${fmt(j?.response?.body?.totalCount || 0)}건`,
+    },
+    {
+      name: '4. 나라장터 사전규격 (ao)',
+      url: `https://apis.data.go.kr/1230000/ao/HrcspSsstndrdInfoService/getPublicPrcureThngInfoServc?serviceKey=${dataGoEnc}&numOfRows=1&pageNo=1&type=json&inqryDiv=1&inqryBgnDt=${bgnDt}&inqryEndDt=${endDt}`,
+      parse: (j) => `조회 가능 ${fmt(j?.response?.body?.totalCount || 0)}건`,
+    },
+    {
+      name: '5. K-apt 공동주택 (V4)',
+      url: `https://apis.data.go.kr/1613000/AptListService4/getSigunguAptList4?serviceKey=${dataGoEnc}&sigunguCode=28237&pageNo=1&numOfRows=1&type=json`,
+      parse: (j) => `부평구 단지 ${fmt(j?.response?.body?.totalCount || 0)}개`,
+    },
+    {
+      name: '6. 청약홈 APT 분양',
+      url: `https://api.odcloud.kr/api/ApplyhomeInfoDetailSvc/v1/getAPTLttotPblancDetail?page=1&perPage=1&serviceKey=${dataGoEnc}`,
+      parse: (j) => `총 ${fmt(j?.totalCount || 0)}건`,
+    },
+    {
+      name: '7. 청약홈 경쟁률·가점',
+      url: `https://api.odcloud.kr/api/ApplyhomeInfoCmpetRtSvc/v1/getAPTLttotPblancCmpet?page=1&perPage=1&serviceKey=${dataGoEnc}`,
+      parse: (j) => `총 ${fmt(j?.totalCount || 0)}건`,
+    },
+    {
+      name: '8. 청약홈 무순위·줍줍',
+      url: `https://api.odcloud.kr/api/ApplyhomeInfoDetailSvc/v1/getRemndrLttotPblancDetail?page=1&perPage=1&serviceKey=${dataGoEnc}`,
+      parse: (j) => `총 ${fmt(j?.totalCount || 0)}건`,
+    },
+    {
+      name: '9. 소상공인 상가 반경조회',
+      url: `https://apis.data.go.kr/B553077/api/open/sdsc2/storeListInRadius?serviceKey=${dataGoEnc}&pageNo=1&numOfRows=1&radius=500&cx=126.7235&cy=37.4922&type=json`,
+      parse: (j) => `반경 500m 상가 ${fmt(j?.body?.totalCount || 0)}개`,
+    },
+    {
+      name: '10. 지자체 착공현황 (계양·송파)',
+      url: `https://api.odcloud.kr/api/15100714/v1/uddi:58a57b5e-1fda-4b69-bd16-e31a58fc6798?page=1&perPage=1&serviceKey=${dataGoEnc}`,
+      parse: (j) => `착공 데이터 ${fmt(j?.totalCount || 0)}건`,
+    },
+  ];
+
+  S.diagResults = await Promise.all(checks.map(async (c) => {
+    const t0 = performance.now();
+    try {
+      if (c.fn) {
+        const res = await c.fn();
+        return { name: c.name, ok: res.ok, status: `${res.status} · ${Math.round(performance.now() - t0)}ms`, detail: res.detail };
+      }
+      const r = await fetch(c.url);
+      const ms = Math.round(performance.now() - t0);
+      if (!r.ok) return { name: c.name, ok: false, status: `HTTP ${r.status} · ${ms}ms`, detail: '활용신청 미승인 또는 인증키 오류' };
+      const j = await r.json();
+      return { name: c.name, ok: true, status: `정상 연결 (HTTP 200 · ${ms}ms)`, detail: c.parse(j) };
+    } catch (e) {
+      return { name: c.name, ok: false, status: '연결 실패', detail: e.message };
+    }
+  }));
+
+  const okCnt = S.diagResults.filter((x) => x.ok).length;
+  toast(`🩺 10종 API 진단 완료: ${okCnt}/10 정상 연결`);
+  if (S.tab === 'hub') renderHubTab();
+}
+
+// =========================================================================
+// GLOBAL OMNI-SEARCH (4-DOMAIN CROSS SEARCH)
+// =========================================================================
+function wireOmniSearch() {
+  const inp = $('omniInput'), drop = $('omniDrop'), clr = $('omniClear');
+  let t = null;
+
+  function renderOmni(rawQ) {
+    const q = rawQ.trim().toLowerCase();
+    clr.classList.toggle('hidden', !q);
+    if (!q || !S.fusion) { drop.classList.add('hidden'); return; }
+
+    const regions = S.fusion.regions.filter((r) => r.fullName.toLowerCase().includes(q)).slice(0, 4);
+    const opps = S.opps.filter((o) => `${o.title} ${o.org} ${o.region}`.toLowerCase().includes(q)).slice(0, 4);
+    const reItems = (S.re.listings || []).filter((l) => `${l.name} ${l.addr} ${l.builder}`.toLowerCase().includes(q)).slice(0, 4);
+
+    // Search loaded corps, or fallback to topCorps inside fusion index!
+    let corps = [];
+    if (S.corpLoaded) {
+      for (let i = 0; i < S.corps.length && corps.length < 4; i++) {
+        if (`${S.corps[i][0]} ${S.corps[i][4]} ${S.corps[i][6]}`.toLowerCase().includes(q)) corps.push({ idx: i, name: S.corps[i][0], sub: S.corps[i][7] });
+      }
+    } else {
+      for (const r of S.fusion.regions) {
+        for (const tc of r.corp.top) {
+          if (String(tc[0]).toLowerCase().includes(q) && corps.length < 4) corps.push({ idx: -1, name: tc[0], sub: `${r.fullName} · ${tc[5] || ''}`, rid: r.rid });
+        }
+      }
+    }
+
+    if (!regions.length && !opps.length && !reItems.length && !corps.length) {
+      drop.innerHTML = `<div style="padding:14px;text-align:center;color:var(--muted);font-size:12.5px">'${esc(rawQ)}'에 대한 통합 검색 결과가 없습니다.</div>`;
+      drop.classList.remove('hidden');
+      return;
+    }
+
+    drop.innerHTML = `
+      ${regions.length ? `<div class="omni-group-title"><span>⚡ 360° 시군구 통합분석</span><span>${regions.length}</span></div>
+        ${regions.map((r) => `<div class="omni-item" data-omni-rid="${r.rid}"><div class="omni-item-main"><div class="omni-item-title">${esc(r.fullName)}</div><div class="omni-item-sub">법인 ${fmt(r.corp.cnt)} · 상가 ${fmt(r.sbiz.cnt)} · 통합 ${r.scores.total}점</div></div><span class="tag tag-corp">360°</span></div>`).join('')}` : ''}
+      ${corps.length ? `<div class="omni-group-title"><span>🏢 기업분석</span><span>${S.corpLoaded ? '12만 전체' : '대표기업'}</span></div>
+        ${corps.map((c) => `<div class="omni-item" data-omni-corp="${c.idx}" data-omni-q="${esc(c.name)}"><div class="omni-item-main"><div class="omni-item-title">${esc(c.name)}</div><div class="omni-item-sub">${esc(c.sub || '')}</div></div><span class="tag tag-corp">기업</span></div>`).join('')}` : ''}
+      ${opps.length ? `<div class="omni-group-title"><span>🎯 입찰·사전규격·인허가</span><span>${opps.length}</span></div>
+        ${opps.map((o) => `<div class="omni-item" data-omni-opp="${esc(o.id)}"><div class="omni-item-main"><div class="omni-item-title">${esc(o.title)}</div><div class="omni-item-sub">${esc(o.org)} · ${esc(o.region)}</div></div><span class="tag tag-bid">입찰</span></div>`).join('')}` : ''}
+      ${reItems.length ? `<div class="omni-group-title"><span>🏠 청약·신축분양</span><span>${reItems.length}</span></div>
+        ${reItems.map((l) => `<div class="omni-item" data-omni-re="${esc(l.name)}"><div class="omni-item-main"><div class="omni-item-title">${esc(l.name)}</div><div class="omni-item-sub">${esc(l.addr)} · ${esc(l.builder)}</div></div><span class="tag tag-re">청약</span></div>`).join('')}` : ''}
+    `;
+    drop.classList.remove('hidden');
+
+    drop.querySelectorAll('[data-omni-rid]').forEach((el) => el.addEventListener('click', () => {
+      S.selectedRid = Number(el.dataset.omniRid); drop.classList.add('hidden'); switchTab('overview');
+    }));
+    drop.querySelectorAll('[data-omni-corp]').forEach((el) => el.addEventListener('click', () => {
+      drop.classList.add('hidden');
+      const idx = Number(el.dataset.omniCorp);
+      if (idx >= 0) openCorpDrawer(idx);
+      else { S.corpQ = el.dataset.omniQ; switchTab('corp'); }
+    }));
+    drop.querySelectorAll('[data-omni-opp]').forEach((el) => el.addEventListener('click', () => {
+      drop.classList.add('hidden');
+      const o = S.opps.find((x) => x.id === el.dataset.omniOpp);
+      if (o) openOppDrawer(o);
+    }));
+    drop.querySelectorAll('[data-omni-re]').forEach((el) => el.addEventListener('click', () => {
+      drop.classList.add('hidden'); S.reQ = el.dataset.omniRe; S.reSub = 'apt'; switchTab('realestate');
+    }));
+  }
+
+  inp.addEventListener('input', (e) => { clearTimeout(t); t = setTimeout(() => renderOmni(e.target.value), 140); });
+  inp.addEventListener('focus', () => { if (inp.value.trim()) renderOmni(inp.value); });
+  clr.addEventListener('click', () => { inp.value = ''; renderOmni(''); });
+  document.addEventListener('click', (e) => { if (!e.target.closest('.omni-wrap')) drop.classList.add('hidden'); });
+}
+
+// ===== DRAWER =====
+function openDrawer({ title, sub, body, foot, onMount }) {
+  $('drawerHeadContent').innerHTML = `<h3 style="margin:0;font-size:16px;font-weight:800">${esc(title)}</h3><div style="font-size:12px;color:var(--muted);margin-top:2px">${esc(sub || '')}</div>`;
+  $('drawerBody').innerHTML = body || '';
+  $('drawerFoot').innerHTML = foot || '';
+  $('drawerBackdrop').classList.remove('hidden');
+  onMount?.();
+}
+function closeDrawer() { $('drawerBackdrop').classList.add('hidden'); }
+
+// ===== THEME & INIT =====
+function applyTheme(theme) {
+  document.documentElement.dataset.theme = theme;
+  localStorage.setItem(THEME_KEY, theme);
+  $('btnTheme').textContent = theme === 'dark' ? '☀️' : '🌙';
+}
+
+async function init() {
+  applyTheme(localStorage.getItem(THEME_KEY) || 'light');
+  loadPipeline();
+
+  $('btnTheme').addEventListener('click', () => applyTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'));
+  $('brandHome').addEventListener('click', () => switchTab('overview'));
+  $('btnGoPipe').addEventListener('click', () => switchTab('hub'));
+  $('drawerClose').addEventListener('click', closeDrawer);
+  $('drawerBackdrop').addEventListener('click', (e) => { if (e.target === $('drawerBackdrop')) closeDrawer(); });
+  document.querySelectorAll('[data-tab]').forEach((b) => b.addEventListener('click', () => switchTab(b.dataset.tab)));
+
+  $('btnLockOut').addEventListener('click', async () => {
+    await idbClearKey();
+    location.reload();
+  });
+
+  wireOmniSearch();
+
+  // Load vault manifest
+  try {
+    const r = await fetch('data/vault.json', { cache: 'no-store' });
+    S.vault = await r.json();
+  } catch (e) {
+    $('lockErr').textContent = '볼트 메타데이터(data/vault.json)를 찾을 수 없습니다.';
+    return;
+  }
+
+  // Try auto-unlock from IndexedDB non-extractable key
+  const cachedKey = await idbGetKey();
+  if (cachedKey && await verifyKey(cachedKey, S.vault)) {
+    try {
+      await unlockAndBoot(cachedKey);
+      return;
+    } catch {}
+  }
+
+  // Manual password submit
+  $('lockForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const pw = $('lockPw').value;
+    const btn = $('lockBtn'), err = $('lockErr');
+    btn.disabled = true; btn.textContent = '🔓 PBKDF2 키 유도 및 복호화 중…'; err.textContent = '';
+    try {
+      const key = await deriveKey(pw, S.vault.salt, S.vault.iter);
+      if (!await verifyKey(key, S.vault)) {
+        err.textContent = '비밀번호가 일치하지 않습니다.';
+        btn.disabled = false; btn.textContent = '🔐 통합 볼트 잠금 해제';
+        return;
+      }
+      if ($('lockRemember').checked) await idbSetKey(key);
+      await unlockAndBoot(key);
+    } catch (ex) {
+      err.textContent = `잠금 해제 실패: ${ex.message}`;
+      btn.disabled = false; btn.textContent = '🔐 통합 볼트 잠금 해제';
+    }
+  });
+
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('sw.js').catch(() => {});
+  }
+}
+
+init();

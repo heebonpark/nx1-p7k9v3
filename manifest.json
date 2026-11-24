@@ -1,0 +1,12 @@
+{
+  "name": "넥서스원 PRO — 기업·입찰·상권·부동산 통합 인텔리전스",
+  "short_name": "NexusOne PRO",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#0b1120",
+  "theme_color": "#0f172a",
+  "lang": "ko",
+  "icons": [
+    { "src": "icons/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}

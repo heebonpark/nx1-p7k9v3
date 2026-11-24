@@ -525,3 +525,81 @@ table.data-table tbody tr:hover { background: var(--surface-2); }
   .rank-lorenz-grid { grid-template-columns: 1fr !important; }
   .hide-xs { display: none; }
 }
+
+/* ===== V4 MARKER BADGES, TOP 10 RIBBON & ADVANCED VISUALIZATIONS ===== */
+.top10-ribbon {
+  display: flex; flex-wrap: wrap; gap: 5px; align-items: center;
+  padding: 9px 12px; border-radius: 11px; margin-bottom: 14px;
+  background: linear-gradient(135deg, rgba(79, 70, 229, 0.06), rgba(5, 150, 105, 0.06));
+  border: 1px solid var(--border);
+}
+.top10-pill {
+  padding: 4px 9px; border-radius: 999px; border: 1px solid var(--border-strong);
+  background: var(--surface); font-size: 11px; font-weight: 700; color: var(--text-2);
+  transition: all .12s;
+}
+.top10-pill:hover { border-color: var(--c-accent); color: var(--c-accent); transform: translateY(-1px); }
+
+.viz-grid-2 { display: grid; grid-template-columns: 1.15fr 0.85fr; gap: 16px; margin-top: 16px; align-items: stretch; }
+.scatter-wrap {
+  position: relative; background: var(--surface-2); border: 1px solid var(--border);
+  border-radius: 12px; padding: 10px;
+}
+.scatter-svg { width: 100%; height: auto; display: block; }
+.scatter-dot { cursor: pointer; transition: r .12s, opacity .12s; }
+.scatter-dot:hover { stroke: #0f172a; stroke-width: 2; opacity: 1 !important; }
+
+.sido-chart-row {
+  display: grid; grid-template-columns: 54px 1fr 40px; align-items: center; gap: 8px;
+  font-size: 11.5px; margin: 5px 0; cursor: pointer; padding: 2px 4px; border-radius: 6px;
+}
+.sido-chart-row:hover { background: var(--surface-2); }
+.stacked-bar {
+  display: flex; height: 11px; border-radius: 999px; overflow: hidden; background: var(--border);
+}
+
+/* Custom Leaflet Building Count Badge Marker */
+.nx-bld-pin {
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 999px; color: #fff; font-weight: 800; font-size: 11px;
+  border: 2px solid #fff; box-shadow: 0 2px 8px rgba(15, 23, 42, 0.42);
+  font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+  transition: transform .12s;
+}
+.nx-bld-pin:hover { transform: scale(1.14); z-index: 900 !important; }
+.nx-bld-pin.has-new { box-shadow: 0 0 0 2.5px #f59e0b, 0 3px 10px rgba(15, 23, 42, 0.45); }
+
+.nx-store-label {
+  background: rgba(15, 23, 42, 0.86) !important; color: #fff !important;
+  border: 1px solid rgba(255, 255, 255, 0.25) !important; border-radius: 6px !important;
+  padding: 2px 6px !important; font-size: 10.5px !important; font-weight: 700 !important;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.25) !important;
+}
+.nx-store-label::before { display: none !important; }
+
+.marker-legend {
+  display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center;
+  padding: 8px 12px; margin-top: 8px; border-radius: 10px;
+  background: var(--surface-2); border: 1px solid var(--border); font-size: 11.5px;
+}
+.ml-item { display: inline-flex; align-items: center; gap: 5px; font-weight: 700; color: var(--text-2); }
+.ml-dot { width: 10px; height: 10px; border-radius: 999px; display: inline-block; border: 1.5px solid #fff; box-shadow: 0 0 0 1px rgba(15,23,42,0.2); }
+
+/* Rich Leaflet Popup Styling */
+.leaflet-popup-content { margin: 11px 13px !important; }
+.nx-pop-list {
+  max-height: 185px; overflow-y: auto; margin: 7px 0; padding-right: 3px;
+  border-top: 1px solid #e2e8f0; border-bottom: 1px solid #e2e8f0;
+}
+.nx-pop-row {
+  padding: 5px 2px; border-bottom: 1px dashed #e2e8f0; display: flex; justify-content: space-between; gap: 6px; align-items: center;
+}
+.nx-pop-row:last-child { border-bottom: none; }
+.nx-pitch-box {
+  margin-top: 6px; padding: 6px 8px; border-radius: 7px;
+  background: #eef2ff; color: #312e81; font-size: 11px; line-height: 1.45;
+}
+
+@media (max-width: 1024px) {
+  .viz-grid-2 { grid-template-columns: 1fr; }
+}

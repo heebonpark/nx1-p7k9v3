@@ -25,12 +25,41 @@ const DEFAULT_OPTS = {
   baseMap: 'vbase',       // vbase | vsat | vhyb | vwhite | vmidnight | osm
   defaultRadius: 500,     // 300 | 500 | 1000 | 2000
   markerCap: 1500,        // 800 | 1500 | 3000
+  markerColorMode: 'category', // category | new2026 | density
+  groupBuildings: true,
+  showStoreLabels: false,
+  showBcgCharts: true,
   showQuantBadges: true,
   autoHeat: false,
   autoCadastral: false,
   autoZoning: false,
   geminiKey: '',
 };
+
+const SBIZ_L1_COLORS = {
+  '음식': '#ef4444',
+  '소매': '#2563eb',
+  '수리·개인': '#8b5cf6',
+  '과학·기술': '#059669',
+  '교육': '#d97706',
+  '보건의료': '#06b6d4',
+  '시설관리·임대': '#92400e',
+  '부동산': '#ec4899',
+  '숙박': '#6366f1',
+  '예술·스포츠': '#14b8a6',
+};
+function sbizCategoryColor(l1) {
+  return SBIZ_L1_COLORS[l1] || '#475569';
+}
+function getStoreB2bPitch(l1, l3, isNew2026) {
+  const prefix = isNew2026 ? '🆕 2026 신규개업 골든타임 · ' : '';
+  if (l1 === '음식') return `${prefix}POS·키오스크·주방/홀 AI CCTV·출입보안·방역 패키지 제안 적합`;
+  if (l1 === '보건의료') return `${prefix}대기실 스마트관제·개인정보/출입통제·전용통신회선·보안솔루션 적합`;
+  if (l1 === '교육') return `${prefix}등하원 안심알림·교실/복도 CCTV·스마트출결·화재감지 제안 적합`;
+  if (l1 === '소매') return `${prefix}무인매장 관제·도난방지 AI CCTV·결제단말기·통신결합 제안 적합`;
+  if (l1 === '과학·기술' || l1 === '시설관리·임대' || l1 === '부동산') return `${prefix}법인 보안·지문/안면 출입통제·오피스 네트워크·렌탈 제안 적합`;
+  return `${prefix}매장 보안 CCTV·스마트 출입관리·통신/결제 통합 패키지 제안 적합`;
+}
 
 function loadOpts() {
   try {
@@ -77,9 +106,12 @@ const S = {
   leafletWms: {},       // { cadastral, zoning, emd, bldg }
   leafletHeat: null,
   leafletCatchLayer: null,
+  leafletRulerLayer: null,
   gisBase: 'vbase',
   gisLayers: { cadastral: false, zoning: false, emd: false, bldg: false, heat: false },
   gisRadius: 500,
+  gisRulerMode: false,
+  rulerPts: [],
   catchment: null,      // { lat, lon, radius, stores, stats, vworld }
   lastSbizMatchedIdx: [],
 
@@ -659,6 +691,21 @@ function renderOverview() {
       </div>
     </div>
 
+    <!-- EXPERT TOP 10 TECHNIQUES RIBBON -->
+    <div class="top10-ribbon">
+      <span class="gis-label">🏆 전문가 TOP 10 기법:</span>
+      <button class="top10-pill" data-t10="sliders" type="button">① 4축 가중치·5전략</button>
+      <button class="top10-pill" data-t10="radar" type="button">② 4-Way 레이더</button>
+      <button class="top10-pill" data-t10="hhi" type="button">③ 업종 HHI 집중도</button>
+      <button class="top10-pill" data-t10="lq" type="button">④ 입지계수 LQ</button>
+      <button class="top10-pill" data-t10="pareto" type="button">⑤ 파레토·지니곡선</button>
+      <button class="top10-pill" data-t10="blue" type="button">⑥ 블루오션 지수</button>
+      <button class="top10-pill" data-t10="bcg" type="button">⑦ BCG 4분면 매트릭스</button>
+      <button class="top10-pill" data-t10="sido" type="button">⑧ 17시도 누적비교</button>
+      <button class="top10-pill" data-t10="gis" type="button">⑨ 히트맵·반경·건물스택</button>
+      <button class="top10-pill" data-t10="cmp" type="button">⑩ 2지역 비교·전략진단</button>
+    </div>
+
     <!-- EXPERT STRATEGY PRESET BAR -->
     <div class="preset-bar">
       <span class="gis-label">🧠 전문가 전략 모델:</span>
@@ -740,6 +787,8 @@ function renderOverview() {
 
     ${cmpReg ? renderCompareMatrixCard(reg, cmpReg) : ''}
 
+    ${S.opts.showBcgCharts ? renderVisualizationsDeck(reg) : ''}
+
     <!-- TOP 25 RANKING + PARETO/LORENZ EXPERT CARD -->
     <div class="card" style="margin-top:16px">
       <div class="card-head">
@@ -811,6 +860,20 @@ function renderOverview() {
 
   // Wire Overview Events
   $('mainStage').querySelectorAll('[data-jump]').forEach((el) => el.addEventListener('click', () => switchTab(el.dataset.jump)));
+  $('mainStage').querySelectorAll('[data-t10]').forEach((el) => {
+    el.addEventListener('click', () => {
+      const k = el.dataset.t10;
+      if (k === 'sliders') { S.showSliders = true; renderOverview(); }
+      else if (k === 'lq') { S.mapMetric = 'lq'; renderOverview(); }
+      else if (k === 'blue') { S.mapMetric = 'blueOcean'; S.rankSort = 'blueOcean'; renderOverview(); }
+      else if (k === 'bcg' || k === 'sido') { S.opts.showBcgCharts = true; saveOpts(); renderOverview(); setTimeout(() => $('vizDeck')?.scrollIntoView({ behavior: 'smooth' }), 60); }
+      else if (k === 'pareto') { $('btnExport229Csv')?.scrollIntoView({ behavior: 'smooth' }); }
+      else if (k === 'gis') { switchTab('sbiz'); }
+      else if (k === 'cmp') { $('btnAiStrategy')?.click(); }
+      else { $('spotlightCard')?.scrollIntoView({ behavior: 'smooth' }); }
+    });
+  });
+  wireBcgAndSidoCharts();
   $('mainStage').querySelectorAll('[data-preset]').forEach((el) => {
     el.addEventListener('click', () => {
       const k = el.dataset.preset;
@@ -937,6 +1000,141 @@ function renderLorenzSvg(lorenz) {
     <rect x="${P}" y="${P}" width="${W - P * 2}" height="${H - P * 2}" fill="none" stroke="var(--border-strong)" stroke-width="1"/>
     <text x="${W / 2}" y="${H - 4}" text-anchor="middle" font-size="9.5" fill="var(--muted)">누적 시군구 비율 (%)</text>
   </svg>`;
+}
+
+function renderVisualizationsDeck(selReg) {
+  const regs = S.fusion.regions;
+  // 1) BCG 4-Quadrant Matrix: X = Corp+Sbiz Scale (0..100), Y = New2026+Bid Growth (0..100)
+  const W = 480, H = 260, PL = 36, PR = 16, PT = 20, PB = 28;
+  const pw = W - PL - PR, ph = H - PT - PB;
+  const midX = PL + pw * 0.5, midY = PT + ph * 0.5;
+  const maxSbiz = Math.max(1, ...regs.map((r) => r.sbiz.cnt));
+
+  const dots = regs.map((r) => {
+    const xv = Math.round((r.scores.corp * 0.5 + r.scores.sbiz * 0.5));
+    const yv = Math.round(((r.quant?.newRateScore || 0) * 0.5 + r.scores.bid * 0.3 + r.scores.re * 0.2));
+    const cx = PL + (xv / 100) * pw;
+    const cy = PT + (1 - yv / 100) * ph;
+    const rad = Math.max(3, Math.min(10, 3 + Math.sqrt(r.sbiz.cnt / maxSbiz) * 8));
+    let color = '#94a3b8';
+    if (xv >= 50 && yv >= 50) color = '#4f46e5';      // ⭐ 핵심 스타
+    else if (xv < 50 && yv >= 50) color = '#059669';  // 🚀 고성장 블루오션
+    else if (xv >= 50 && yv < 50) color = '#d97706';  // 🏦 성숙 캐시카우
+    const isSel = r.rid === selReg.rid;
+    return `<circle class="scatter-dot" data-bcg-rid="${r.rid}" data-bcg-x="${xv}" data-bcg-y="${yv}" cx="${cx.toFixed(1)}" cy="${cy.toFixed(1)}" r="${isSel ? rad + 2.5 : rad.toFixed(1)}" fill="${color}" fill-opacity="${isSel ? 1 : 0.72}" stroke="${isSel ? '#e11d48' : '#ffffff'}" stroke-width="${isSel ? 2.5 : 0.8}"></circle>`;
+  }).join('');
+
+  // 2) 17-Sido Stacked 4-Domain Score Comparison
+  const sidoAgg = new Map();
+  for (const r of regs) {
+    let s = sidoAgg.get(r.sd);
+    if (!s) {
+      s = { sd: r.sd, short: r.sidoShort || r.sidoName, cnt: 0, corp: 0, bid: 0, sbiz: 0, re: 0, total: 0, bestRid: r.rid, bestTotal: -1 };
+      sidoAgg.set(r.sd, s);
+    }
+    s.cnt++;
+    s.corp += r.scores.corp; s.bid += r.scores.bid; s.sbiz += r.scores.sbiz; s.re += r.scores.re; s.total += r.scores.total;
+    if (r.scores.total > s.bestTotal) { s.bestTotal = r.scores.total; s.bestRid = r.rid; }
+  }
+  const sidoRows = [...sidoAgg.values()].map((s) => ({
+    ...s,
+    corpAvg: Math.round(s.corp / s.cnt),
+    bidAvg: Math.round(s.bid / s.cnt),
+    sbizAvg: Math.round(s.sbiz / s.cnt),
+    reAvg: Math.round(s.re / s.cnt),
+    totAvg: Math.round(s.total / s.cnt),
+  })).sort((a, b) => b.totAvg - a.totAvg);
+
+  return `
+    <div id="vizDeck" class="viz-grid-2">
+      <!-- ⑦ BCG 4-Quadrant Positioning Matrix -->
+      <div class="card">
+        <div class="card-head" style="margin-bottom:8px">
+          <div>
+            <h3 class="card-title">⑦ 229 시군구 BCG 4분면 포지셔닝 매트릭스</h3>
+            <p class="card-sub">X축: 기업·상권 규모 · Y축: 신규개업·입찰·공급 성장성 · 점 클릭=360° 스캔</p>
+          </div>
+        </div>
+        <div class="scatter-wrap">
+          <div id="bcgTooltip" class="map-tooltip hidden"></div>
+          <svg class="scatter-svg" viewBox="0 0 ${W} ${H}">
+            <rect x="${PL}" y="${PT}" width="${pw / 2}" height="${ph / 2}" fill="rgba(5,150,105,0.06)"/>
+            <rect x="${midX}" y="${PT}" width="${pw / 2}" height="${ph / 2}" fill="rgba(79,70,229,0.07)"/>
+            <rect x="${midX}" y="${midY}" width="${pw / 2}" height="${ph / 2}" fill="rgba(217,119,6,0.05)"/>
+            <line x1="${midX}" y1="${PT}" x2="${midX}" y2="${PT + ph}" stroke="var(--border-strong)" stroke-dasharray="3 3"/>
+            <line x1="${PL}" y1="${midY}" x2="${PL + pw}" y2="${midY}" stroke="var(--border-strong)" stroke-dasharray="3 3"/>
+            <rect x="${PL}" y="${PT}" width="${pw}" height="${ph}" fill="none" stroke="var(--border-strong)"/>
+            <text x="${PL + 6}" y="${PT + 13}" font-size="9.5" font-weight="800" fill="#059669">🚀 고성장 블루오션</text>
+            <text x="${PL + pw - 6}" y="${PT + 13}" text-anchor="end" font-size="9.5" font-weight="800" fill="#4f46e5">⭐ 핵심 스타 거점</text>
+            <text x="${PL + 6}" y="${PT + ph - 6}" font-size="9.5" font-weight="700" fill="var(--muted)">🌱 초기·잠재 시장</text>
+            <text x="${PL + pw - 6}" y="${PT + ph - 6}" text-anchor="end" font-size="9.5" font-weight="800" fill="#d97706">🏦 성숙 캐시카우</text>
+            ${dots}
+            <text x="${W / 2}" y="${H - 6}" text-anchor="middle" font-size="10" font-weight="700" fill="var(--muted)">기업 · 상권 규모 지수 →</text>
+            <text x="12" y="${H / 2}" text-anchor="middle" font-size="10" font-weight="700" fill="var(--muted)" transform="rotate(-90 12 ${H / 2})">성장·기회 활력 →</text>
+          </svg>
+        </div>
+      </div>
+
+      <!-- ⑧ 17-Sido Stacked 4-Domain Score Comparison -->
+      <div class="card">
+        <div class="card-head" style="margin-bottom:8px">
+          <div>
+            <h3 class="card-title">⑧ 전국 17개 시도 4대 도메인 누적 비교</h3>
+            <p class="card-sub">시도 클릭 시 해당 권역 최우수 시군구 360° 스캔으로 이동</p>
+          </div>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;font-size:11px;margin-bottom:8px">
+          <span class="ml-item"><span class="ml-dot" style="background:#4f46e5"></span>기업</span>
+          <span class="ml-item"><span class="ml-dot" style="background:#d97706"></span>입찰</span>
+          <span class="ml-item"><span class="ml-dot" style="background:#059669"></span>상권</span>
+          <span class="ml-item"><span class="ml-dot" style="background:#e11d48"></span>부동산</span>
+        </div>
+        <div>
+          ${sidoRows.slice(0, 12).map((s) => `
+            <div class="sido-chart-row" data-sido-best="${s.bestRid}" title="${esc(s.short)} 평균 통합 ${s.totAvg}점 (기업 ${s.corpAvg} · 입찰 ${s.bidAvg} · 상권 ${s.sbizAvg} · 부동산 ${s.reAvg})">
+              <b>${esc(s.short)}</b>
+              <div class="stacked-bar">
+                <div style="width:${s.corpAvg * 0.25}%;background:#4f46e5"></div>
+                <div style="width:${s.bidAvg * 0.25}%;background:#d97706"></div>
+                <div style="width:${s.sbizAvg * 0.25}%;background:#059669"></div>
+                <div style="width:${s.reAvg * 0.25}%;background:#e11d48"></div>
+              </div>
+              <b style="text-align:right;color:var(--c-accent)">${s.totAvg}</b>
+            </div>`).join('')}
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function wireBcgAndSidoCharts() {
+  const tip = $('bcgTooltip');
+  const wrap = tip?.parentElement;
+  document.querySelectorAll('[data-bcg-rid]').forEach((dot) => {
+    dot.addEventListener('mouseenter', () => {
+      const f = S.fusionByRid.get(Number(dot.dataset.bcgRid));
+      if (!f || !tip) return;
+      tip.innerHTML = `<b>${esc(f.fullName)}</b> · 통합 ${f.scores.total}점<br/>규모 ${dot.dataset.bcgX} · 성장활력 ${dot.dataset.bcgY} · 블루오션 💎${f.quant?.blueOcean ?? 0}`;
+      tip.classList.remove('hidden');
+    });
+    dot.addEventListener('mousemove', (e) => {
+      if (!tip || !wrap) return;
+      const b = wrap.getBoundingClientRect();
+      tip.style.left = `${Math.min(b.width - 210, Math.max(8, e.clientX - b.left + 10))}px`;
+      tip.style.top = `${Math.max(8, e.clientY - b.top - 44)}px`;
+    });
+    dot.addEventListener('mouseleave', () => tip?.classList.add('hidden'));
+    dot.addEventListener('click', () => {
+      S.selectedRid = Number(dot.dataset.bcgRid);
+      renderOverview();
+    });
+  });
+  document.querySelectorAll('[data-sido-best]').forEach((row) => {
+    row.addEventListener('click', () => {
+      S.selectedRid = Number(row.dataset.sidoBest);
+      renderOverview();
+    });
+  });
 }
 
 function wireMapTooltips() {
@@ -1805,34 +2003,52 @@ function cleanSbizLabel(val) {
   return parts[parts.length - 1] || s;
 }
 
+function cleanDupAddr(s) {
+  return String(s || '').trim().replace(/^(\S+)\s+\1\s+/, '$1 ');
+}
+
 function parseSbizStore(sido, i) {
   const parts = String(sido.strs[i] || '').split('\x1f');
   const id = parts[0] || '';
+  const ymRaw = id.slice(6, 12);
+  const regYm = /^\d{6}$/.test(ymRaw) ? `${ymRaw.slice(0, 4)}.${ymRaw.slice(4, 6)}` : '';
+  const regYear = /^\d{4}/.test(ymRaw) ? Number(ymRaw.slice(0, 4)) : 0;
   const sggRaw = sido.dicts.sgg[sido.cols.sgg[i]] || '';
   const dongRaw = sido.dicts.dong[sido.cols.dong[i]] || '';
   const sgg = cleanSbizLabel(sggRaw);
   const dong = cleanSbizLabel(dongRaw);
-  const road = parts[3] || '';
+  const road = cleanDupAddr(parts[3] || '');
   const jibun = parts[6] || '';
+  const floorRaw = sido.dicts.floor?.[sido.cols.floor?.[i]] || '';
+  const floor = floorRaw && floorRaw !== '(미상)' ? `${floorRaw}층` : '';
+  const zip = sido.dicts.zip?.[sido.cols.zip?.[i]] || '';
+  const ksic = cleanSbizLabel(sido.dicts.ksic?.[sido.cols.ksic?.[i]] || '');
+  const isNew2026 = regYear === 2026;
+  const ageLabel = isNew2026 ? '🆕 2026 신규' : (regYear >= 2024 ? '성장기(1~2년)' : (regYear > 0 ? '안정기(3년+)' : ''));
   return {
     i,
     id,
+    regYm,
+    ageLabel,
     name: parts[1] || '',
     branch: parts[2] || '',
     road,
     bld: parts[4] || '',
+    floor,
     ho: parts[5] || '',
+    zip,
     jibun,
     addr: road || (jibun ? `${sgg} ${jibun}`.trim() : `${sgg} ${dong}`.trim()),
     l1: cleanSbizLabel(sido.dicts.l1[sido.cols.l1[i]] || ''),
     l2: cleanSbizLabel(sido.dicts.l2[sido.cols.l2[i]] || ''),
     l3: cleanSbizLabel(sido.dicts.l3[sido.cols.l3[i]] || ''),
+    ksic,
     sgg,
     dong,
     bldId: sido.bldId[i] || 0,
     lat: sido.lat[i] / 1e6,
     lon: sido.lon[i] / 1e6,
-    isNew2026: id.slice(6, 10) === '2026',
+    isNew2026,
   };
 }
 
@@ -1886,6 +2102,17 @@ function renderSbizTab() {
           <button class="toggle-pill ${S.gisLayers.bldg ? 'on-emerald' : ''}" data-gis-layer="bldg" type="button">🏢 건물 (줌15+)</button>
         </div>
         <div class="gis-row">
+          <span class="gis-label">🎨 마커 옵션:</span>
+          ${[
+            ['category', '업종 8색'],
+            ['new2026', '🆕 2026 신규강조'],
+            ['density', '🏢 건물 밀집도'],
+          ].map(([k, lb]) => `<button class="toggle-pill ${S.opts.markerColorMode === k ? 'on' : ''}" data-mk-mode="${k}" type="button">${lb}</button>`).join('')}
+          <button class="toggle-pill ${S.opts.groupBuildings ? 'on-emerald' : ''}" id="btnToggleGroupBld" type="button">🏢 동일건물 그룹핑</button>
+          <button class="toggle-pill ${S.opts.showStoreLabels ? 'on-emerald' : ''}" id="btnToggleLabels" type="button">🏷️ 상호 라벨(줌16+)</button>
+          <button class="toggle-pill ${S.gisRulerMode ? 'on' : ''}" id="btnToggleRuler" type="button">📏 2점 거리측정</button>
+        </div>
+        <div class="gis-row">
           <span class="gis-label">🎯 클릭 반경분석:</span>
           ${[300, 500, 1000, 2000].map((r) => `<button class="toggle-pill ${S.gisRadius === r ? 'on' : ''}" data-gis-rad="${r}" type="button">${r >= 1000 ? `${r / 1000}km` : `${r}m`}</button>`).join('')}
           <div style="display:flex;gap:5px;margin-left:auto;flex:1;min-width:210px;max-width:340px">
@@ -1897,7 +2124,7 @@ function renderSbizTab() {
 
       ${active ? renderSbizControlsHtml(active) : `
         <div style="padding:12px 14px;border-radius:11px;background:var(--c-sbiz-bg);font-size:13px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:10px">
-          <span>💡 시도를 선택하면 275만 상권 데이터 + 히트맵 + 클릭 반경분석이 즉시 활성화됩니다.</span>
+          <span>💡 시도를 선택하면 275만 상권 데이터 + 히트맵 + 동일건물 입점자 마커 + 클릭 반경분석이 즉시 활성화됩니다.</span>
           <div style="display:flex;gap:6px">
             <button class="btn btn-emerald btn-sm" data-load-sido="incheon">인천 열기 (6.7MB)</button>
             <button class="btn btn-sm" data-load-sido="sejong">세종 열기 (0.7MB)</button>
@@ -1906,6 +2133,7 @@ function renderSbizTab() {
       `}
 
       <div id="sbizMap" class="leaflet-box"></div>
+      <div id="sbizMarkerLegend" class="marker-legend"></div>
       <div id="sbizCatchmentBox"></div>
     </div>
 
@@ -1949,6 +2177,38 @@ function renderSbizTab() {
       if (S.catchment) runRadiusCatchment(S.catchment.lat, S.catchment.lon, active);
     });
   });
+
+  // Wire new Marker Color Mode / Grouping / Labels / Ruler
+  $('mainStage').querySelectorAll('[data-mk-mode]').forEach((b) => {
+    b.addEventListener('click', () => {
+      S.opts.markerColorMode = b.dataset.mkMode;
+      saveOpts();
+      $('mainStage').querySelectorAll('[data-mk-mode]').forEach((x) => x.classList.toggle('on', x.dataset.mkMode === S.opts.markerColorMode));
+      renderMarkerLegend();
+      if (active) renderViewportSbizMarkers(active);
+    });
+  });
+  $('btnToggleGroupBld')?.addEventListener('click', (e) => {
+    S.opts.groupBuildings = !S.opts.groupBuildings;
+    saveOpts();
+    e.currentTarget.classList.toggle('on-emerald', S.opts.groupBuildings);
+    renderMarkerLegend();
+    if (active) renderViewportSbizMarkers(active);
+  });
+  $('btnToggleLabels')?.addEventListener('click', (e) => {
+    S.opts.showStoreLabels = !S.opts.showStoreLabels;
+    saveOpts();
+    e.currentTarget.classList.toggle('on-emerald', S.opts.showStoreLabels);
+    if (active) renderViewportSbizMarkers(active);
+  });
+  $('btnToggleRuler')?.addEventListener('click', (e) => {
+    S.gisRulerMode = !S.gisRulerMode;
+    S.rulerPts = [];
+    S.leafletRulerLayer?.clearLayers();
+    e.currentTarget.classList.toggle('on', S.gisRulerMode);
+    toast(S.gisRulerMode ? '📏 거리측정 ON: 지도에서 2개 지점을 차례로 클릭하세요.' : '📏 거리측정 OFF (클릭 반경분석 복귀)');
+  });
+  renderMarkerLegend();
 
   const doPlaceJump = async () => {
     const q = $('fGisPlace')?.value.trim();
@@ -2087,6 +2347,34 @@ function applyGisOverlays(active) {
   }
 }
 
+function renderMarkerLegend() {
+  const el = $('sbizMarkerLegend');
+  if (!el) return;
+  const mode = S.opts.markerColorMode || 'category';
+  if (mode === 'new2026') {
+    el.innerHTML = `
+      <span class="gis-label">범례(2026신규):</span>
+      <span class="ml-item"><span class="ml-dot" style="background:#f59e0b"></span>🆕 2026 신규개업</span>
+      <span class="ml-item"><span class="ml-dot" style="background:#10b981"></span>기존 영업 상가</span>
+      ${S.opts.groupBuildings ? `<span class="ml-item"><span class="ml-dot" style="background:#4f46e5"></span>숫자 배지 = 동일건물 다중입점 (금테=2026신규 포함)</span>` : ''}
+    `;
+  } else if (mode === 'density') {
+    el.innerHTML = `
+      <span class="gis-label">범례(건물밀집):</span>
+      <span class="ml-item"><span class="ml-dot" style="background:#10b981"></span>단독(1개)</span>
+      <span class="ml-item"><span class="ml-dot" style="background:#3b82f6"></span>소형상가(2~4개)</span>
+      <span class="ml-item"><span class="ml-dot" style="background:#8b5cf6"></span>중형빌딩(5~14개)</span>
+      <span class="ml-item"><span class="ml-dot" style="background:#e11d48"></span>대형상가(15개+)</span>
+    `;
+  } else {
+    el.innerHTML = `
+      <span class="gis-label">범례(업종8색):</span>
+      ${Object.entries(SBIZ_L1_COLORS).slice(0, 8).map(([nm, c]) => `<span class="ml-item"><span class="ml-dot" style="background:${c}"></span>${nm}</span>`).join('')}
+      ${S.opts.groupBuildings ? `<span class="ml-item" style="margin-left:auto;color:var(--muted)">숫자배지=동일건물 다중입점 · 금테=2026신규</span>` : ''}
+    `;
+  }
+}
+
 function initSbizLeaflet(active) {
   const el = $('sbizMap');
   if (!el || typeof L === 'undefined') return;
@@ -2099,6 +2387,7 @@ function initSbizLeaflet(active) {
   applyGisBaseMap();
   S.leafletLayer = L.layerGroup().addTo(S.leafletMap);
   S.leafletCatchLayer = L.layerGroup().addTo(S.leafletMap);
+  S.leafletRulerLayer = L.layerGroup().addTo(S.leafletMap);
   applyGisOverlays(active);
 
   // Viewport-aware dynamic marker redraw on pan/zoom so zoomed-in areas show ALL local stores!
@@ -2111,12 +2400,107 @@ function initSbizLeaflet(active) {
     }, 120);
   });
 
-  // Interactive Map Click -> Instant Radius Catchment Analysis (ignores clicks on markers!)
+  // Interactive Map Click -> 2-Point Distance Ruler OR Instant Radius Catchment Analysis!
   S.leafletMap.on('click', (e) => {
     if (S._justClickedMarker) { S._justClickedMarker = false; return; }
+    if (S.gisRulerMode) {
+      S.rulerPts.push([e.latlng.lat, e.latlng.lng]);
+      if (S.rulerPts.length > 2) { S.rulerPts = [S.rulerPts[2]]; S.leafletRulerLayer.clearLayers(); }
+      L.circleMarker([e.latlng.lat, e.latlng.lng], { radius: 6, color: '#fff', fillColor: '#4f46e5', fillOpacity: 1, weight: 2 }).addTo(S.leafletRulerLayer);
+      if (S.rulerPts.length === 2) {
+        const [p1, p2] = S.rulerPts;
+        const dist = haversineM(p1[0], p1[1], p2[0], p2[1]);
+        const walkMin = Math.max(1, Math.round(dist / 70));
+        const lbl = dist >= 1000 ? `${(dist / 1000).toFixed(2)}km (도보 약 ${walkMin}분)` : `${Math.round(dist)}m (도보 약 ${walkMin}분)`;
+        L.polyline([p1, p2], { color: '#4f46e5', weight: 3, dashArray: '6 4' }).addTo(S.leafletRulerLayer);
+        L.popup({ closeButton: true }).setLatLng([(p1[0] + p2[0]) / 2, (p1[1] + p2[1]) / 2])
+          .setContent(`<div style="font-weight:800;font-size:13px">📏 직선거리: ${lbl}</div>`)
+          .openOn(S.leafletMap);
+        toast(`📏 측정 완료: ${lbl}`);
+      }
+      return;
+    }
     const curActive = S.sbizActiveSlug ? S.sbizCache.get(S.sbizActiveSlug) : null;
     runRadiusCatchment(e.latlng.lat, e.latlng.lng, curActive);
   });
+}
+
+function buildSingleStorePopup(st) {
+  const displayName = `${st.name}${st.branch ? ' ' + st.branch : ''}`.trim() || '(상호 미기재)';
+  const catColor = sbizCategoryColor(st.l1);
+  const pitch = getStoreB2bPitch(st.l1, st.l3, st.isNew2026);
+  const bldLine = [st.bld, st.floor, st.ho ? `${st.ho}호` : ''].filter(Boolean).join(' · ');
+  const naverUrl = `https://map.naver.com/p/search/${encodeURIComponent(`${st.sgg} ${st.name}`)}`;
+  return `
+    <div style="min-width:255px;max-width:300px;line-height:1.45;font-size:12px">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:6px;margin-bottom:4px">
+        <b style="font-size:14px;color:#0f172a">${esc(displayName)}</b>
+        ${st.ageLabel ? `<span style="padding:1px 6px;border-radius:5px;font-size:10.5px;font-weight:800;white-space:nowrap;background:${st.isNew2026 ? '#fef3c7;color:#b45309' : '#f1f5f9;color:#475569'}">${esc(st.ageLabel)}</span>` : ''}
+      </div>
+      <div style="font-size:11.5px;font-weight:700;color:${catColor};margin-bottom:3px">
+        ${esc(st.l1)} &gt; ${esc(st.l2)} &gt; ${esc(st.l3)}
+      </div>
+      ${st.ksic ? `<div style="font-size:11px;color:#64748b">표준산업(KSIC): <b>${esc(st.ksic)}</b>${st.regYm ? ` · 등재 ${esc(st.regYm)}` : ''}</div>` : ''}
+      <div style="margin-top:5px;padding-top:5px;border-top:1px solid #e2e8f0;color:#334155;font-size:11.5px">
+        <div>📍 <b>${esc(st.addr)}</b></div>
+        ${bldLine ? `<div style="color:#475569">🏢 ${esc(bldLine)}${st.zip ? ` (우편 ${esc(st.zip)})` : ''}</div>` : (st.zip ? `<div style="color:#64748b">📮 우편번호 ${esc(st.zip)}</div>` : '')}
+        ${st.jibun ? `<div style="color:#64748b;font-size:11px">지번: ${esc(st.jibun)}</div>` : ''}
+      </div>
+      <div class="nx-pitch-box">💡 <b>영업 포인트:</b> ${esc(pitch)}</div>
+      <div style="display:flex;flex-wrap:wrap;gap:5px;margin-top:8px">
+        <button type="button" onclick="window._nxPipeStore('${esc(st.id)}','${esc(displayName)}','${esc(st.l1 + '·' + st.l3)}','${esc(st.addr)}')" style="padding:4px 8px;border:none;border-radius:6px;background:#4f46e5;color:#fff;font-size:11px;font-weight:700;cursor:pointer">💼 CRM 담기</button>
+        <button type="button" onclick="window._nxCatchHere(${st.lat},${st.lon},'${esc(displayName)}')" style="padding:4px 8px;border:1px solid #059669;border-radius:6px;background:#ecfdf5;color:#047857;font-size:11px;font-weight:700;cursor:pointer">🎯 반경·공시지가</button>
+        <a href="${naverUrl}" target="_blank" rel="noopener" style="padding:4px 8px;border:1px solid #cbd5e1;border-radius:6px;background:#fff;color:#0f172a;font-size:11px;font-weight:700;text-decoration:none">🧭 네이버지도</a>
+      </div>
+    </div>
+  `;
+}
+
+function buildMultiTenantPopup(group) {
+  const first = group.stores[0];
+  const bldTitle = group.bldName || first.addr;
+  const newCnt = group.newCnt;
+  const l1Cnts = new Map();
+  for (const s of group.stores) l1Cnts.set(s.l1 || '기타', (l1Cnts.get(s.l1 || '기타') || 0) + 1);
+  const topCats = [...l1Cnts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 4);
+  const naverUrl = `https://map.naver.com/p/search/${encodeURIComponent(first.addr)}`;
+  // Sort 2026 new openings to top
+  const sorted = [...group.stores].sort((a, b) => (b.isNew2026 ? 1 : 0) - (a.isNew2026 ? 1 : 0));
+
+  return `
+    <div style="min-width:270px;max-width:320px;line-height:1.4;font-size:12px">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:6px;margin-bottom:3px">
+        <b style="font-size:13.5px;color:#0f172a">🏢 ${esc(bldTitle)}</b>
+        <span style="padding:2px 7px;border-radius:999px;background:#4f46e5;color:#fff;font-size:11px;font-weight:800;white-space:nowrap">${fmt(group.stores.length)}개 입점</span>
+      </div>
+      <div style="font-size:11px;color:#475569">📍 ${esc(first.addr)}${first.zip ? ` (${esc(first.zip)})` : ''}</div>
+      <div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:5px">
+        ${newCnt ? `<span style="padding:1px 6px;border-radius:5px;background:#fef3c7;color:#b45309;font-size:10.5px;font-weight:800">🆕 2026 신규 ${newCnt}개</span>` : ''}
+        ${topCats.map(([nm, c]) => `<span style="padding:1px 6px;border-radius:5px;background:#f1f5f9;color:${sbizCategoryColor(nm)};font-size:10.5px;font-weight:700">${esc(nm)} ${c}</span>`).join('')}
+      </div>
+      <div class="nx-pop-list">
+        ${sorted.slice(0, 40).map((st) => {
+          const dn = `${st.name}${st.branch ? ' ' + st.branch : ''}`.trim() || '(상호 미기재)';
+          const fl = [st.floor, st.ho ? `${st.ho}호` : ''].filter(Boolean).join(' ');
+          return `<div class="nx-pop-row">
+            <div style="min-width:0">
+              <div style="font-weight:700;font-size:11.5px;color:#0f172a;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">
+                ${st.isNew2026 ? '<span style="color:#d97706">🆕</span> ' : ''}${esc(dn)}
+              </div>
+              <div style="font-size:10.5px;color:#64748b">${esc(st.l1)}·${esc(st.l3)}${fl ? ` · ${esc(fl)}` : ''}${st.regYm ? ` · ${esc(st.regYm)}` : ''}</div>
+            </div>
+            <button type="button" onclick="window._nxPipeStore('${esc(st.id)}','${esc(dn)}','${esc(st.l1 + '·' + st.l3)}','${esc(st.addr)}')" style="padding:2px 6px;border:1px solid #cbd5e1;border-radius:5px;background:#fff;color:#4f46e5;font-size:10.5px;font-weight:800;cursor:pointer;flex-shrink:0">+CRM</button>
+          </div>`;
+        }).join('')}
+        ${sorted.length > 40 ? `<div style="text-align:center;font-size:10.5px;color:#64748b;padding:4px">외 ${sorted.length - 40}개 입점 (반경 리드팩 CSV로 전체 추출 가능)</div>` : ''}
+      </div>
+      <div style="display:flex;flex-wrap:wrap;gap:5px;margin-top:6px">
+        <button type="button" onclick="window._nxPipeStore('bld:${esc(bldTitle)}','[다중건물] ${esc(bldTitle)}','총 ${group.stores.length}개 입점 (신규 ${newCnt})','${esc(first.addr)}')" style="padding:4px 8px;border:none;border-radius:6px;background:#4f46e5;color:#fff;font-size:11px;font-weight:700;cursor:pointer">💼 건물 CRM</button>
+        <button type="button" onclick="window._nxCatchHere(${group.lat},${group.lon},'${esc(bldTitle)}')" style="padding:4px 8px;border:1px solid #059669;border-radius:6px;background:#ecfdf5;color:#047857;font-size:11px;font-weight:700;cursor:pointer">🎯 반경·공시지가</button>
+        <a href="${naverUrl}" target="_blank" rel="noopener" style="padding:4px 8px;border:1px solid #cbd5e1;border-radius:6px;background:#fff;color:#0f172a;font-size:11px;font-weight:700;text-decoration:none">🧭 네이버</a>
+      </div>
+    </div>
+  `;
 }
 
 function renderViewportSbizMarkers(active) {
@@ -2136,45 +2520,104 @@ function renderViewportSbizMarkers(active) {
   }
 
   const cap = S.opts.markerCap || 1500;
-  const step = Math.max(1, Math.floor(inView.length / cap));
   const zoom = S.leafletMap.getZoom();
-  const baseRad = zoom >= 16 ? 6.5 : zoom >= 14 ? 5.5 : 4.5;
+  const mode = S.opts.markerColorMode || 'category';
+  const showLbl = S.opts.showStoreLabels && zoom >= 16;
 
+  // Smart Same-Coordinate Building Grouping (solves 171-store stacking at 1 building!)
+  if (S.opts.groupBuildings) {
+    const groups = new Map();
+    const scanStep = inView.length > 18000 ? Math.ceil(inView.length / 18000) : 1;
+    for (let k = 0; k < inView.length; k += scanStep) {
+      const idx = inView[k];
+      const ck = `${active.lat[idx]},${active.lon[idx]}`;
+      let g = groups.get(ck);
+      if (!g) {
+        g = { lat: active.lat[idx] / 1e6, lon: active.lon[idx] / 1e6, stores: [], newCnt: 0, bldName: '' };
+        groups.set(ck, g);
+      }
+      const st = parseSbizStore(active, idx);
+      g.stores.push(st);
+      if (st.isNew2026) g.newCnt++;
+      if (!g.bldName && st.bld) g.bldName = st.bld;
+    }
+
+    const gArr = [...groups.values()].sort((a, b) => b.stores.length - a.stores.length);
+    const drawLimit = Math.min(gArr.length, cap);
+    const baseRad = zoom >= 16 ? 6.5 : zoom >= 14 ? 5.5 : 4.5;
+
+    for (let k = 0; k < drawLimit; k++) {
+      const g = gArr[k];
+      if (!g.lat || !g.lon) continue;
+
+      if (g.stores.length === 1) {
+        const st = g.stores[0];
+        const dn = `${st.name}${st.branch ? ' ' + st.branch : ''}`.trim() || '(상호 미기재)';
+        let fillColor = sbizCategoryColor(st.l1);
+        if (mode === 'new2026') fillColor = st.isNew2026 ? '#f59e0b' : '#10b981';
+        else if (mode === 'density') fillColor = '#10b981';
+        const mk = L.circleMarker([g.lat, g.lon], {
+          radius: st.isNew2026 ? baseRad + 1.5 : baseRad,
+          color: st.isNew2026 ? '#f59e0b' : '#ffffff',
+          fillColor,
+          fillOpacity: 0.92,
+          weight: st.isNew2026 ? 2.2 : 1.5,
+        });
+        mk.bindTooltip(`${esc(dn)} · ${esc(st.l3 || st.l1)}${st.floor ? ' (' + esc(st.floor) + ')' : ''}`, {
+          direction: 'top', offset: [0, -6], permanent: showLbl && k < 60, className: showLbl ? 'nx-store-label' : '',
+        });
+        mk.bindPopup(() => buildSingleStorePopup(st), { maxWidth: 320 });
+        mk.on('click', (ev) => { S._justClickedMarker = true; L.DomEvent.stopPropagation(ev); });
+        mk.addTo(S.leafletLayer);
+      } else {
+        const cnt = g.stores.length;
+        const size = cnt >= 30 ? 32 : cnt >= 10 ? 27 : cnt >= 5 ? 24 : 21;
+        let bg = '#4f46e5';
+        if (mode === 'density') bg = cnt >= 15 ? '#e11d48' : cnt >= 5 ? '#8b5cf6' : '#3b82f6';
+        else if (mode === 'new2026') bg = g.newCnt > 0 ? '#d97706' : '#059669';
+        else bg = sbizCategoryColor(g.stores[0].l1);
+        const icon = L.divIcon({
+          className: '',
+          html: `<div class="nx-bld-pin ${g.newCnt > 0 ? 'has-new' : ''}" style="width:${size}px;height:${size}px;background:${bg}">${cnt > 99 ? '99+' : cnt}</div>`,
+          iconSize: [size, size],
+          iconAnchor: [size / 2, size / 2],
+        });
+        const mk = L.marker([g.lat, g.lon], { icon });
+        const tipLbl = `🏢 ${esc(g.bldName || g.stores[0].name)} · ${cnt}개 입점${g.newCnt ? ` (🆕2026 ${g.newCnt})` : ''}`;
+        mk.bindTooltip(tipLbl, { direction: 'top', offset: [0, -size / 2], permanent: showLbl && k < 45, className: showLbl ? 'nx-store-label' : '' });
+        mk.bindPopup(() => buildMultiTenantPopup(g), { maxWidth: 330 });
+        mk.on('click', (ev) => { S._justClickedMarker = true; L.DomEvent.stopPropagation(ev); });
+        mk.addTo(S.leafletLayer);
+      }
+    }
+
+    const statEl = $('sbizViewportStat');
+    if (statEl) {
+      statEl.textContent = `화면 내 상가 ${fmt(inView.length)}개 → ${fmt(drawLimit)}개 건물/위치 마커 표시 (줌 ${zoom})`;
+    }
+    return;
+  }
+
+  // Non-grouped individual markers mode
+  const step = Math.max(1, Math.floor(inView.length / cap));
+  const baseRad = zoom >= 16 ? 6.5 : zoom >= 14 ? 5.5 : 4.5;
   for (let k = 0; k < inView.length; k += step) {
     const st = parseSbizStore(active, inView[k]);
     if (!st.lat || !st.lon) continue;
-    const displayName = `${st.name}${st.branch ? ' ' + st.branch : ''}`.trim() || '(상호 미기재)';
+    const dn = `${st.name}${st.branch ? ' ' + st.branch : ''}`.trim() || '(상호 미기재)';
+    const fillColor = mode === 'new2026' ? (st.isNew2026 ? '#f59e0b' : '#10b981') : sbizCategoryColor(st.l1);
     const mk = L.circleMarker([st.lat, st.lon], {
       radius: st.isNew2026 ? baseRad + 1.5 : baseRad,
-      color: '#ffffff',
-      fillColor: st.isNew2026 ? '#f59e0b' : '#10b981',
-      fillOpacity: 0.92,
-      weight: 1.5,
+      color: '#ffffff', fillColor, fillOpacity: 0.92, weight: 1.5,
     });
-    mk.bindTooltip(`${esc(displayName)} · ${esc(st.l3 || st.l1)}`, { direction: 'top', offset: [0, -6] });
-    mk.bindPopup(`
-      <div style="min-width:200px;line-height:1.45">
-        <div style="font-weight:800;font-size:13.5px;margin-bottom:3px">
-          ${esc(displayName)} ${st.isNew2026 ? '<span style="background:#fef3c7;color:#b45309;padding:1px 5px;border-radius:4px;font-size:10.5px">🆕2026</span>' : ''}
-        </div>
-        <div style="font-size:11.5px;color:#059669;font-weight:700">${esc(st.l1)} &gt; ${esc(st.l2)} &gt; ${esc(st.l3)}</div>
-        <div style="font-size:11.5px;color:#475569;margin-top:4px">📍 ${esc(st.addr)}${st.bld ? ` <b>(${esc(st.bld)}${st.ho ? ' ' + esc(st.ho) : ''})</b>` : ''}</div>
-        <div style="display:flex;gap:5px;margin-top:8px">
-          <button type="button" onclick="window._nxPipeStore('${esc(st.id)}','${esc(displayName)}','${esc(st.l1 + '·' + st.l3)}','${esc(st.addr)}')" style="padding:4px 8px;border:none;border-radius:6px;background:#4f46e5;color:#fff;font-size:11px;font-weight:700;cursor:pointer">💼 CRM 담기</button>
-          <button type="button" onclick="window._nxCatchHere(${st.lat},${st.lon},'${esc(displayName)}')" style="padding:4px 8px;border:1px solid #059669;border-radius:6px;background:#ecfdf5;color:#047857;font-size:11px;font-weight:700;cursor:pointer">🎯 반경분석</button>
-        </div>
-      </div>
-    `);
-    mk.on('click', (ev) => {
-      S._justClickedMarker = true;
-      L.DomEvent.stopPropagation(ev);
-    });
+    mk.bindTooltip(`${esc(dn)} · ${esc(st.l3 || st.l1)}`, { direction: 'top', offset: [0, -6] });
+    mk.bindPopup(() => buildSingleStorePopup(st), { maxWidth: 320 });
+    mk.on('click', (ev) => { S._justClickedMarker = true; L.DomEvent.stopPropagation(ev); });
     mk.addTo(S.leafletLayer);
   }
-
   const statEl = $('sbizViewportStat');
   if (statEl) {
-    statEl.textContent = `현재 화면 내 ${fmt(inView.length)}개 중 ${fmt(Math.min(inView.length, Math.ceil(inView.length / step)))}개 마커 표시 (줌 ${zoom})`;
+    statEl.textContent = `현재 화면 내 ${fmt(inView.length)}개 중 ${fmt(Math.min(inView.length, Math.ceil(inView.length / step)))}개 개별 마커 표시 (줌 ${zoom})`;
   }
 }
 
@@ -3080,11 +3523,22 @@ function openOptionsModal() {
             <option value="3000" ${o.markerCap === 3000 ? 'selected' : ''}>정밀 (최대 3,000개)</option>
           </select>
         </div>
-        <div class="opt-field" style="display:flex;flex-direction:column;justify-content:center;gap:5px;padding-top:12px">
-          <label style="margin:0;cursor:pointer;display:flex;align-items:center;gap:6px"><input id="optQuant" type="checkbox" ${o.showQuantBadges ? 'checked' : ''} /> 퀀트 지표(HHI·LQ·블루오션) 표시</label>
-          <label style="margin:0;cursor:pointer;display:flex;align-items:center;gap:6px"><input id="optHeat" type="checkbox" ${o.autoHeat ? 'checked' : ''} /> 상권 밀도 히트맵 자동 켜기</label>
-          <label style="margin:0;cursor:pointer;display:flex;align-items:center;gap:6px"><input id="optCad" type="checkbox" ${o.autoCadastral ? 'checked' : ''} /> 연속지적도 기본 켜기</label>
-          <label style="margin:0;cursor:pointer;display:flex;align-items:center;gap:6px"><input id="optZone" type="checkbox" ${o.autoZoning ? 'checked' : ''} /> 용도지역 기본 켜기</label>
+        <div class="opt-field">
+          <label>마커 색상 모드</label>
+          <select id="optMarkerMode" class="select">
+            <option value="category" ${o.markerColorMode === 'category' ? 'selected' : ''}>🎨 업종 대분류 8색</option>
+            <option value="new2026" ${o.markerColorMode === 'new2026' ? 'selected' : ''}>🆕 2026 신규개업 강조</option>
+            <option value="density" ${o.markerColorMode === 'density' ? 'selected' : ''}>🏢 건물 입점 밀집도</option>
+          </select>
+        </div>
+        <div class="opt-field" style="grid-column:1/-1;display:grid;grid-template-columns:repeat(2,1fr);gap:6px;padding-top:6px">
+          <label style="margin:0;cursor:pointer;display:flex;align-items:center;gap:6px"><input id="optGroupBld" type="checkbox" ${o.groupBuildings ? 'checked' : ''} /> 🏢 동일건물 다중입점 배지 그룹핑</label>
+          <label style="margin:0;cursor:pointer;display:flex;align-items:center;gap:6px"><input id="optLabels" type="checkbox" ${o.showStoreLabels ? 'checked' : ''} /> 🏷️ 확대 시(줌16+) 상호 라벨 표시</label>
+          <label style="margin:0;cursor:pointer;display:flex;align-items:center;gap:6px"><input id="optBcg" type="checkbox" ${o.showBcgCharts ? 'checked' : ''} /> 📊 BCG 4분면·17시도 차트 표시</label>
+          <label style="margin:0;cursor:pointer;display:flex;align-items:center;gap:6px"><input id="optQuant" type="checkbox" ${o.showQuantBadges ? 'checked' : ''} /> 📐 퀀트 지표(HHI·LQ·블루오션) 표시</label>
+          <label style="margin:0;cursor:pointer;display:flex;align-items:center;gap:6px"><input id="optHeat" type="checkbox" ${o.autoHeat ? 'checked' : ''} /> 🔥 상권 밀도 히트맵 자동 켜기</label>
+          <label style="margin:0;cursor:pointer;display:flex;align-items:center;gap:6px"><input id="optCad" type="checkbox" ${o.autoCadastral ? 'checked' : ''} /> 📐 연속지적도 기본 켜기</label>
+          <label style="margin:0;cursor:pointer;display:flex;align-items:center;gap:6px"><input id="optZone" type="checkbox" ${o.autoZoning ? 'checked' : ''} /> 🏙️ 용도지역 기본 켜기</label>
         </div>
       </div>
     </div>
@@ -3136,6 +3590,10 @@ function openOptionsModal() {
     S.opts.baseMap = $('optBaseMap').value;
     S.opts.defaultRadius = Number($('optRadius').value) || 500;
     S.opts.markerCap = Number($('optMarkerCap').value) || 1500;
+    S.opts.markerColorMode = $('optMarkerMode').value;
+    S.opts.groupBuildings = $('optGroupBld').checked;
+    S.opts.showStoreLabels = $('optLabels').checked;
+    S.opts.showBcgCharts = $('optBcg').checked;
     S.opts.showQuantBadges = $('optQuant').checked;
     S.opts.autoHeat = $('optHeat').checked;
     S.opts.autoCadastral = $('optCad').checked;

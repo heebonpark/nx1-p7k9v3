@@ -1218,8 +1218,9 @@ function wireSpotlightButtons(r, cmpReg) {
       else if (dom === 'bid') { S.bidQ = r.name; S.bidSub = 'opps'; switchTab('bid'); }
       else if (dom === 'sbiz') {
         switchTab('sbiz');
-        await loadSbizSido(r.sidoSlug);
-        S.sbizSgg = r.name;
+        const loaded = await loadSbizSido(r.sidoSlug);
+        const exactSgg = (loaded.dicts?.sgg || []).find((g) => g === r.name || g.endsWith(' ' + r.name)) || '';
+        S.sbizSgg = exactSgg;
         renderSbizTab();
       } else if (dom === 'realestate') { S.reQ = r.name.replace(/시$|군$|구$/, ''); switchTab('realestate'); }
     });
@@ -1797,23 +1798,37 @@ function createCanvasHeatLayer(points) {
   return new Heat(points);
 }
 
+function cleanSbizLabel(val) {
+  const s = String(val || '');
+  if (s.includes('>')) return s.slice(s.lastIndexOf('>') + 1).trim();
+  const parts = s.trim().split(/\s+/);
+  return parts[parts.length - 1] || s;
+}
+
 function parseSbizStore(sido, i) {
-  const parts = String(sido.strs[i] || '').split('\t');
+  const parts = String(sido.strs[i] || '').split('\x1f');
   const id = parts[0] || '';
+  const sggRaw = sido.dicts.sgg[sido.cols.sgg[i]] || '';
+  const dongRaw = sido.dicts.dong[sido.cols.dong[i]] || '';
+  const sgg = cleanSbizLabel(sggRaw);
+  const dong = cleanSbizLabel(dongRaw);
+  const road = parts[3] || '';
+  const jibun = parts[6] || '';
   return {
     i,
     id,
     name: parts[1] || '',
     branch: parts[2] || '',
-    road: parts[3] || '',
+    road,
     bld: parts[4] || '',
     ho: parts[5] || '',
-    jibun: parts[6] || '',
-    l1: sido.dicts.l1[sido.cols.l1[i]] || '',
-    l2: sido.dicts.l2[sido.cols.l2[i]] || '',
-    l3: sido.dicts.l3[sido.cols.l3[i]] || '',
-    sgg: sido.dicts.sgg[sido.cols.sgg[i]] || '',
-    dong: sido.dicts.dong[sido.cols.dong[i]] || '',
+    jibun,
+    addr: road || (jibun ? `${sgg} ${jibun}`.trim() : `${sgg} ${dong}`.trim()),
+    l1: cleanSbizLabel(sido.dicts.l1[sido.cols.l1[i]] || ''),
+    l2: cleanSbizLabel(sido.dicts.l2[sido.cols.l2[i]] || ''),
+    l3: cleanSbizLabel(sido.dicts.l3[sido.cols.l3[i]] || ''),
+    sgg,
+    dong,
     bldId: sido.bldId[i] || 0,
     lat: sido.lat[i] / 1e6,
     lon: sido.lon[i] / 1e6,
@@ -1989,7 +2004,7 @@ function renderSbizControlsHtml(active) {
       <input id="fSbizQ" class="input" style="flex:1;min-width:170px" value="${esc(S.sbizQ)}" placeholder="상호명 · 건물명 · 도로명 검색 (${esc(active.name)})" />
       <select id="fSbizSgg" class="select">
         <option value="">전체 시군구</option>
-        ${sggs.map((g) => `<option value="${esc(g)}" ${S.sbizSgg === g ? 'selected' : ''}>${esc(g)}</option>`).join('')}
+        ${sggs.map((g) => `<option value="${esc(g)}" ${S.sbizSgg === g ? 'selected' : ''}>${esc(cleanSbizLabel(g))}</option>`).join('')}
       </select>
       <select id="fSbizL1" class="select">
         <option value="">전체 업종 대분류</option>
@@ -2086,11 +2101,81 @@ function initSbizLeaflet(active) {
   S.leafletCatchLayer = L.layerGroup().addTo(S.leafletMap);
   applyGisOverlays(active);
 
-  // Interactive Click -> Instant Radius Catchment Analysis!
+  // Viewport-aware dynamic marker redraw on pan/zoom so zoomed-in areas show ALL local stores!
+  let mvTimer = null;
+  S.leafletMap.on('moveend zoomend', () => {
+    clearTimeout(mvTimer);
+    mvTimer = setTimeout(() => {
+      const curActive = S.sbizActiveSlug ? S.sbizCache.get(S.sbizActiveSlug) : null;
+      if (curActive && S.lastSbizMatchedIdx.length) renderViewportSbizMarkers(curActive);
+    }, 120);
+  });
+
+  // Interactive Map Click -> Instant Radius Catchment Analysis (ignores clicks on markers!)
   S.leafletMap.on('click', (e) => {
+    if (S._justClickedMarker) { S._justClickedMarker = false; return; }
     const curActive = S.sbizActiveSlug ? S.sbizCache.get(S.sbizActiveSlug) : null;
     runRadiusCatchment(e.latlng.lat, e.latlng.lng, curActive);
   });
+}
+
+function renderViewportSbizMarkers(active) {
+  if (!S.leafletMap || !S.leafletLayer || !active) return;
+  S.leafletLayer.clearLayers();
+  const bounds = S.leafletMap.getBounds().pad(0.08);
+  const minLa = Math.floor(bounds.getSouth() * 1e6);
+  const maxLa = Math.ceil(bounds.getNorth() * 1e6);
+  const minLo = Math.floor(bounds.getWest() * 1e6);
+  const maxLo = Math.ceil(bounds.getEast() * 1e6);
+
+  const inView = [];
+  for (let k = 0; k < S.lastSbizMatchedIdx.length; k++) {
+    const idx = S.lastSbizMatchedIdx[k];
+    const la = active.lat[idx], lo = active.lon[idx];
+    if (la >= minLa && la <= maxLa && lo >= minLo && lo <= maxLo) inView.push(idx);
+  }
+
+  const cap = S.opts.markerCap || 1500;
+  const step = Math.max(1, Math.floor(inView.length / cap));
+  const zoom = S.leafletMap.getZoom();
+  const baseRad = zoom >= 16 ? 6.5 : zoom >= 14 ? 5.5 : 4.5;
+
+  for (let k = 0; k < inView.length; k += step) {
+    const st = parseSbizStore(active, inView[k]);
+    if (!st.lat || !st.lon) continue;
+    const displayName = `${st.name}${st.branch ? ' ' + st.branch : ''}`.trim() || '(상호 미기재)';
+    const mk = L.circleMarker([st.lat, st.lon], {
+      radius: st.isNew2026 ? baseRad + 1.5 : baseRad,
+      color: '#ffffff',
+      fillColor: st.isNew2026 ? '#f59e0b' : '#10b981',
+      fillOpacity: 0.92,
+      weight: 1.5,
+    });
+    mk.bindTooltip(`${esc(displayName)} · ${esc(st.l3 || st.l1)}`, { direction: 'top', offset: [0, -6] });
+    mk.bindPopup(`
+      <div style="min-width:200px;line-height:1.45">
+        <div style="font-weight:800;font-size:13.5px;margin-bottom:3px">
+          ${esc(displayName)} ${st.isNew2026 ? '<span style="background:#fef3c7;color:#b45309;padding:1px 5px;border-radius:4px;font-size:10.5px">🆕2026</span>' : ''}
+        </div>
+        <div style="font-size:11.5px;color:#059669;font-weight:700">${esc(st.l1)} &gt; ${esc(st.l2)} &gt; ${esc(st.l3)}</div>
+        <div style="font-size:11.5px;color:#475569;margin-top:4px">📍 ${esc(st.addr)}${st.bld ? ` <b>(${esc(st.bld)}${st.ho ? ' ' + esc(st.ho) : ''})</b>` : ''}</div>
+        <div style="display:flex;gap:5px;margin-top:8px">
+          <button type="button" onclick="window._nxPipeStore('${esc(st.id)}','${esc(displayName)}','${esc(st.l1 + '·' + st.l3)}','${esc(st.addr)}')" style="padding:4px 8px;border:none;border-radius:6px;background:#4f46e5;color:#fff;font-size:11px;font-weight:700;cursor:pointer">💼 CRM 담기</button>
+          <button type="button" onclick="window._nxCatchHere(${st.lat},${st.lon},'${esc(displayName)}')" style="padding:4px 8px;border:1px solid #059669;border-radius:6px;background:#ecfdf5;color:#047857;font-size:11px;font-weight:700;cursor:pointer">🎯 반경분석</button>
+        </div>
+      </div>
+    `);
+    mk.on('click', (ev) => {
+      S._justClickedMarker = true;
+      L.DomEvent.stopPropagation(ev);
+    });
+    mk.addTo(S.leafletLayer);
+  }
+
+  const statEl = $('sbizViewportStat');
+  if (statEl) {
+    statEl.textContent = `현재 화면 내 ${fmt(inView.length)}개 중 ${fmt(Math.min(inView.length, Math.ceil(inView.length / step)))}개 마커 표시 (줌 ${zoom})`;
+  }
 }
 
 async function runRadiusCatchment(lat, lon, active, label = '') {
@@ -2254,29 +2339,17 @@ function updateSbizView(active) {
   }
   S.lastSbizMatchedIdx = matchedIdx;
 
-  // Plot up to opts.markerCap markers on Canvas Leaflet cleanly
-  const cap = S.opts.markerCap || 1500;
-  if (S.leafletLayer) {
-    S.leafletLayer.clearLayers();
-    const step = Math.max(1, Math.floor(matchedIdx.length / cap));
+  // Viewport-aware marker plotting (auto-fits when searching/filtering by sigungu or keyword!)
+  if (S.leafletMap && matchedIdx.length > 0 && (S.sbizSgg || S.sbizQ)) {
+    const sampleStep = Math.max(1, Math.floor(matchedIdx.length / 400));
     const bounds = [];
-    for (let k = 0; k < matchedIdx.length; k += step) {
-      const st = parseSbizStore(active, matchedIdx[k]);
-      if (!st.lat || !st.lon) continue;
-      bounds.push([st.lat, st.lon]);
-      L.circleMarker([st.lat, st.lon], {
-        radius: st.isNew2026 ? 5.5 : 4,
-        color: st.isNew2026 ? '#d97706' : '#059669',
-        fillColor: st.isNew2026 ? '#fbbf24' : '#34d399',
-        fillOpacity: 0.78,
-        weight: 1,
-      }).bindPopup(`<b>${esc(st.name)} ${esc(st.branch)}</b>${st.isNew2026 ? ' <span style="color:#d97706">[2026신규]</span>' : ''}<br/><small>${esc(st.l1)} &gt; ${esc(st.l3)}</small><br/><small>${esc(st.road || st.jibun)} ${esc(st.bld)}</small>`)
-        .addTo(S.leafletLayer);
+    for (let k = 0; k < matchedIdx.length; k += sampleStep) {
+      const la = active.lat[matchedIdx[k]] / 1e6, lo = active.lon[matchedIdx[k]] / 1e6;
+      if (la && lo) bounds.push([la, lo]);
     }
-    if (bounds.length > 0 && bounds.length < cap + 100 && (S.sbizSgg || S.sbizQ)) {
-      S.leafletMap.fitBounds(bounds, { maxZoom: 15, padding: [24, 24] });
-    }
+    if (bounds.length) S.leafletMap.fitBounds(bounds, { maxZoom: 16, padding: [24, 24] });
   }
+  renderViewportSbizMarkers(active);
   if (S.gisLayers.heat) applyGisOverlays(active);
 
   const card = $('sbizListCard');
@@ -2346,18 +2419,18 @@ function updateSbizView(active) {
     <div class="card">
       <div class="card-head">
         <h3 class="card-title">📋 ${esc(active.name)} 상가 목록 <span class="tag tag-sbiz">${fmt(matchedIdx.length)}개 검색됨</span></h3>
-        <span style="font-size:12px;color:var(--muted)">최대 ${fmt(cap)}개 고속 마커 · 지도 클릭 시 반경 ${S.gisRadius}m 정밀 분석</span>
+        <span id="sbizViewportStat" style="font-size:12px;color:var(--muted)">지도를 확대·이동하면 현재 화면 내 모든 상가 마커가 자동 갱신됩니다</span>
       </div>
       <div class="table-wrap">
         <table class="data-table">
           <thead><tr><th>상호명</th><th>업종</th><th>시군구·동</th><th>도로명주소 / 건물</th><th>구분</th></tr></thead>
           <tbody>
             ${pageStores.map((st) => `
-              <tr data-fly-store="${st.lat},${st.lon}">
-                <td><b>${esc(st.name)}</b> ${esc(st.branch)}</td>
+              <tr data-fly-store="${st.lat},${st.lon}" data-store-nm="${esc(st.name)}">
+                <td><b>${esc(st.name || '(상호 미기재)')}</b> ${st.branch ? `<span style="color:var(--muted)">${esc(st.branch)}</span>` : ''}</td>
                 <td><span class="tag tag-sbiz">${esc(st.l1)}</span> <span style="color:var(--muted)">${esc(st.l3)}</span></td>
                 <td>${esc(st.sgg)} ${esc(st.dong)}</td>
-                <td style="max-width:240px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(st.road || st.jibun)} ${st.bld ? `<b>(${esc(st.bld)})</b>` : ''}</td>
+                <td style="max-width:260px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(st.addr)}${st.bld ? ` <b>(${esc(st.bld)})</b>` : ''}</td>
                 <td>${st.isNew2026 ? '<span class="tag tag-bid">🆕 2026</span>' : '<span class="tag tag-gray">기존</span>'}</td>
               </tr>`).join('')}
           </tbody>
@@ -2868,6 +2941,18 @@ function wireOmniSearch() {
     const opps = S.opps.filter((o) => `${o.title} ${o.org} ${o.region}`.toLowerCase().includes(q)).slice(0, 4);
     const reItems = (S.re.listings || []).filter((l) => `${l.name} ${l.addr} ${l.builder}`.toLowerCase().includes(q)).slice(0, 4);
 
+    // Search loaded Sbiz stores (parsed cleanly via \x1f)
+    const sbizHits = [];
+    for (const [slug, sidoObj] of S.sbizCache.entries()) {
+      for (let i = 0; i < sidoObj.n && sbizHits.length < 4; i++) {
+        if (String(sidoObj.strs[i] || '').toLowerCase().includes(q)) {
+          const st = parseSbizStore(sidoObj, i);
+          sbizHits.push({ slug, st });
+        }
+      }
+      if (sbizHits.length >= 4) break;
+    }
+
     // Search loaded corps, or fallback to topCorps inside fusion index!
     let corps = [];
     if (S.corpLoaded) {
@@ -2882,7 +2967,7 @@ function wireOmniSearch() {
       }
     }
 
-    if (!regions.length && !opps.length && !reItems.length && !corps.length) {
+    if (!regions.length && !opps.length && !reItems.length && !corps.length && !sbizHits.length) {
       drop.innerHTML = `<div style="padding:14px;text-align:center;color:var(--muted);font-size:12.5px">'${esc(rawQ)}'에 대한 통합 검색 결과가 없습니다.</div>`;
       drop.classList.remove('hidden');
       return;
@@ -2893,12 +2978,23 @@ function wireOmniSearch() {
         ${regions.map((r) => `<div class="omni-item" data-omni-rid="${r.rid}"><div class="omni-item-main"><div class="omni-item-title">${esc(r.fullName)}</div><div class="omni-item-sub">법인 ${fmt(r.corp.cnt)} · 상가 ${fmt(r.sbiz.cnt)} · 통합 ${r.scores.total}점</div></div><span class="tag tag-corp">360°</span></div>`).join('')}` : ''}
       ${corps.length ? `<div class="omni-group-title"><span>🏢 기업분석</span><span>${S.corpLoaded ? '12만 전체' : '대표기업'}</span></div>
         ${corps.map((c) => `<div class="omni-item" data-omni-corp="${c.idx}" data-omni-q="${esc(c.name)}"><div class="omni-item-main"><div class="omni-item-title">${esc(c.name)}</div><div class="omni-item-sub">${esc(c.sub || '')}</div></div><span class="tag tag-corp">기업</span></div>`).join('')}` : ''}
+      ${sbizHits.length ? `<div class="omni-group-title"><span>🏪 소상공인 상가</span><span>${sbizHits.length}</span></div>
+        ${sbizHits.map((h) => `<div class="omni-item" data-omni-sbiz="${esc(h.slug)}|${h.st.lat}|${h.st.lon}|${esc(h.st.name)}"><div class="omni-item-main"><div class="omni-item-title">${esc(h.st.name)} ${esc(h.st.branch)}</div><div class="omni-item-sub">${esc(h.st.l1)}·${esc(h.st.l3)} · ${esc(h.st.addr)}</div></div><span class="tag tag-sbiz">상가</span></div>`).join('')}` : ''}
       ${opps.length ? `<div class="omni-group-title"><span>🎯 입찰·사전규격·인허가</span><span>${opps.length}</span></div>
         ${opps.map((o) => `<div class="omni-item" data-omni-opp="${esc(o.id)}"><div class="omni-item-main"><div class="omni-item-title">${esc(o.title)}</div><div class="omni-item-sub">${esc(o.org)} · ${esc(o.region)}</div></div><span class="tag tag-bid">입찰</span></div>`).join('')}` : ''}
       ${reItems.length ? `<div class="omni-group-title"><span>🏠 청약·신축분양</span><span>${reItems.length}</span></div>
         ${reItems.map((l) => `<div class="omni-item" data-omni-re="${esc(l.name)}"><div class="omni-item-main"><div class="omni-item-title">${esc(l.name)}</div><div class="omni-item-sub">${esc(l.addr)} · ${esc(l.builder)}</div></div><span class="tag tag-re">청약</span></div>`).join('')}` : ''}
     `;
     drop.classList.remove('hidden');
+
+    drop.querySelectorAll('[data-omni-sbiz]').forEach((el) => el.addEventListener('click', () => {
+      drop.classList.add('hidden');
+      const [slug, la, lo, nm] = el.dataset.omniSbiz.split('|');
+      S.sbizActiveSlug = slug;
+      S.sbizQ = nm;
+      switchTab('sbiz');
+      setTimeout(() => { S.leafletMap?.setView([Number(la), Number(lo)], 17); }, 150);
+    }));
 
     drop.querySelectorAll('[data-omni-rid]').forEach((el) => el.addEventListener('click', () => {
       S.selectedRid = Number(el.dataset.omniRid); drop.classList.add('hidden'); switchTab('overview');
@@ -3108,6 +3204,16 @@ async function init() {
     await idbClearKey();
     location.reload();
   });
+
+  // Wire popup action helpers for Leaflet markers
+  window._nxPipeStore = (id, title, sub, region) => {
+    addToPipeline({ id: `sbiz:${id}`, domain: 'sbiz', title, sub, region, valueMan: 0 });
+  };
+  window._nxCatchHere = (lat, lon, label) => {
+    const curActive = S.sbizActiveSlug ? S.sbizCache.get(S.sbizActiveSlug) : null;
+    S.leafletMap?.closePopup();
+    runRadiusCatchment(lat, lon, curActive, label);
+  };
 
   wireOmniSearch();
 

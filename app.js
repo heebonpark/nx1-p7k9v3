@@ -180,8 +180,10 @@ const S = {
   // Bid filters
   bidSub: 'opps', bidQ: '', bidStage: '', bidField: '', bidPage: 1,
   bldQ: '', bldSector: '', bldPage: 1,
-  // Sbiz filters
+  // Sbiz filters & v6 Split-View / YYYYMM state
   sbizQ: '', sbizSgg: '', sbizL1: '', sbizOnly2026: false, sbizView: 'stores', sbizPage: 1,
+  sbizYear: '', sbizMonth: '', sbizPeriod: '', sbizSort: 'ymDesc',
+  sbizSplitView: true, sbizMapExpanded: false, sbizViewportSync: false, sbizInViewIdx: [],
   // RealEstate filters
   reSub: 'apt', reQ: '', reArea: '', myScore: 55, myBudgetEok: 8,
   // Hub & Pipeline
@@ -2364,6 +2366,20 @@ function parseSbizStore(sido, i) {
   };
 }
 
+function regYmBadgeHtml(regYm) {
+  if (!regYm) return '<span class="ym-badge ym-old">-</span>';
+  const y = regYm.slice(0, 4);
+  const cls = y === '2026' ? 'ym-2026' : y === '2025' ? 'ym-2025' : y === '2024' ? 'ym-2024' : 'ym-old';
+  return `<span class="ym-badge ${cls}">${y === '2026' ? '🆕' : '📅'} ${esc(regYm)}</span>`;
+}
+function regYearColor(regYm) {
+  const y = String(regYm || '').slice(0, 4);
+  if (y === '2026') return '#f59e0b';
+  if (y === '2025') return '#2563eb';
+  if (y === '2024') return '#059669';
+  return '#64748b';
+}
+
 function renderSbizTab() {
   const sidos = S.core.sbizSummary.sidos || [];
   const active = S.sbizActiveSlug ? S.sbizCache.get(S.sbizActiveSlug) : null;
@@ -2373,9 +2389,11 @@ function renderSbizTab() {
       <div class="card-head">
         <div>
           <h2 class="card-title">🏪 전국 소상공인 상권 · 디지털트윈 GIS PRO <span class="tag tag-sbiz">총 ${fmt(S.core.stats.sbizCount)}개</span></h2>
-          <p class="card-sub">브이월드 위성·연속지적도·용도지역·상권 히트맵 + 지도 클릭 반경 상권분석(HHI·신규개업률·공시지가)</p>
+          <p class="card-sub">등재연월(년·월) 정밀 구분조회 · 지도+리스트 실시간 연동 · 브이월드 위성/지적도/히트맵/반경 상권진단</p>
         </div>
-        <div style="display:flex;gap:6px;flex-wrap:wrap">
+        <div style="display:flex;gap:5px;flex-wrap:wrap">
+          <button id="btnSbizFit" class="btn btn-sm" type="button" title="현재 필터 상가 전체가 보이도록 지도 맞춤">🎯 결과 맞춤</button>
+          <button id="btnSbizGps" class="btn btn-sm" type="button" title="내 GPS 현재 위치로 이동 후 반경 분석">📍 내 위치</button>
           <button id="btnSbizLiveRadius" class="btn btn-emerald btn-sm" type="button">📡 반경 실시간 API</button>
           <button id="btnSbizVworld" class="btn btn-sm" type="button">📍 중심 반경분석</button>
         </div>
@@ -2414,15 +2432,19 @@ function renderSbizTab() {
           <button class="toggle-pill ${S.gisLayers.bldg ? 'on-emerald' : ''}" data-gis-layer="bldg" type="button">🏢 건물 (줌15+)</button>
         </div>
         <div class="gis-row">
-          <span class="gis-label">🎨 마커 옵션:</span>
+          <span class="gis-label">🎨 마커·뷰 옵션:</span>
           ${[
             ['category', '업종 8색'],
-            ['new2026', '🆕 2026 신규강조'],
+            ['regYear', '📅 등재연도별'],
+            ['new2026', '🆕 2026 신규'],
             ['density', '🏢 건물 밀집도'],
           ].map(([k, lb]) => `<button class="toggle-pill ${S.opts.markerColorMode === k ? 'on' : ''}" data-mk-mode="${k}" type="button">${lb}</button>`).join('')}
           <button class="toggle-pill ${S.opts.groupBuildings ? 'on-emerald' : ''}" id="btnToggleGroupBld" type="button">🏢 동일건물 그룹핑</button>
-          <button class="toggle-pill ${S.opts.showStoreLabels ? 'on-emerald' : ''}" id="btnToggleLabels" type="button">🏷️ 상호 라벨(줌16+)</button>
-          <button class="toggle-pill ${S.gisRulerMode ? 'on' : ''}" id="btnToggleRuler" type="button">📏 2점 거리측정</button>
+          <button class="toggle-pill ${S.opts.showStoreLabels ? 'on-emerald' : ''}" id="btnToggleLabels" type="button">🏷️ 라벨(줌16+)</button>
+          <button class="toggle-pill ${S.gisRulerMode ? 'on' : ''}" id="btnToggleRuler" type="button">📏 거리측정</button>
+          <button class="toggle-pill ${S.sbizSplitView ? 'on' : ''}" id="btnToggleSplit" type="button">↔️ 지도+리스트 분할</button>
+          <button class="toggle-pill ${S.sbizViewportSync ? 'on-emerald' : ''}" id="btnToggleVpSync" type="button">👁️ 지도화면 리스트연동</button>
+          <button class="toggle-pill ${S.sbizMapExpanded ? 'on' : ''}" id="btnToggleExpand" type="button">🖥️ 지도확장</button>
         </div>
         <div class="gis-row">
           <span class="gis-label">🎯 클릭 반경분석:</span>
@@ -2436,7 +2458,7 @@ function renderSbizTab() {
 
       ${active ? renderSbizControlsHtml(active) : `
         <div style="padding:12px 14px;border-radius:11px;background:var(--c-sbiz-bg);font-size:13px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:10px">
-          <span>💡 시도를 선택하면 275만 상권 데이터 + 히트맵 + 동일건물 입점자 마커 + 클릭 반경분석이 즉시 활성화됩니다.</span>
+          <span>💡 시도를 선택하면 275만 상권 데이터 + 등재연월(년·월) 조회 + 지도·리스트 실시간 연동이 활성화됩니다.</span>
           <div style="display:flex;gap:6px">
             <button class="btn btn-emerald btn-sm" data-load-sido="incheon">인천 열기 (6.7MB)</button>
             <button class="btn btn-sm" data-load-sido="sejong">세종 열기 (0.7MB)</button>
@@ -2444,18 +2466,25 @@ function renderSbizTab() {
         </div>
       `}
 
-      <div id="sbizMap" class="leaflet-box"></div>
-      <div id="sbizMarkerLegend" class="marker-legend"></div>
+      ${active ? `<div id="sbizYmTimeline"></div>` : ''}
+
+      <div id="sbizWorkspace" class="sbiz-workspace ${S.sbizSplitView && active ? 'split' : ''}">
+        <div>
+          <div id="sbizMap" class="leaflet-box ${S.sbizMapExpanded ? 'expanded' : ''}"></div>
+          <div id="sbizMarkerLegend" class="marker-legend"></div>
+        </div>
+        <div id="sbizListCard"></div>
+      </div>
+
       <div id="sbizCatchmentBox"></div>
     </div>
-
-    <div id="sbizListCard"></div>
   `;
 
   $('mainStage').querySelectorAll('[data-load-sido]').forEach((b) => {
     b.addEventListener('click', async () => {
       await loadSbizSido(b.dataset.loadSido);
       S.catchment = null;
+      S.sbizYear = ''; S.sbizMonth = ''; S.sbizPeriod = '';
       renderSbizTab();
     });
   });
@@ -2490,7 +2519,6 @@ function renderSbizTab() {
     });
   });
 
-  // Wire new Marker Color Mode / Grouping / Labels / Ruler
   $('mainStage').querySelectorAll('[data-mk-mode]').forEach((b) => {
     b.addEventListener('click', () => {
       S.opts.markerColorMode = b.dataset.mkMode;
@@ -2519,6 +2547,48 @@ function renderSbizTab() {
     S.leafletRulerLayer?.clearLayers();
     e.currentTarget.classList.toggle('on', S.gisRulerMode);
     toast(S.gisRulerMode ? '📏 거리측정 ON: 지도에서 2개 지점을 차례로 클릭하세요.' : '📏 거리측정 OFF (클릭 반경분석 복귀)');
+  });
+  $('btnToggleSplit')?.addEventListener('click', (e) => {
+    S.sbizSplitView = !S.sbizSplitView;
+    e.currentTarget.classList.toggle('on', S.sbizSplitView);
+    $('sbizWorkspace')?.classList.toggle('split', S.sbizSplitView && !!active);
+    setTimeout(() => S.leafletMap?.invalidateSize(), 120);
+  });
+  $('btnToggleVpSync')?.addEventListener('click', (e) => {
+    S.sbizViewportSync = !S.sbizViewportSync;
+    S.sbizPage = 1;
+    e.currentTarget.classList.toggle('on-emerald', S.sbizViewportSync);
+    toast(S.sbizViewportSync ? '👁️ 지도 화면 연동 ON: 지도를 움직이면 리스트가 현재 화면 상가로 자동 갱신됩니다.' : '👁️ 지도 화면 연동 OFF (전체 필터 리스트 표시)');
+    if (active) { renderViewportSbizMarkers(active); renderSbizListPanel(active); }
+  });
+  $('btnToggleExpand')?.addEventListener('click', (e) => {
+    S.sbizMapExpanded = !S.sbizMapExpanded;
+    e.currentTarget.classList.toggle('on', S.sbizMapExpanded);
+    $('sbizMap')?.classList.toggle('expanded', S.sbizMapExpanded);
+    setTimeout(() => S.leafletMap?.invalidateSize(), 120);
+  });
+  $('btnSbizFit')?.addEventListener('click', () => {
+    if (!active || !S.leafletMap || !S.lastSbizMatchedIdx.length) return toast('먼저 시도를 열어 상가를 조회하세요.');
+    const step = Math.max(1, Math.floor(S.lastSbizMatchedIdx.length / 500));
+    const bounds = [];
+    for (let k = 0; k < S.lastSbizMatchedIdx.length; k += step) {
+      const la = active.lat[S.lastSbizMatchedIdx[k]] / 1e6, lo = active.lon[S.lastSbizMatchedIdx[k]] / 1e6;
+      if (la && lo) bounds.push([la, lo]);
+    }
+    if (bounds.length) S.leafletMap.fitBounds(bounds, { maxZoom: 16, padding: [24, 24] });
+  });
+  $('btnSbizGps')?.addEventListener('click', () => {
+    if (!navigator.geolocation) return toast('브라우저에서 GPS 위치 정보를 지원하지 않습니다.');
+    toast('📍 현재 GPS 위치 확인 중…');
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        const { latitude, longitude } = pos.coords;
+        S.leafletMap?.setView([latitude, longitude], 16);
+        runRadiusCatchment(latitude, longitude, active, '내 현재 위치');
+      },
+      (err) => toast(`GPS 조회 실패: ${err.message}`),
+      { enableHighAccuracy: true, timeout: 8000 }
+    );
   });
   renderMarkerLegend();
 
@@ -2568,25 +2638,69 @@ function renderSbizTab() {
   if (S.catchment) renderCatchmentHud();
 }
 
+function getSbizDateSummary(active) {
+  if (active._dateSum) return active._dateSum;
+  const yrMap = new Map(), ymMap = new Map();
+  for (let i = 0; i < active.n; i++) {
+    const ym = String(active.strs[i] || '').slice(6, 12);
+    if (/^\d{6}$/.test(ym)) {
+      ymMap.set(ym, (ymMap.get(ym) || 0) + 1);
+      const y = ym.slice(0, 4);
+      yrMap.set(y, (yrMap.get(y) || 0) + 1);
+    }
+  }
+  const years = [...yrMap.entries()].sort((a, b) => b[0].localeCompare(a[0]));
+  const yms = [...ymMap.entries()].sort((a, b) => b[0].localeCompare(a[0]));
+  active._dateSum = { years, yms, recent3: new Set(yms.slice(0, 3).map(([k]) => k)) };
+  return active._dateSum;
+}
+
 function renderSbizControlsHtml(active) {
   const sggs = (active.dicts.sgg || []).filter(Boolean);
   const l1s = (active.dicts.l1 || []).filter(Boolean);
+  const ds = getSbizDateSummary(active);
+  const availMonths = S.sbizYear
+    ? ds.yms.filter(([ym]) => ym.startsWith(S.sbizYear)).map(([ym, cnt]) => [ym.slice(4, 6), cnt])
+    : Array.from({ length: 12 }, (_, idx) => [String(idx + 1).padStart(2, '0'), null]);
+
   return `
-    <div class="toolbar">
+    <div class="toolbar" style="margin-bottom:8px">
       <input id="fSbizQ" class="input" style="flex:1;min-width:170px" value="${esc(S.sbizQ)}" placeholder="상호명 · 건물명 · 도로명 검색 (${esc(active.name)})" />
       <select id="fSbizSgg" class="select">
         <option value="">전체 시군구</option>
         ${sggs.map((g) => `<option value="${esc(g)}" ${S.sbizSgg === g ? 'selected' : ''}>${esc(cleanSbizLabel(g))}</option>`).join('')}
       </select>
       <select id="fSbizL1" class="select">
-        <option value="">전체 업종 대분류</option>
+        <option value="">전체 업종</option>
         ${l1s.map((l) => `<option value="${esc(l)}" ${S.sbizL1 === l ? 'selected' : ''}>${esc(l)}</option>`).join('')}
       </select>
-      <label style="display:inline-flex;align-items:center;gap:5px;font-size:12.5px;font-weight:700;cursor:pointer">
-        <input id="fSbiz2026" type="checkbox" ${S.sbizOnly2026 ? 'checked' : ''} /> 🆕 2026 신규만
-      </label>
+      <select id="fSbizYear" class="select" title="등재 연도 구분">
+        <option value="">📅 전체 연도</option>
+        ${ds.years.map(([y, cnt]) => `<option value="${y}" ${S.sbizYear === y ? 'selected' : ''}>${y}년 (${fmt(cnt)})</option>`).join('')}
+      </select>
+      <select id="fSbizMonth" class="select" title="등재 월 구분">
+        <option value="">전체 월</option>
+        ${availMonths.map(([m, cnt]) => `<option value="${m}" ${S.sbizMonth === m ? 'selected' : ''}>${m}월${cnt !== null ? ` (${fmt(cnt)})` : ''}</option>`).join('')}
+      </select>
+      <select id="fSbizSort" class="select" title="리스트 정렬">
+        <option value="ymDesc" ${S.sbizSort === 'ymDesc' ? 'selected' : ''}>📅 최신 등재순</option>
+        <option value="ymAsc" ${S.sbizSort === 'ymAsc' ? 'selected' : ''}>📅 오래된 등재순</option>
+        <option value="name" ${S.sbizSort === 'name' ? 'selected' : ''}>🔤 상호명순</option>
+      </select>
+    </div>
+    <div class="toolbar" style="margin-bottom:8px;justify-content:space-between">
       <div class="chips">
-        <button class="chip ${S.sbizView === 'stores' ? 'active' : ''}" data-sbiz-view="stores">개별 상가</button>
+        ${[
+          ['', '전체 기간'],
+          ['recent3m', '🔥 최근 3개월'],
+          ['2026', '🆕 2026년'],
+          ['2025', '📅 2025년'],
+          ['2024', '📅 2024년'],
+          ['old', '🏛️ 2022~23'],
+        ].map(([k, lb]) => `<button class="chip ${(S.sbizPeriod === k && !S.sbizMonth) ? 'active' : ''}" data-sbiz-period="${k}" type="button">${lb}</button>`).join('')}
+      </div>
+      <div class="chips">
+        <button class="chip ${S.sbizView === 'stores' ? 'active' : ''}" data-sbiz-view="stores">📋 개별 상가 리스트</button>
         <button class="chip ${S.sbizView === 'buildings' ? 'active' : ''}" data-sbiz-view="buildings">🏢 대형상가 건물별</button>
       </div>
     </div>
@@ -2663,7 +2777,16 @@ function renderMarkerLegend() {
   const el = $('sbizMarkerLegend');
   if (!el) return;
   const mode = S.opts.markerColorMode || 'category';
-  if (mode === 'new2026') {
+  if (mode === 'regYear') {
+    el.innerHTML = `
+      <span class="gis-label">범례(등재연도):</span>
+      <span class="ml-item"><span class="ml-dot" style="background:#f59e0b"></span>🆕 2026년</span>
+      <span class="ml-item"><span class="ml-dot" style="background:#2563eb"></span>📅 2025년</span>
+      <span class="ml-item"><span class="ml-dot" style="background:#059669"></span>📅 2024년</span>
+      <span class="ml-item"><span class="ml-dot" style="background:#64748b"></span>🏛️ 2022~23년</span>
+      ${S.opts.groupBuildings ? `<span class="ml-item" style="margin-left:auto;color:var(--muted)">숫자배지=최신등재 연도색</span>` : ''}
+    `;
+  } else if (mode === 'new2026') {
     el.innerHTML = `
       <span class="gis-label">범례(2026신규):</span>
       <span class="ml-item"><span class="ml-dot" style="background:#f59e0b"></span>🆕 2026 신규개업</span>
@@ -2702,13 +2825,16 @@ function initSbizLeaflet(active) {
   S.leafletRulerLayer = L.layerGroup().addTo(S.leafletMap);
   applyGisOverlays(active);
 
-  // Viewport-aware dynamic marker redraw on pan/zoom so zoomed-in areas show ALL local stores!
+  // Viewport-aware dynamic marker redraw (+ optional live list sync!) on pan/zoom
   let mvTimer = null;
   S.leafletMap.on('moveend zoomend', () => {
     clearTimeout(mvTimer);
     mvTimer = setTimeout(() => {
       const curActive = S.sbizActiveSlug ? S.sbizCache.get(S.sbizActiveSlug) : null;
-      if (curActive && S.lastSbizMatchedIdx.length) renderViewportSbizMarkers(curActive);
+      if (curActive && S.lastSbizMatchedIdx.length) {
+        renderViewportSbizMarkers(curActive);
+        if (S.sbizViewportSync) { S.sbizPage = 1; renderSbizListPanel(curActive); }
+      }
     }, 120);
   });
 
@@ -2830,6 +2956,7 @@ function renderViewportSbizMarkers(active) {
     const la = active.lat[idx], lo = active.lon[idx];
     if (la >= minLa && la <= maxLa && lo >= minLo && lo <= maxLo) inView.push(idx);
   }
+  S.sbizInViewIdx = inView;
 
   const cap = S.opts.markerCap || 1500;
   const zoom = S.leafletMap.getZoom();
@@ -2845,12 +2972,13 @@ function renderViewportSbizMarkers(active) {
       const ck = `${active.lat[idx]},${active.lon[idx]}`;
       let g = groups.get(ck);
       if (!g) {
-        g = { lat: active.lat[idx] / 1e6, lon: active.lon[idx] / 1e6, stores: [], newCnt: 0, bldName: '' };
+        g = { lat: active.lat[idx] / 1e6, lon: active.lon[idx] / 1e6, stores: [], newCnt: 0, bldName: '', maxYm: '' };
         groups.set(ck, g);
       }
       const st = parseSbizStore(active, idx);
       g.stores.push(st);
       if (st.isNew2026) g.newCnt++;
+      if (st.regYm && st.regYm > g.maxYm) g.maxYm = st.regYm;
       if (!g.bldName && st.bld) g.bldName = st.bld;
     }
 
@@ -2866,7 +2994,8 @@ function renderViewportSbizMarkers(active) {
         const st = g.stores[0];
         const dn = `${st.name}${st.branch ? ' ' + st.branch : ''}`.trim() || '(상호 미기재)';
         let fillColor = sbizCategoryColor(st.l1);
-        if (mode === 'new2026') fillColor = st.isNew2026 ? '#f59e0b' : '#10b981';
+        if (mode === 'regYear') fillColor = regYearColor(st.regYm);
+        else if (mode === 'new2026') fillColor = st.isNew2026 ? '#f59e0b' : '#10b981';
         else if (mode === 'density') fillColor = '#10b981';
         const mk = L.circleMarker([g.lat, g.lon], {
           radius: st.isNew2026 ? baseRad + 1.5 : baseRad,
@@ -2875,7 +3004,7 @@ function renderViewportSbizMarkers(active) {
           fillOpacity: 0.92,
           weight: st.isNew2026 ? 2.2 : 1.5,
         });
-        mk.bindTooltip(`${esc(dn)} · ${esc(st.l3 || st.l1)}${st.floor ? ' (' + esc(st.floor) + ')' : ''}`, {
+        mk.bindTooltip(`${esc(dn)} · ${esc(st.l3 || st.l1)}${st.regYm ? ` · 📅${esc(st.regYm)}` : ''}`, {
           direction: 'top', offset: [0, -6], permanent: showLbl && k < 60, className: showLbl ? 'nx-store-label' : '',
         });
         mk.bindPopup(() => buildSingleStorePopup(st), { maxWidth: 320 });
@@ -2885,7 +3014,8 @@ function renderViewportSbizMarkers(active) {
         const cnt = g.stores.length;
         const size = cnt >= 30 ? 32 : cnt >= 10 ? 27 : cnt >= 5 ? 24 : 21;
         let bg = '#4f46e5';
-        if (mode === 'density') bg = cnt >= 15 ? '#e11d48' : cnt >= 5 ? '#8b5cf6' : '#3b82f6';
+        if (mode === 'regYear') bg = regYearColor(g.maxYm);
+        else if (mode === 'density') bg = cnt >= 15 ? '#e11d48' : cnt >= 5 ? '#8b5cf6' : '#3b82f6';
         else if (mode === 'new2026') bg = g.newCnt > 0 ? '#d97706' : '#059669';
         else bg = sbizCategoryColor(g.stores[0].l1);
         const icon = L.divIcon({
@@ -2895,7 +3025,7 @@ function renderViewportSbizMarkers(active) {
           iconAnchor: [size / 2, size / 2],
         });
         const mk = L.marker([g.lat, g.lon], { icon });
-        const tipLbl = `🏢 ${esc(g.bldName || g.stores[0].name)} · ${cnt}개 입점${g.newCnt ? ` (🆕2026 ${g.newCnt})` : ''}`;
+        const tipLbl = `🏢 ${esc(g.bldName || g.stores[0].name)} · ${cnt}개 입점${g.maxYm ? ` · 최근 ${esc(g.maxYm)}` : ''}${g.newCnt ? ` (🆕2026 ${g.newCnt})` : ''}`;
         mk.bindTooltip(tipLbl, { direction: 'top', offset: [0, -size / 2], permanent: showLbl && k < 45, className: showLbl ? 'nx-store-label' : '' });
         mk.bindPopup(() => buildMultiTenantPopup(g), { maxWidth: 330 });
         mk.on('click', (ev) => { S._justClickedMarker = true; L.DomEvent.stopPropagation(ev); });
@@ -2905,7 +3035,7 @@ function renderViewportSbizMarkers(active) {
 
     const statEl = $('sbizViewportStat');
     if (statEl) {
-      statEl.textContent = `화면 내 상가 ${fmt(inView.length)}개 → ${fmt(drawLimit)}개 건물/위치 마커 표시 (줌 ${zoom})`;
+      statEl.textContent = `화면 내 ${fmt(inView.length)}개 → ${fmt(drawLimit)}개 마커 (줌 ${zoom})`;
     }
     return;
   }
@@ -2917,19 +3047,19 @@ function renderViewportSbizMarkers(active) {
     const st = parseSbizStore(active, inView[k]);
     if (!st.lat || !st.lon) continue;
     const dn = `${st.name}${st.branch ? ' ' + st.branch : ''}`.trim() || '(상호 미기재)';
-    const fillColor = mode === 'new2026' ? (st.isNew2026 ? '#f59e0b' : '#10b981') : sbizCategoryColor(st.l1);
+    const fillColor = mode === 'regYear' ? regYearColor(st.regYm) : (mode === 'new2026' ? (st.isNew2026 ? '#f59e0b' : '#10b981') : sbizCategoryColor(st.l1));
     const mk = L.circleMarker([st.lat, st.lon], {
       radius: st.isNew2026 ? baseRad + 1.5 : baseRad,
       color: '#ffffff', fillColor, fillOpacity: 0.92, weight: 1.5,
     });
-    mk.bindTooltip(`${esc(dn)} · ${esc(st.l3 || st.l1)}`, { direction: 'top', offset: [0, -6] });
+    mk.bindTooltip(`${esc(dn)} · ${esc(st.l3 || st.l1)}${st.regYm ? ` · 📅${esc(st.regYm)}` : ''}`, { direction: 'top', offset: [0, -6] });
     mk.bindPopup(() => buildSingleStorePopup(st), { maxWidth: 320 });
     mk.on('click', (ev) => { S._justClickedMarker = true; L.DomEvent.stopPropagation(ev); });
     mk.addTo(S.leafletLayer);
   }
   const statEl = $('sbizViewportStat');
   if (statEl) {
-    statEl.textContent = `현재 화면 내 ${fmt(inView.length)}개 중 ${fmt(Math.min(inView.length, Math.ceil(inView.length / step)))}개 개별 마커 표시 (줌 ${zoom})`;
+    statEl.textContent = `화면 내 ${fmt(inView.length)}개 중 ${fmt(Math.min(inView.length, Math.ceil(inView.length / step)))}개 마커 (줌 ${zoom})`;
   }
 }
 
@@ -3124,13 +3254,89 @@ function wireSbizFilters(active) {
   $('fSbizQ')?.addEventListener('input', (e) => { clearTimeout(t); t = setTimeout(() => { S.sbizQ = e.target.value; S.sbizPage = 1; updateSbizView(active); }, 220); });
   $('fSbizSgg')?.addEventListener('change', (e) => { S.sbizSgg = e.target.value; S.sbizPage = 1; updateSbizView(active); });
   $('fSbizL1')?.addEventListener('change', (e) => { S.sbizL1 = e.target.value; S.sbizPage = 1; updateSbizView(active); });
-  $('fSbiz2026')?.addEventListener('change', (e) => { S.sbizOnly2026 = e.target.checked; S.sbizPage = 1; updateSbizView(active); });
+  $('fSbizYear')?.addEventListener('change', (e) => {
+    S.sbizYear = e.target.value;
+    S.sbizPeriod = S.sbizYear === '2026' ? '2026' : S.sbizYear === '2025' ? '2025' : S.sbizYear === '2024' ? '2024' : '';
+    S.sbizPage = 1;
+    renderSbizTab();
+  });
+  $('fSbizMonth')?.addEventListener('change', (e) => {
+    S.sbizMonth = e.target.value;
+    S.sbizPage = 1;
+    updateSbizView(active);
+  });
+  $('fSbizSort')?.addEventListener('change', (e) => {
+    S.sbizSort = e.target.value;
+    S.sbizPage = 1;
+    updateSbizView(active);
+  });
+  document.querySelectorAll('[data-sbiz-period]').forEach((b) => {
+    b.addEventListener('click', () => {
+      const p = b.dataset.sbizPeriod;
+      S.sbizPeriod = p;
+      S.sbizMonth = '';
+      S.sbizYear = (p === '2026' || p === '2025' || p === '2024') ? p : '';
+      S.sbizPage = 1;
+      renderSbizTab();
+    });
+  });
   document.querySelectorAll('[data-sbiz-view]').forEach((b) => {
     b.addEventListener('click', () => {
       S.sbizView = b.dataset.sbizView;
       document.querySelectorAll('[data-sbiz-view]').forEach((x) => x.classList.toggle('active', x.dataset.sbizView === S.sbizView));
-      updateSbizView(active);
+      renderSbizListPanel(active);
     });
+  });
+}
+
+function renderSbizYmTimeline(active, baseMatchedNoDate) {
+  const el = $('sbizYmTimeline');
+  if (!el) return;
+  const ymMap = new Map();
+  for (let k = 0; k < baseMatchedNoDate.length; k++) {
+    const ym = String(active.strs[baseMatchedNoDate[k]] || '').slice(6, 12);
+    if (/^\d{6}$/.test(ym)) ymMap.set(ym, (ymMap.get(ym) || 0) + 1);
+  }
+  const bars = [...ymMap.entries()].sort((a, b) => b[0].localeCompare(a[0])).slice(0, 18).reverse();
+  if (!bars.length) { el.innerHTML = ''; return; }
+  const maxC = Math.max(1, ...bars.map(([, c]) => c));
+  const curSelYm = (S.sbizYear && S.sbizMonth) ? `${S.sbizYear}${S.sbizMonth}` : '';
+
+  el.innerHTML = `
+    <div style="display:flex;justify-content:space-between;align-items:center;font-size:11.5px;margin-bottom:4px;padding:0 2px">
+      <span><b>📈 월별 등재(개업) 추이</b> <span style="color:var(--muted)">(막대 클릭 시 해당 년·월 즉시 필터)</span></span>
+      ${curSelYm ? `<button id="btnClearYmBar" class="btn btn-sm" style="padding:2px 7px;font-size:11px" type="button">✕ ${curSelYm.slice(0, 4)}.${curSelYm.slice(4, 6)} 해제</button>` : `<span style="color:var(--muted)">최근 ${bars.length}개월</span>`}
+    </div>
+    <div class="ym-timeline">
+      ${bars.map(([ym, cnt]) => {
+        const h = Math.max(6, Math.round((cnt / maxC) * 38));
+        const isAct = curSelYm === ym;
+        const is26 = ym.startsWith('2026');
+        return `<div class="ym-col ${is26 ? 'is2026' : ''} ${isAct ? 'active' : ''}" data-pick-ym="${ym}" title="${ym.slice(0, 4)}년 ${ym.slice(4, 6)}월 등재: ${fmt(cnt)}개">
+          <div class="ym-cnt">${cnt >= 1000 ? (cnt / 1000).toFixed(1) + 'k' : cnt}</div>
+          <div class="ym-bar" style="height:${h}px"></div>
+          <div class="ym-lbl">${ym.slice(2, 4)}.${ym.slice(4, 6)}</div>
+        </div>`;
+      }).join('')}
+    </div>
+  `;
+
+  el.querySelectorAll('[data-pick-ym]').forEach((col) => {
+    col.addEventListener('click', () => {
+      const ym = col.dataset.pickYm;
+      const y = ym.slice(0, 4), m = ym.slice(4, 6);
+      if (S.sbizYear === y && S.sbizMonth === m) {
+        S.sbizYear = ''; S.sbizMonth = ''; S.sbizPeriod = '';
+      } else {
+        S.sbizYear = y; S.sbizMonth = m; S.sbizPeriod = '';
+      }
+      S.sbizPage = 1;
+      renderSbizTab();
+    });
+  });
+  $('btnClearYmBar')?.addEventListener('click', () => {
+    S.sbizYear = ''; S.sbizMonth = ''; S.sbizPeriod = ''; S.sbizPage = 1;
+    renderSbizTab();
   });
 }
 
@@ -3139,19 +3345,43 @@ function updateSbizView(active) {
   const l1Idx = S.sbizL1 ? active.dicts.l1.indexOf(S.sbizL1) : -1;
   const q = S.sbizQ.trim().toLowerCase();
   const n = active.n;
+  const ds = getSbizDateSummary(active);
+
+  const baseNoDate = [];
   const matchedIdx = [];
 
   for (let i = 0; i < n; i++) {
     if (sggIdx >= 0 && active.cols.sgg[i] !== sggIdx) continue;
     if (l1Idx >= 0 && active.cols.l1[i] !== l1Idx) continue;
     const raw = active.strs[i] || '';
-    if (S.sbizOnly2026 && raw.slice(6, 10) !== '2026') continue;
     if (q && !raw.toLowerCase().includes(q)) continue;
+    baseNoDate.push(i);
+
+    const ym = raw.slice(6, 12);
+    const yr = ym.slice(0, 4);
+    const mo = ym.slice(4, 6);
+    if (S.sbizPeriod === 'recent3m' && !ds.recent3.has(ym)) continue;
+    if (S.sbizPeriod === 'old' && yr !== '2022' && yr !== '2023') continue;
+    if (S.sbizYear && yr !== S.sbizYear) continue;
+    if (S.sbizMonth && mo !== S.sbizMonth) continue;
     matchedIdx.push(i);
   }
-  S.lastSbizMatchedIdx = matchedIdx;
 
-  // Viewport-aware marker plotting (auto-fits when searching/filtering by sigungu or keyword!)
+  // Sort matchedIdx (default: newest 등재연월 first!)
+  if (S.sbizSort === 'ymDesc') {
+    matchedIdx.sort((a, b) => (active.strs[b] || '').slice(6, 12).localeCompare((active.strs[a] || '').slice(6, 12)));
+  } else if (S.sbizSort === 'ymAsc') {
+    matchedIdx.sort((a, b) => (active.strs[a] || '').slice(6, 12).localeCompare((active.strs[b] || '').slice(6, 12)));
+  } else if (S.sbizSort === 'name') {
+    matchedIdx.sort((a, b) => {
+      const sa = active.strs[a] || '', sb = active.strs[b] || '';
+      return sa.slice(sa.indexOf('\x1f') + 1).localeCompare(sb.slice(sb.indexOf('\x1f') + 1), 'ko');
+    });
+  }
+
+  S.lastSbizMatchedIdx = matchedIdx;
+  renderSbizYmTimeline(active, baseNoDate);
+
   if (S.leafletMap && matchedIdx.length > 0 && (S.sbizSgg || S.sbizQ)) {
     const sampleStep = Math.max(1, Math.floor(matchedIdx.length / 400));
     const bounds = [];
@@ -3163,41 +3393,53 @@ function updateSbizView(active) {
   }
   renderViewportSbizMarkers(active);
   if (S.gisLayers.heat) applyGisOverlays(active);
+  renderSbizListPanel(active);
+}
 
+function renderSbizListPanel(active) {
   const card = $('sbizListCard');
+  if (!card || !active) return;
+  const sourceIdx = (S.sbizViewportSync && S.sbizInViewIdx.length) ? S.sbizInViewIdx : S.lastSbizMatchedIdx;
+  const dateTag = S.sbizYear || S.sbizMonth
+    ? `${S.sbizYear || '전체'}년 ${S.sbizMonth ? S.sbizMonth + '월' : '전체'}`
+    : (S.sbizPeriod === 'recent3m' ? '최근 3개월' : S.sbizPeriod === 'old' ? '2022~23년' : '전체 기간');
+
   if (S.sbizView === 'buildings') {
     const bMap = new Map();
-    for (const idx of matchedIdx) {
+    for (const idx of sourceIdx) {
       const bid = active.bldId[idx];
       if (!bid) continue;
       let b = bMap.get(bid);
+      const ymRaw = (active.strs[idx] || '').slice(6, 12);
+      const ymFmt = /^\d{6}$/.test(ymRaw) ? `${ymRaw.slice(0, 4)}.${ymRaw.slice(4, 6)}` : '';
       if (!b) {
         const st = parseSbizStore(active, idx);
-        b = { bid, bld: st.bld || st.road || st.jibun, road: st.road, sgg: st.sgg, dong: st.dong, lat: st.lat, lon: st.lon, cnt: 0, new26: 0 };
+        b = { bid, bld: st.bld || st.addr, road: st.addr, sgg: st.sgg, dong: st.dong, lat: st.lat, lon: st.lon, cnt: 0, new26: 0, maxYm: ymFmt };
         bMap.set(bid, b);
       }
       b.cnt++;
-      if ((active.strs[idx] || '').slice(6, 10) === '2026') b.new26++;
+      if (ymRaw.startsWith('2026')) b.new26++;
+      if (ymFmt > b.maxYm) b.maxYm = ymFmt;
     }
-    const topBlds = [...bMap.values()].sort((a, b) => b.cnt - a.cnt).slice(0, 60);
+    const topBlds = [...bMap.values()].sort((a, b) => b.cnt - a.cnt).slice(0, 80);
     card.innerHTML = `
-      <div class="card">
-        <div class="card-head">
-          <h3 class="card-title">🏢 대형상가·밀집건물 TOP 60 <span class="tag tag-sbiz">입점 상가 ${fmt(matchedIdx.length)}개</span></h3>
+      <div class="sbiz-side-list">
+        <div class="card-head" style="padding:11px 13px;margin:0;border-bottom:1px solid var(--border)">
+          <h3 class="card-title" style="font-size:14px">🏢 대형상가·밀집건물 TOP ${topBlds.length} <span class="tag tag-sbiz">${fmt(sourceIdx.length)}개</span></h3>
+          <span style="font-size:11px;color:var(--muted)">${esc(dateTag)}</span>
         </div>
-        <div class="table-wrap">
+        <div class="sbiz-side-scroll">
           <table class="data-table">
-            <thead><tr><th>건물명 / 도로명</th><th>시군구·동</th><th>입점 상가</th><th>2026 신규</th><th>액션</th></tr></thead>
+            <thead><tr><th>건물명 / 도로명</th><th>최근등재</th><th>입점(2026)</th><th>액션</th></tr></thead>
             <tbody>
               ${topBlds.map((b) => `
                 <tr>
-                  <td><b>${esc(b.bld)}</b><div style="font-size:11px;color:var(--muted)">${esc(b.road)}</div></td>
-                  <td>${esc(b.sgg)} ${esc(b.dong)}</td>
-                  <td><span class="tag tag-sbiz">${fmt(b.cnt)}개소</span></td>
-                  <td>${b.new26 ? `<span class="tag tag-bid">+${b.new26}</span>` : '-'}</td>
+                  <td><b>${esc(b.bld)}</b><div style="font-size:11px;color:var(--muted)">${esc(b.sgg)} ${esc(b.dong)} · ${esc(b.road)}</div></td>
+                  <td>${regYmBadgeHtml(b.maxYm)}</td>
+                  <td><span class="tag tag-sbiz">${fmt(b.cnt)}개</span>${b.new26 ? ` <span class="tag tag-bid">+${b.new26}</span>` : ''}</td>
                   <td>
-                    <button class="btn btn-sm" data-fly="${b.lat},${b.lon}">📍 반경분석</button>
-                    <button class="btn btn-sm" data-pipe-bld="${esc(b.bld)}|${esc(b.sgg)}|${b.cnt}">+ 담기</button>
+                    <button class="btn btn-sm" data-fly="${b.lat},${b.lon}">📍</button>
+                    <button class="btn btn-sm" data-pipe-bld="${esc(b.bld)}|${esc(b.sgg)}|${b.cnt}">+CRM</button>
                   </td>
                 </tr>`).join('')}
             </tbody>
@@ -3210,7 +3452,6 @@ function updateSbizView(active) {
         const [la, lo] = btn.dataset.fly.split(',').map(Number);
         S.leafletMap?.setView([la, lo], 17);
         runRadiusCatchment(la, lo, active);
-        window.scrollTo({ top: 180, behavior: 'smooth' });
       });
     });
     card.querySelectorAll('[data-pipe-bld]').forEach((btn) => {
@@ -3223,48 +3464,83 @@ function updateSbizView(active) {
   }
 
   const perPage = 40;
-  const maxPage = Math.max(1, Math.ceil(matchedIdx.length / perPage));
+  const maxPage = Math.max(1, Math.ceil(sourceIdx.length / perPage));
   S.sbizPage = Math.min(S.sbizPage, maxPage);
-  const pageStores = matchedIdx.slice((S.sbizPage - 1) * perPage, S.sbizPage * perPage).map((idx) => parseSbizStore(active, idx));
+  const pageStores = sourceIdx.slice((S.sbizPage - 1) * perPage, S.sbizPage * perPage).map((idx) => parseSbizStore(active, idx));
 
   card.innerHTML = `
-    <div class="card">
-      <div class="card-head">
-        <h3 class="card-title">📋 ${esc(active.name)} 상가 목록 <span class="tag tag-sbiz">${fmt(matchedIdx.length)}개 검색됨</span></h3>
-        <span id="sbizViewportStat" style="font-size:12px;color:var(--muted)">지도를 확대·이동하면 현재 화면 내 모든 상가 마커가 자동 갱신됩니다</span>
+    <div class="sbiz-side-list">
+      <div class="card-head" style="padding:10px 12px;margin:0;border-bottom:1px solid var(--border)">
+        <div>
+          <h3 class="card-title" style="font-size:14px">📋 ${esc(active.name)} 상가 리스트 <span class="tag tag-sbiz">${fmt(sourceIdx.length)}개</span></h3>
+          <div style="font-size:11px;color:var(--muted);margin-top:2px">
+            <span id="sbizViewportStat">기준: ${esc(dateTag)}${S.sbizViewportSync ? ' · 👁️ 지도화면 연동중' : ''}</span>
+          </div>
+        </div>
+        <button id="btnSbizListCsv" class="btn btn-sm btn-emerald" type="button">📥 CSV</button>
       </div>
-      <div class="table-wrap">
+      <div class="sbiz-side-scroll">
         <table class="data-table">
-          <thead><tr><th>상호명</th><th>업종</th><th>시군구·동</th><th>도로명주소 / 건물</th><th>구분</th></tr></thead>
+          <thead><tr><th>상호명 / 주소·건물</th><th>등재일</th><th>업종</th><th>CRM</th></tr></thead>
           <tbody>
-            ${pageStores.map((st) => `
-              <tr data-fly-store="${st.lat},${st.lon}" data-store-nm="${esc(st.name)}">
-                <td><b>${esc(st.name || '(상호 미기재)')}</b> ${st.branch ? `<span style="color:var(--muted)">${esc(st.branch)}</span>` : ''}</td>
-                <td><span class="tag tag-sbiz">${esc(st.l1)}</span> <span style="color:var(--muted)">${esc(st.l3)}</span></td>
-                <td>${esc(st.sgg)} ${esc(st.dong)}</td>
-                <td style="max-width:260px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(st.addr)}${st.bld ? ` <b>(${esc(st.bld)})</b>` : ''}</td>
-                <td>${st.isNew2026 ? '<span class="tag tag-bid">🆕 2026</span>' : '<span class="tag tag-gray">기존</span>'}</td>
-              </tr>`).join('')}
+            ${pageStores.map((st) => {
+              const dn = `${st.name}${st.branch ? ' ' + st.branch : ''}`.trim() || '(상호 미기재)';
+              const bldSub = [st.bld, st.floor, st.ho ? `${st.ho}호` : ''].filter(Boolean).join(' ');
+              return `
+              <tr data-fly-store="${st.lat},${st.lon}" data-store-nm="${esc(dn)}">
+                <td>
+                  <div style="font-weight:800;font-size:12.5px">${esc(dn)}</div>
+                  <div style="font-size:11px;color:var(--muted);max-width:240px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(st.addr)}${bldSub ? ` (${esc(bldSub)})` : ''}</div>
+                </td>
+                <td>${regYmBadgeHtml(st.regYm)}</td>
+                <td>
+                  <span class="tag tag-sbiz" style="font-size:10.5px">${esc(st.l1)}</span>
+                  <div style="font-size:10.5px;color:var(--muted);margin-top:2px">${esc(st.l3 || st.ksic)}</div>
+                </td>
+                <td><button class="btn btn-sm" data-list-crm="${esc(st.id)}|${esc(dn)}|${esc(st.l1 + '·' + st.l3)}|${esc(st.addr)}" type="button">+</button></td>
+              </tr>`;
+            }).join('') || '<tr><td colspan="4" style="text-align:center;padding:24px;color:var(--muted)">선택한 년·월 / 조건에 해당하는 상가가 없습니다.</td></tr>'}
           </tbody>
         </table>
       </div>
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-top:12px">
-        <span style="font-size:12px;color:var(--muted)">페이지 ${S.sbizPage} / ${fmt(maxPage)}</span>
-        <div style="display:flex;gap:6px">
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 12px;border-top:1px solid var(--border);background:var(--surface-2)">
+        <span style="font-size:11.5px;color:var(--muted)">페이지 ${S.sbizPage} / ${fmt(maxPage)} (${esc(dateTag)})</span>
+        <div style="display:flex;gap:5px">
           <button id="sbPrev" class="btn btn-sm" ${S.sbizPage <= 1 ? 'disabled' : ''}>← 이전</button>
           <button id="sbNext" class="btn btn-sm" ${S.sbizPage >= maxPage ? 'disabled' : ''}>다음 →</button>
         </div>
       </div>
     </div>
   `;
-  $('sbPrev')?.addEventListener('click', () => { if (S.sbizPage > 1) { S.sbizPage--; updateSbizView(active); } });
-  $('sbNext')?.addEventListener('click', () => { if (S.sbizPage < maxPage) { S.sbizPage++; updateSbizView(active); } });
+
+  $('sbPrev')?.addEventListener('click', () => { if (S.sbizPage > 1) { S.sbizPage--; renderSbizListPanel(active); } });
+  $('sbNext')?.addEventListener('click', () => { if (S.sbizPage < maxPage) { S.sbizPage++; renderSbizListPanel(active); } });
+  $('btnSbizListCsv')?.addEventListener('click', () => {
+    const cap = Math.min(sourceIdx.length, 30000);
+    const rows = [];
+    for (let k = 0; k < cap; k++) {
+      const st = parseSbizStore(active, sourceIdx[k]);
+      rows.push([st.name, st.branch, st.regYm, st.ageLabel, st.l1, st.l2, st.l3, st.ksic, st.sgg, st.dong, st.addr, st.bld, st.floor, st.ho, st.zip, st.lat, st.lon]);
+    }
+    downloadCsv(
+      `nexusone_sbiz_${active.slug}_${S.sbizYear || 'all'}${S.sbizMonth || ''}_${new Date().toISOString().slice(0, 10)}.csv`,
+      ['상호명', '지점명', '등재연월', '구분', '대분류', '중분류', '소분류', 'KSIC', '시군구', '행정동', '도로명주소', '건물명', '층', '호', '우편번호', '위도', '경도'],
+      rows
+    );
+    toast(`📥 ${fmt(rows.length)}개 상가 리스트(등재연월 포함) CSV 다운로드 완료!`);
+  });
+  card.querySelectorAll('[data-list-crm]').forEach((b) => {
+    b.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const [id, dn, sub, addr] = b.dataset.listCrm.split('|');
+      addToPipeline({ id: `sbiz:${id}`, domain: 'sbiz', title: dn, sub, region: addr, valueMan: 0 });
+    });
+  });
   card.querySelectorAll('[data-fly-store]').forEach((tr) => {
     tr.addEventListener('click', () => {
       const [la, lo] = tr.dataset.flyStore.split(',').map(Number);
       S.leafletMap?.setView([la, lo], 17);
-      runRadiusCatchment(la, lo, active);
-      window.scrollTo({ top: 180, behavior: 'smooth' });
+      runRadiusCatchment(la, lo, active, tr.dataset.storeNm || '');
     });
   });
 }

@@ -682,3 +682,68 @@ table.data-table tbody tr:hover { background: var(--surface-2); }
   .report-paper { overflow: visible !important; padding: 0 !important; }
   .rep-banner { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
 }
+
+/* ===== V6 SPLIT-VIEW GIS MAP + LIVE LIST & YYYYMM TIMELINE ===== */
+.sbiz-workspace {
+  display: grid; grid-template-columns: 1fr; gap: 12px; align-items: start;
+}
+.sbiz-workspace.split {
+  grid-template-columns: 1.25fr 0.95fr;
+}
+.sbiz-workspace.split .leaflet-box {
+  height: 580px;
+}
+.leaflet-box.expanded {
+  height: 680px !important;
+}
+.sbiz-side-list {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 12px; overflow: hidden; display: flex; flex-direction: column;
+}
+.sbiz-workspace.split .sbiz-side-list {
+  height: 580px;
+}
+.sbiz-side-scroll {
+  flex: 1; overflow-y: auto; max-height: 520px;
+}
+.sbiz-workspace.split .sbiz-side-scroll {
+  max-height: none;
+}
+
+/* Monthly Registration Timeline Bar Chart */
+.ym-timeline {
+  display: flex; align-items: flex-end; gap: 4px; height: 76px;
+  padding: 8px 10px 4px; border-radius: 10px; margin-bottom: 10px;
+  background: var(--surface-2); border: 1px solid var(--border); overflow-x: auto;
+}
+.ym-col {
+  flex: 1; min-width: 34px; display: flex; flex-direction: column; align-items: center;
+  gap: 2px; cursor: pointer; padding: 2px; border-radius: 6px; transition: background .12s;
+}
+.ym-col:hover { background: var(--border); }
+.ym-col.active { background: var(--c-corp-bg); }
+.ym-bar {
+  width: 100%; max-width: 24px; border-radius: 4px 4px 1px 1px;
+  background: linear-gradient(180deg, #4f46e5, #818cf8); transition: height .15s;
+}
+.ym-col.is2026 .ym-bar { background: linear-gradient(180deg, #f59e0b, #fbbf24); }
+.ym-col.active .ym-bar { background: linear-gradient(180deg, #e11d48, #fb7185); }
+.ym-cnt { font-size: 9.5px; font-weight: 800; color: var(--text-2); line-height: 1; }
+.ym-lbl { font-size: 9.5px; font-weight: 700; color: var(--muted); line-height: 1.1; }
+
+.ym-badge {
+  display: inline-flex; align-items: center; gap: 3px; padding: 2px 7px;
+  border-radius: 6px; font-size: 11px; font-weight: 800; white-space: nowrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.ym-2026 { background: #fef3c7; color: #b45309; }
+.ym-2025 { background: #dbeafe; color: #1d4ed8; }
+.ym-2024 { background: #d1fae5; color: #047857; }
+.ym-old  { background: var(--surface-2); color: var(--muted); border: 1px solid var(--border); }
+
+@media (max-width: 1024px) {
+  .sbiz-workspace.split { grid-template-columns: 1fr; }
+  .sbiz-workspace.split .leaflet-box { height: 380px; }
+  .sbiz-workspace.split .sbiz-side-list { height: auto; }
+  .sbiz-workspace.split .sbiz-side-scroll { max-height: 440px; }
+}

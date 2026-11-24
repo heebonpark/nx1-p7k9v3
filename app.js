@@ -3674,26 +3674,98 @@ function renderReSubBody() {
   }
 
   if (S.reSub === 'starts') {
+    const starts = S.re.starts || [];
     const archPermits = S.opps.filter((o) => o.stageType === 'permit').map((o) => ({
-      id: o.id, source: '국토부 건축인허가', name: o.title, addr: o.region, builder: o.org, startDate: o.pubDate, usage: o.method,
+      id: o.id,
+      source: o.source || '국토부 건축인허가',
+      name: o.title,
+      addr: o.region,
+      builder: o.org,
+      startDate: o.pubDate,
+      usage: o.method || o.field || '건축인허가',
+      areaM2: o.meta?.totArea || 0,
+      isPermit: true,
+      rawOpp: o,
     }));
-    const combined = [...starts, ...archPermits].filter((s) => !q || `${s.name} ${s.addr} ${s.builder} ${s.source}`.toLowerCase().includes(q)).slice(0, 80);
-    box.innerHTML = `<div class="table-wrap"><table class="data-table">
-      <thead><tr><th>출처</th><th>현장명 / 허가건</th><th>시공사 / 기관</th><th>주소</th><th>일자</th><th>액션</th></tr></thead>
-      <tbody>${combined.map((s) => `
-        <tr>
-          <td><span class="tag ${s.source.includes('국토부') ? 'tag-corp' : 'tag-re'}">${esc(s.source)}</span></td>
-          <td><b>${esc(s.name)}</b></td>
-          <td>${esc(s.builder || '-')}</td>
-          <td style="max-width:210px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--muted)">${esc(s.addr || '-')}</td>
-          <td>${esc(s.startDate || '-')}</td>
-          <td><button class="btn btn-sm" data-add-st="${esc(s.id)}">+ 담기</button></td>
-        </tr>`).join('')}
-      </tbody></table></div>`;
+    const allItems = [...archPermits, ...starts];
+    const srcCounts = { all: allItems.length, permit: archPermits.length, start: starts.length };
+    const srcFilter = S.reStartSrc || 'all';
+    const combined = allItems
+      .filter((s) => {
+        if (srcFilter === 'permit' && !s.isPermit) return false;
+        if (srcFilter === 'start' && s.isPermit) return false;
+        if (q && !`${s.name} ${s.addr} ${s.builder} ${s.source} ${s.usage || ''}`.toLowerCase().includes(q)) return false;
+        return true;
+      })
+      .sort((a, b) => String(b.startDate || '').localeCompare(String(a.startDate || '')));
+
+    box.innerHTML = `
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px">
+        <div class="chips">
+          <button class="chip ${srcFilter === 'all' ? 'active' : ''}" data-st-src="all" type="button">전체 (${srcCounts.all})</button>
+          <button class="chip ${srcFilter === 'permit' ? 'active' : ''}" data-st-src="permit" type="button">🏛️ 국토부 건축인허가 (${srcCounts.permit})</button>
+          <button class="chip ${srcFilter === 'start' ? 'active' : ''}" data-st-src="start" type="button">🏗️ 지자체 착공현장 (${srcCounts.start})</button>
+        </div>
+        <button id="btnStartsCsv" class="btn btn-sm btn-emerald" type="button">📥 착공·인허가 CSV (${fmt(combined.length)})</button>
+      </div>
+      <div class="table-wrap"><table class="data-table">
+        <thead><tr><th>출처</th><th>현장명 / 허가건</th><th>시공사 / 기관</th><th>주소 · 용도</th><th>일자</th><th>액션</th></tr></thead>
+        <tbody>${combined.map((s) => `
+          <tr data-open-st="${esc(s.id)}">
+            <td><span class="tag ${s.isPermit ? 'tag-corp' : 'tag-re'}">${esc(s.source)}</span></td>
+            <td><b>${esc(s.name)}</b>${s.areaM2 ? `<div style="font-size:11px;color:var(--muted)">연면적 ${fmt(s.areaM2)}㎡</div>` : ''}</td>
+            <td>${esc(s.builder || '-')}</td>
+            <td style="max-width:240px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--muted)">${esc(s.addr || '-')}${s.usage ? ` · ${esc(s.usage)}` : ''}</td>
+            <td class="mono" style="font-size:11.5px;white-space:nowrap">${esc(s.startDate || '-')}</td>
+            <td><button class="btn btn-sm" data-add-st="${esc(s.id)}" type="button">+ 담기</button></td>
+          </tr>`).join('') || '<tr><td colspan="6" style="text-align:center;padding:24px;color:var(--muted)">조건에 맞는 착공·건축인허가 데이터가 없습니다.</td></tr>'}
+        </tbody></table></div>`;
+
+    box.querySelectorAll('[data-st-src]').forEach((b) => {
+      b.addEventListener('click', () => { S.reStartSrc = b.dataset.stSrc; renderReSubBody(); });
+    });
+    $('btnStartsCsv')?.addEventListener('click', () => {
+      downloadCsv(
+        `nexusone_starts_permits_${new Date().toISOString().slice(0, 10)}.csv`,
+        ['출처', '현장명/허가건', '시공사/기관', '주소', '용도', '연면적(㎡)', '일자'],
+        combined.map((s) => [s.source, s.name, s.builder || '', s.addr || '', s.usage || '', s.areaM2 || '', s.startDate || ''])
+      );
+      toast(`📥 착공·건축인허가 ${fmt(combined.length)}건 CSV 다운로드 완료!`);
+    });
     box.querySelectorAll('[data-add-st]').forEach((b) => {
-      b.addEventListener('click', () => {
+      b.addEventListener('click', (e) => {
+        e.stopPropagation();
         const s = combined.find((x) => x.id === b.dataset.addSt);
         if (s) addToPipeline({ id: `start:${s.id}`, domain: 're', title: s.name, sub: `${s.source} · ${s.builder || ''}`, region: s.addr || '', valueMan: 0 });
+      });
+    });
+    box.querySelectorAll('tr[data-open-st]').forEach((tr) => {
+      tr.addEventListener('click', () => {
+        const s = combined.find((x) => x.id === tr.dataset.openSt);
+        if (!s) return;
+        if (s.rawOpp) { openOppDrawer(s.rawOpp); return; }
+        const p = BIZ_PERSONAS[S.opts.bizPersona] || BIZ_PERSONAS.security;
+        openDrawer({
+          title: s.name,
+          sub: `${s.source} · ${s.usage || '착공 현장'}`,
+          body: `
+            <div class="domain-box">
+              <div class="domain-stat-row"><span>시공사 / 주체</span><b>${esc(s.builder || '-')}</b></div>
+              <div class="domain-stat-row"><span>현장 주소</span><b>${esc(s.addr || '-')}</b></div>
+              <div class="domain-stat-row"><span>용도 / 구분</span><b>${esc(s.usage || s.kind || '-')}</b></div>
+              <div class="domain-stat-row"><span>연면적</span><b>${s.areaM2 ? `${fmt(s.areaM2)}㎡ (약 ${fmt(s.areaM2 / 3.3058)}평)` : '-'}</b></div>
+              <div class="domain-stat-row"><span>착공/허가일</span><b>${esc(s.startDate || '-')}</b></div>
+            </div>
+            <div class="comm-panel" style="margin-top:12px">
+              <div class="comm-head" style="margin-bottom:6px"><span style="font-weight:800;font-size:12.5px">🏗️ 신축 착공 영업 공략 코멘트 (${esc(p.short)})</span><span class="tag tag-re">선제 스펙인</span></div>
+              <div style="font-size:12px;line-height:1.55">착공 직후~골조 공사 단계가 <b>${esc(p.hook)}</b> 사전 설계 반영(Spec-in)의 최적기입니다. 시공사(<b>${esc(s.builder || '현장소장')}</b>) 및 전기·통신 협력사에 조기 제안서를 전달하세요.</div>
+            </div>
+          `,
+          foot: `<button id="dwStPipe" class="btn btn-primary btn-sm">💼 파이프라인 담기</button>`,
+          onMount: () => {
+            $('dwStPipe')?.addEventListener('click', () => addToPipeline({ id: `start:${s.id}`, domain: 're', title: s.name, sub: `${s.source} · ${s.builder || ''}`, region: s.addr || '', valueMan: 0 }));
+          },
+        });
       });
     });
     return;

@@ -19,8 +19,57 @@ const STRATEGY_PRESETS = {
   construct: { label: '🏗️ 건설·분양·입주', weights: { corp: 15, bid: 35, sbiz: 10, re: 40 }, desc: '건축인허가·착공·신축분양·K-apt' },
 };
 
+const BIZ_PERSONAS = {
+  security: {
+    label: '🛡️ 보안·AI CCTV·출입통제',
+    short: '보안·CCTV',
+    storeDealMan: 360,   // 3년 약정 환산
+    corpDealMan: 1200,
+    oppDealMan: 4500,
+    reDealMan: 6000,
+    hook: '무인·AI 영상관제 + 출입통제 + 24시간 출동 결합 패키지',
+  },
+  telecom: {
+    label: '📡 통신·POS·결제·렌탈',
+    short: '통신·POS',
+    storeDealMan: 280,
+    corpDealMan: 900,
+    oppDealMan: 2500,
+    reDealMan: 2000,
+    hook: '초고속 인터넷·POS·키오스크·테이블오더·정수기/렌탈 원스톱 개통',
+  },
+  construct: {
+    label: '🏗️ 건설·전기·소방·시설',
+    short: '건설·시설',
+    storeDealMan: 180,
+    corpDealMan: 2000,
+    oppDealMan: 9500,
+    reDealMan: 12000,
+    hook: '전기·통신·소방·승강기·기계설비 사전 스펙인 및 유지보수 도급',
+  },
+  finance: {
+    label: '💼 법인금융·보험·컨설팅',
+    short: '법인금융·RM',
+    storeDealMan: 150,
+    corpDealMan: 1800,
+    oppDealMan: 1500,
+    reDealMan: 2500,
+    hook: '정책자금·법인절세·퇴직연금·기업신용·대표자 리스크 컨설팅',
+  },
+  realestate: {
+    label: '🏠 분양·중개·입주·인테리어',
+    short: '분양·입주',
+    storeDealMan: 450,
+    corpDealMan: 800,
+    oppDealMan: 3000,
+    reDealMan: 8000,
+    hook: '신축 입주 공동구매·상가 임대차 매칭·인테리어·분양 대행',
+  },
+};
+
 const DEFAULT_OPTS = {
   preset: 'balanced',
+  bizPersona: 'security',
   weights: { corp: 30, bid: 25, sbiz: 25, re: 20 },
   baseMap: 'vbase',       // vbase | vsat | vhyb | vwhite | vmidnight | osm
   defaultRadius: 500,     // 300 | 500 | 1000 | 2000
@@ -484,6 +533,224 @@ function computeLorenzGini(values) {
   const top20Sum = arr.slice(-top20Cnt).reduce((a, b) => a + b, 0);
   return { gini: Math.round(gini * 1000) / 1000, top20Share: Math.round((top20Sum / total) * 1000) / 10, points };
 }
+
+// ===== COMMERCIAL OPPORTUNITY ENGINE (TAM/SAM · PLAYBOOK · EXECUTIVE REPORT) =====
+function analyzeCommercialOpp(r, personaKey = S.opts.bizPersona || 'security') {
+  const p = BIZ_PERSONAS[personaKey] || BIZ_PERSONAS.security;
+  const q = r.quant || { newRatePct: 0, hhi: 0, hhiLabel: '-', lqCorp: 0, lqNew26: 0, blueOcean: 0 };
+  const earlyOpps = (r.bid.preSpecCnt || 0) + (r.bid.archCnt || 0);
+  const totalOpps = (r.bid.bidCnt || 0) + earlyOpps + (r.bid.aptOppCnt || 0);
+  const rePipeline = (r.re.aptCnt || 0) + (r.re.remndrCnt || 0) + (r.re.startCnt || 0);
+
+  // Realistic addressable commercial pool (만원) & 90-day target SAM (conservative capture rate)
+  const storePoolMan = Math.round((r.sbiz.new2026 || 0) * p.storeDealMan * 0.15); // 15% 유효 신규개업
+  const corpPoolMan = Math.round(((r.corp.strong || 0) * 2 + (r.corp.listed || 0) * 3 + Math.min(200, (r.corp.cnt || 0) * 0.08)) * p.corpDealMan * 0.2);
+  const oppPoolMan = Math.round((earlyOpps * 1.5 + (r.bid.bidCnt || 0) + (r.bid.aptOppCnt || 0) * 0.6) * p.oppDealMan * 0.18);
+  const rePoolMan = Math.round(rePipeline * p.reDealMan * 0.25);
+  const tamMan = storePoolMan + corpPoolMan + oppPoolMan + rePoolMan;
+  const sam90Man = Math.round(tamMan * 0.12); // 90일 현실 타깃 수주목표(12%)
+  const hotLeads = (r.sbiz.new2026 || 0) + earlyOpps * 5 + (r.corp.strong || 0) * 3 + rePipeline * 4;
+
+  // Commercial Opportunity Grade
+  const commScore = Math.min(99, Math.round(
+    r.scores.total * 0.55 + (q.blueOcean || 0) * 0.25 + Math.min(100, (q.newRatePct || 0) * 8) * 0.20
+  ));
+  const grade = commScore >= 84 ? 'S+ 초핵심 수주거점' : commScore >= 75 ? 'S 핵심 영업거점' : commScore >= 64 ? 'A 유망 집중거점' : 'B 선별 공략거점';
+
+  // Primary opportunity driver
+  const drivers = [
+    { k: '신규개업 상권', v: storePoolMan, desc: `2026 신규개업 +${fmt(r.sbiz.new2026)}개(신규율 ${q.newRatePct}%)` },
+    { k: '강소·법인 B2B', v: corpPoolMan, desc: `법인 ${fmt(r.corp.cnt)}사(상장 ${r.corp.listed}·강소 ${r.corp.strong}, LQ ${q.lqCorp})` },
+    { k: '사전규격·인허가·단지', v: oppPoolMan, desc: `입찰·사전·인허가·K-apt 총 ${fmt(totalOpps)}건` },
+    { k: '신축분양·착공', v: rePoolMan, desc: `신축분양 ${r.re.aptCnt}·착공 ${r.re.startCnt} 현장` },
+  ].sort((a, b) => b.v - a.v);
+
+  const topCat = (r.sbiz.topL1 || []).slice(0, 2).map(([k, v]) => `${k}(${fmt(v)})`).join('·') || '복합 상권';
+  const summary = `${r.fullName}은(는) <b>${p.short}</b> 관점에서 <b>${grade}(${commScore}점)</b>입니다. 가장 큰 수익원은 <b>${drivers[0].k}</b>(${drivers[0].desc})이며, 2순위 동력은 <b>${drivers[1].k}</b>(${drivers[1].desc})입니다.`;
+
+  const playbook = [
+    `<b>[D+7 즉시 착수]</b> ${r.sbiz.new2026 > 0 ? `상권지도에서 <b>2026 신규개업 ${fmt(r.sbiz.new2026)}개소</b> 및 대형상가(${fmt(r.sbiz.bldCnt)}동) 필터 → ${topCat} 중심 초도 방문·리드팩 CSV 추출` : `지역 핵심 상가 ${fmt(r.sbiz.cnt)}개소 중 밀집 건물 위주 집중 방문`}`,
+    `<b>[D+30 사전 스펙인]</b> ${earlyOpps + rePipeline > 0 ? `사전규격(${r.bid.preSpecCnt}) · 건축인허가(${r.bid.archCnt}) · 신축착공(${r.re.startCnt}) 발주처/시공사에 <b>${p.hook}</b> 사전 제안서 발송` : `관내 K-apt(${r.bid.aptOppCnt + r.re.kaptCnt}단지) 관리사무소 및 입주자대표회의 교체 수요 점검`}`,
+    `<b>[D+60 고단가 법인]</b> ${r.corp.top.length ? `대표 법인(<b>${r.corp.top.slice(0, 3).map((x) => x[0]).join(', ')}</b> 등 ${fmt(r.corp.cnt)}사) 중 국민연금 인원 순증 기업 대상 본사 방문 제안` : `관내 우수 법인 ${fmt(r.corp.cnt)}사 대상 연단위 유지보수·통합계약 제안`}`,
+  ];
+
+  const talkTrack = `"안녕하세요, ${r.name} 권역 ${p.short} 전담팀입니다. 최근 ${r.name} 내 ${r.sbiz.new2026 > 0 ? `신규 개업 매장(${fmt(r.sbiz.new2026)}곳)과 ` : ''}${earlyOpps > 0 ? `건축인허가·사전규격 현장(${earlyOpps}건)` : `주요 상업 건물(${fmt(r.sbiz.bldCnt)}동)`}을 중심으로 ${p.hook} 무상 현장진단을 진행 중인데, 10분 맞춤 견적 비교 자료를 전달드려도 될까요?"`;
+
+  const riskNote = r.bid.builderCnt >= 250
+    ? `⚠️ 지역 건설·시설 경쟁사 ${fmt(r.bid.builderCnt)}사 밀집(고경쟁) — 단가 경쟁 회피, AI 관제·사전규격 선점·대형건물 패키지 차별화 필수.`
+    : (q.hhi >= 2500
+      ? `⚠️ 업종 집중도(HHI ${fmt(q.hhi)}) 높음 — 핵심 1~2개 업종(${topCat}) 특화 제안서로 전환율 극대화 권장.`
+      : `✅ 경쟁 여력 양호(블루오션 ${q.blueOcean}점 · 지역 건설/시설 ${fmt(r.bid.builderCnt)}사 · HHI ${fmt(q.hhi)} 다각화) — 선제 진입 시 높은 점유율 확보 유리.`);
+
+  return { p, commScore, grade, tamMan, sam90Man, hotLeads, drivers, summary, playbook, talkTrack, riskNote, earlyOpps, totalOpps, rePipeline };
+}
+
+function renderCommercialPanelHtml(r) {
+  const c = analyzeCommercialOpp(r);
+  return `
+    <div class="comm-panel">
+      <div class="comm-head">
+        <div>
+          <span style="font-weight:800;font-size:13.5px">💰 상업적 영업기회 분석 & 실행 코멘트</span>
+          <span class="tag tag-corp" style="margin-left:6px">${esc(c.grade)}</span>
+        </div>
+        <div style="display:flex;gap:5px;align-items:center;flex-wrap:wrap">
+          <select id="selBizPersona" class="select" style="padding:4px 8px;font-size:11.5px;font-weight:700">
+            ${Object.entries(BIZ_PERSONAS).map(([k, v]) => `<option value="${k}" ${S.opts.bizPersona === k ? 'selected' : ''}>${v.label}</option>`).join('')}
+          </select>
+          <button id="btnOpenExecReport" class="btn btn-sm btn-primary" type="button">📄 정밀 리포트 (PDF)</button>
+        </div>
+      </div>
+
+      <div class="comm-kpi-row">
+        <div class="comm-kpi"><span>추정 단기 영업시장 (TAM)</span><b style="color:var(--c-corp)">${fmtDec(c.tamMan / 10000, 1)}억원</b></div>
+        <div class="comm-kpi"><span>90일 현실 수주목표 (12%)</span><b style="color:var(--c-sbiz)">${fmtDec(c.sam90Man / 10000, 1)}억원</b></div>
+        <div class="comm-kpi"><span>즉시 공략 핫리드 풀</span><b style="color:var(--c-bid)">${fmt(c.hotLeads)}건</b></div>
+      </div>
+
+      <div class="comm-comment-box">${c.summary}</div>
+
+      <div class="comm-playbook">
+        ${c.playbook.map((step) => `<div class="comm-step">${step}</div>`).join('')}
+      </div>
+
+      <div class="comm-talk">
+        <b>🗣️ 현장 오프닝 멘트 (${esc(c.p.short)}):</b> ${esc(c.talkTrack)}
+        <div style="margin-top:5px;color:var(--text)">${c.riskNote}</div>
+      </div>
+    </div>
+  `;
+}
+
+function openExecutiveReport(r) {
+  const c = analyzeCommercialOpp(r);
+  const q = r.quant || {};
+  const today = new Date().toISOString().slice(0, 10);
+  const localOpps = S.opps.filter((o) => (o._fusionRid === r.rid) || String(o.region || '').includes(r.name)).slice(0, 5);
+  const localRe = (S.re.listings || []).filter((l) => (l._fusionRid === r.rid) || String(l.addr || '').includes(r.name)).slice(0, 4);
+
+  $('reportModalTitle').textContent = `📄 [정밀 영업기회 리포트] ${r.fullName}`;
+  $('reportPaper').innerHTML = `
+    <div class="rep-banner">
+      <div>
+        <div style="font-size:11px;font-weight:700;color:#a5b4fc;letter-spacing:0.05em">NEXUS ONE PRO · COMMERCIAL OPPORTUNITY REPORT</div>
+        <h2>${esc(r.fullName)} — 상업적 영업기회 정밀 리포트</h2>
+        <p>적용 업종: ${esc(c.p.label)} · 기준일: ${today} · 전략 모델: ${esc(STRATEGY_PRESETS[S.opts.preset]?.label || '커스텀')}</p>
+      </div>
+      <div style="text-align:right">
+        <div style="font-size:11px;color:#cbd5e1">상업 기회 종합등급</div>
+        <div style="font-size:26px;font-weight:900;color:#34d399;line-height:1.1">${c.commScore}<span style="font-size:13px;color:#cbd5e1">/100</span></div>
+        <div style="font-size:11.5px;font-weight:700;color:#fde68a">${esc(c.grade)}</div>
+      </div>
+    </div>
+
+    <div class="rep-grid-4">
+      <div class="quant-box"><div class="q-lbl">💰 추정 영업시장(TAM)</div><div class="q-val" style="color:var(--c-corp)">${fmtDec(c.tamMan / 10000, 1)}억원</div><div class="q-sub">유효 상업 파이프라인</div></div>
+      <div class="quant-box"><div class="q-lbl">🎯 90일 수주목표(SAM)</div><div class="q-val" style="color:var(--c-sbiz)">${fmtDec(c.sam90Man / 10000, 1)}억원</div><div class="q-sub">보수적 12% 전환 기준</div></div>
+      <div class="quant-box"><div class="q-lbl">🔥 즉시 공략 핫리드</div><div class="q-val" style="color:var(--c-bid)">${fmt(c.hotLeads)}건</div><div class="q-sub">2026신규·사전·강소·착공</div></div>
+      <div class="quant-box"><div class="q-lbl">💎 블루오션 / LQ / HHI</div><div class="q-val">${q.blueOcean}점</div><div class="q-sub">LQ ${q.lqCorp} · HHI ${fmt(q.hhi)}</div></div>
+    </div>
+
+    <div class="rep-sec">
+      <h4><span>1. Executive Summary & 핵심 수익원 분석</span><span style="font-size:11.5px;color:var(--muted)">${esc(c.p.short)}</span></h4>
+      <div class="comm-comment-box">${c.summary}</div>
+      <div style="display:grid;grid-template-columns:1fr 220px;gap:12px;align-items:center">
+        <div class="table-wrap">
+          <table class="data-table">
+            <thead><tr><th>수익원 도메인</th><th>핵심 실데이터 근거</th><th>추정 기회 규모</th></tr></thead>
+            <tbody>
+              ${c.drivers.map((d) => `<tr><td><b>${esc(d.k)}</b></td><td>${esc(d.desc)}</td><td><b>${fmtDec(d.v / 10000, 1)}억원</b></td></tr>`).join('')}
+            </tbody>
+          </table>
+        </div>
+        <div style="display:flex;justify-content:center">${renderRadarSvg(r.scores)}</div>
+      </div>
+    </div>
+
+    <div class="rep-sec">
+      <h4><span>2. 30·60일 단계별 영업 실행 플레이북 & 현장 멘트</span></h4>
+      <div class="comm-playbook">${c.playbook.map((s) => `<div class="comm-step">${s}</div>`).join('')}</div>
+      <div class="comm-talk">
+        <b>🗣️ 현장 영업 오프닝 멘트:</b> ${esc(c.talkTrack)}
+        <div style="margin-top:5px;color:var(--text)">${c.riskNote}</div>
+      </div>
+    </div>
+
+    <div class="rep-sec">
+      <h4><span>3. 관내 즉시 공략 우선 타깃 (실데이터 자동 추출)</span></h4>
+      <div class="grid-eq-2">
+        <div class="domain-box">
+          <h4>🏢 대표 법인 TOP 5</h4>
+          ${r.corp.top.length ? r.corp.top.map((t) => `<div class="domain-stat-row"><span><b>${esc(t[0])}</b> (${esc(t[4])})</span><span>${t[2] ? fmt(t[2]) + '억' : '-'} · ${t[3] ? fmt(t[3]) + '명' : '-'}</span></div>`).join('') : '<div style="font-size:12px;color:var(--muted)">기업분석 탭에서 전체 조회 가능</div>'}
+        </div>
+        <div class="domain-box">
+          <h4>🏪 핵심 소상공인 업종 TOP 5</h4>
+          ${(r.sbiz.topL1 || []).map(([nm, cnt]) => `<div class="domain-stat-row"><span><b>${esc(nm)}</b></span><span>${fmt(cnt)}개 (${r.sbiz.cnt ? Math.round(cnt / r.sbiz.cnt * 100) : 0}%)</span></div>`).join('') || '<div style="font-size:12px;color:var(--muted)">데이터 없음</div>'}
+        </div>
+      </div>
+      ${localOpps.length ? `
+        <div class="domain-box" style="margin-top:10px">
+          <h4>🎯 관내 포착 입찰 · 사전규격 · 건축인허가 · K-apt (${localOpps.length}건 샘플)</h4>
+          ${localOpps.map((o) => `<div class="domain-stat-row"><span><b>${esc(o.title)}</b> (${esc(o.org)})</span><span>${o.budgetMan > 0 ? fmtDec(o.budgetMan / 10000, 1) + '억' : esc(o.stageType)}</span></div>`).join('')}
+        </div>
+      ` : ''}
+      ${localRe.length ? `
+        <div class="domain-box" style="margin-top:10px">
+          <h4>🏠 관내 신축분양 · 무순위 (${localRe.length}건)</h4>
+          ${localRe.map((l) => `<div class="domain-stat-row"><span><b>${esc(l.name)}</b> (${esc(l.builder || '-')})</span><span>${fmt(l.units || 0)}세대 · ${esc(l.moveIn || l.rcptBgn || '')}</span></div>`).join('')}
+        </div>
+      ` : ''}
+    </div>
+  `;
+
+  $('reportFoot').innerHTML = `
+    <button id="btnRepPrint" class="btn btn-primary btn-sm" type="button">🖨️ PDF 저장 / 인쇄</button>
+    <button id="btnRepCopyMd" class="btn btn-emerald btn-sm" type="button">📋 보고서 전문 복사 (Markdown)</button>
+    <button id="btnRepCopyKakao" class="btn btn-amber btn-sm" type="button">📱 카카오톡 요약 복사</button>
+    <button id="btnRepAddPipe" class="btn btn-sm" type="button" style="margin-left:auto">💼 CRM 등록</button>
+  `;
+
+  $('reportBackdrop').classList.remove('hidden');
+
+  $('btnRepPrint').addEventListener('click', () => window.print());
+  $('btnRepCopyMd').addEventListener('click', () => {
+    const md = `# [상업적 영업기회 정밀 리포트] ${r.fullName}
+- **기준일**: ${today} | **업종**: ${c.p.label} | **상업등급**: ${c.grade} (${c.commScore}/100점)
+- **추정 영업시장(TAM)**: ${fmtDec(c.tamMan / 10000, 1)}억원 | **90일 수주목표(SAM)**: ${fmtDec(c.sam90Man / 10000, 1)}억원 | **핫리드**: ${fmt(c.hotLeads)}건
+- **퀀트 지표**: 블루오션 ${q.blueOcean}점 · 기업 LQ ${q.lqCorp} · 업종 HHI ${fmt(q.hhi)}(${q.hhiLabel}) · 2026 신규율 ${q.newRatePct}%
+
+## 1. 핵심 기회 요약
+${c.summary.replace(/<[^>]+>/g, '')}
+
+## 2. 30·60일 영업 실행 플레이북
+${c.playbook.map((x, i) => `${i + 1}. ${x.replace(/<[^>]+>/g, '')}`).join('\n')}
+
+## 3. 현장 오프닝 멘트 & 리스크 체크
+- **멘트**: ${c.talkTrack}
+- **체크**: ${c.riskNote}
+
+## 4. 관내 대표 법인 TOP 5
+${r.corp.top.map((t, i) => `${i + 1}. ${t[0]} (${t[4]}, 매출 ${t[2] || '-'}억, 인원 ${t[3] || '-'}명)`).join('\n') || '-'}
+`;
+    navigator.clipboard?.writeText(md).then(() => toast('📋 정밀 리포트 전문(Markdown)이 복사되었습니다!')).catch(() => toast('복사 실패'));
+  });
+  $('btnRepCopyKakao').addEventListener('click', () => {
+    const txt = `[${r.fullName} 영업기회 요약]\n• 등급: ${c.grade}(${c.commScore}점)\n• 90일목표: ${fmtDec(c.sam90Man / 10000, 1)}억 / 핫리드 ${fmt(c.hotLeads)}건\n• 핵심: ${c.drivers[0].k}(${c.drivers[0].desc})\n• 블루오션 ${q.blueOcean}점·신규율 ${q.newRatePct}%`;
+    navigator.clipboard?.writeText(txt).then(() => toast('📱 카카오톡 공유용 요약이 복사되었습니다!')).catch(() => toast('복사 실패'));
+  });
+  $('btnRepAddPipe').addEventListener('click', () => {
+    addToPipeline({
+      id: `comm:${r.rid}:${S.opts.bizPersona}`,
+      domain: 'corp',
+      title: `[상업거점·${c.p.short}] ${r.fullName}`,
+      sub: `${c.grade} · 90일목표 ${fmtDec(c.sam90Man / 10000, 1)}억 · 핫리드 ${fmt(c.hotLeads)}건`,
+      region: r.fullName,
+      valueMan: c.sam90Man,
+    });
+  });
+}
+
+function closeReportModal() { $('reportBackdrop').classList.add('hidden'); }
 
 // ===== CORE BOOTSTRAP =====
 async function unlockAndBoot(key) {
@@ -1298,6 +1565,8 @@ function renderSpotlightHtml(r, cmpReg = null) {
         <div class="domain-stat-row"><span>평균 평당가</span><b>${r.re.avgPyeongMan > 0 ? `${fmt(r.re.avgPyeongMan)}만원` : '실시간 조회 가능'}</b></div>
       </div>
     </div>
+
+    ${renderCommercialPanelHtml(r)}
   `;
 }
 
@@ -1346,6 +1615,14 @@ function renderCompareMatrixCard(a, b) {
 }
 
 function wireSpotlightButtons(r, cmpReg) {
+  $('selBizPersona')?.addEventListener('change', (e) => {
+    S.opts.bizPersona = e.target.value;
+    saveOpts();
+    toast(`💼 영업 업종 모델 변경: ${BIZ_PERSONAS[S.opts.bizPersona]?.label}`);
+    renderOverview();
+  });
+  $('btnOpenExecReport')?.addEventListener('click', () => openExecutiveReport(r));
+
   $('btnPinCompare')?.addEventListener('click', () => {
     if (cmpReg) { S.compareRid = -1; renderOverview(); }
     else { S.compareRid = r.rid; toast(`⚔️ ${r.fullName} 비교 기준 고정! 지도/표에서 다른 시군구를 클릭하세요.`); }
@@ -1631,6 +1908,29 @@ function openCorpDrawer(idx) {
         <div class="domain-stat-row"><span>추정 평균연봉 / 월급</span><b>${enr[10] ? fmtDec(enr[10] / 1e4, 0) + '만원' : (enr[15] ? `월 ${fmtDec(enr[15] / 1e4, 0)}만원` : '-')}</b></div>
       </div>` : ''}
 
+      ${(() => {
+        const revNow = enr?.[0] || 0, revPrev = enr?.[1] || 0;
+        const yoy = revPrev > 0 ? Math.round(((revNow - revPrev) / revPrev) * 1000) / 10 : null;
+        const emp = enr?.[12] || enr?.[9] || 0;
+        const netHire = (enr?.[13] || 0) - (enr?.[14] || 0);
+        const stCode = S.corpStatusBytes ? S.corpStatusBytes[idx] : 1;
+        const p = BIZ_PERSONAS[S.opts.bizPersona] || BIZ_PERSONAS.security;
+        let tier = '🟡 WARM (일반 B2B 공략)', msg = [];
+        if (stCode === 2 || stCode === 3) { tier = '⛔ HOLD (휴·폐업 주의)'; msg.push('국세청 휴/폐업 이력 확인 — 여신·장기약정 계약 전 실시간 상태 재검증 필수.'); }
+        else {
+          if (yoy !== null && yoy >= 15) msg.push(`매출 YoY <b>+${yoy}% 고성장</b> — 사업장 확장·설비 증설 예산 집행 가능성 높음.`);
+          if (netHire >= 3) msg.push(`국민연금 인원 <b>+${netHire}명 순증</b>(총 ${fmt(emp)}명) — 출입통제·오피스 보안/통신·법인금융 확장 시그널.`);
+          if (tags.length) msg.push(`<b>${esc(tags.join(', '))}</b> 인증 기업 — 신용·결제 안정성 우수, 고단가 장기 계약 타깃.`);
+          if (r[5] <= 1) msg.push('상장법인 — 본사/지점 통합 B2B 제안 및 파트너십 적합.');
+          if ((yoy >= 10 || netHire >= 2 || tags.length || r[5] <= 1 || revNow >= 1e10)) tier = '🔥 HOT (최우선 B2B 타깃)';
+          if (!msg.length) msg.push(`소재지(${reg?.name || '관내'}) 기반 방문·전화 컨택으로 ${p.hook} 교체 주기 점검 권장.`);
+        }
+        return `<div class="comm-panel" style="margin-top:12px">
+          <div class="comm-head" style="margin-bottom:6px"><span style="font-weight:800;font-size:12.5px">💼 법인 상업 영업기회 코멘트 (${esc(p.short)})</span><span class="tag ${tier.includes('HOT') ? 'tag-re' : tier.includes('HOLD') ? 'tag-gray' : 'tag-bid'}">${tier}</span></div>
+          <div style="font-size:12px;line-height:1.55">${msg.map((m) => `• ${m}`).join('<br/>')}</div>
+        </div>`;
+      })()}
+
       <div id="ntsLiveBox" style="margin-top:12px"></div>
     `,
     foot: `
@@ -1850,6 +2150,18 @@ function openOppDrawer(o) {
         <div class="domain-stat-row"><span>공고일 / 마감일</span><b>${esc(o.pubDate || '-')} / ${esc(o.closeDate || '-')}</b></div>
       </div>
       ${o.meta ? `<div class="domain-box" style="margin-top:10px"><h4>추가 메타정보</h4>${Object.entries(o.meta).map(([k, v]) => `<div class="domain-stat-row"><span>${esc(k)}</span><b>${esc(v)}</b></div>`).join('')}</div>` : ''}
+      ${(() => {
+        const p = BIZ_PERSONAS[S.opts.bizPersona] || BIZ_PERSONAS.security;
+        let strat = '';
+        if (o.stageType === 'prespec') strat = '🔭 <b>사전규격 조기포착 골든타임</b>: 본공고 1~3주 전입니다. 발주 담당자에게 자사 강점 사양(AI 관제·인증·유지보수 조건)이 반영되도록 규격 의견서 및 기술 자료를 즉시 전달하세요.';
+        else if (o.stageType === 'permit') strat = '🏗️ <b>건축인허가 선제 스펙인 기회</b>: 착공 전 설계·시공 단계입니다. 건축주·시공사·전기/통신 협력사에 초도 보안·통신·설비 패키지 사전 견적을 제안하세요.';
+        else if (o.stageType === 'complex') strat = '🏘️ <b>공동주택(K-apt) 교체·위탁 영업</b>: 관리사무소장·입주자대표회의 대상으로 노후 CCTV/주차관제/승강기 무상 진단 리포트와 장기수선충당금 절감안을 제시하세요.';
+        else strat = `🎯 <b>진행 입찰공고${o.dday !== null && o.dday <= 7 ? ` (D-${o.dday} 긴급)` : ''}</b>: 과업지시서·참가자격(면허/실적)·기초금액을 즉시 확인하고, 부족 면허는 지역 건설·시설 DB(12,198사)와 공동도급 검토를 권장합니다.`;
+        return `<div class="comm-panel" style="margin-top:12px">
+          <div class="comm-head" style="margin-bottom:6px"><span style="font-weight:800;font-size:12.5px">🎯 수주 공략 코멘트 (${esc(p.short)})</span><span class="tag tag-sbiz">ICP ${o.icpScore}점</span></div>
+          <div style="font-size:12px;line-height:1.55">${strat}</div>
+        </div>`;
+      })()}
     `,
     foot: `
       <button id="dwOppPipe" class="btn btn-primary btn-sm">💼 파이프라인 담기</button>
@@ -2683,21 +2995,31 @@ function renderCatchmentHud() {
   const maxBar = Math.max(1, ...(stats.topL1 || []).map(([, c]) => c));
   const areaKm2 = (Math.PI * (radius / 1000) ** 2);
   const density = areaKm2 > 0 ? Math.round(stats.cnt / areaKm2) : 0;
+  const p = BIZ_PERSONAS[S.opts.bizPersona] || BIZ_PERSONAS.security;
+  const estCatchMan = Math.round((stats.new2026 * p.storeDealMan * 0.25) + (stats.cnt * p.storeDealMan * 0.03));
+  const locGrade = (stats.cnt >= 250 || stats.new2026 >= 25) ? 'S등급 초핵심 상권' : (stats.cnt >= 80 || stats.new2026 >= 8) ? 'A등급 유망 상권' : (stats.cnt >= 20 ? 'B등급 생활권 상권' : 'C등급 초기·저밀도');
+  const topCatTxt = (stats.topL1 || []).slice(0, 2).map(([nm, c]) => `${nm}(${Math.round(c / Math.max(1, stats.cnt) * 100)}%)`).join(' · ') || '분석 중';
+  const catchComment = stats.cnt > 0
+    ? `<b>${locGrade}</b> — 반경 내 총 <b>${fmt(stats.cnt)}개 상가(${fmt(stats.bldCnt)}동)</b> 중 2026 신규개업 <b>+${fmt(stats.new2026)}개(신규율 ${stats.newRate}%)</b>가 포착되었습니다. 핵심 업종은 <b>${esc(topCatTxt)}</b>이며, <b>${esc(p.short)}</b> 기준 추정 단기 영업가치는 약 <b>${fmtDec(estCatchMan / 10000, 2)}억원</b>입니다. ${stats.hhi >= 2500 ? '특정 업종 집중도(HHI)가 높아 핵심 업종 전용 패키지 영업이 유리합니다.' : '다각화된 복합 상권으로 다중입점 대형건물(숫자 배지)부터 순회 방문을 권장합니다.'}`
+    : '해당 시도를 상단에서 불러오시면 반경 내 정확한 상업적 영업기회·추정 매출·신규개업 코멘트가 자동 산출됩니다.';
 
   box.innerHTML = `
     <div class="catchment-card">
       <div class="card-head" style="margin-bottom:8px">
         <div>
-          <h3 class="card-title">🎯 반경 ${radius >= 1000 ? `${radius / 1000}km` : `${radius}m`} 상권 정밀 진단 ${label ? `(${esc(label)})` : ''}</h3>
+          <h3 class="card-title">🎯 반경 ${radius >= 1000 ? `${radius / 1000}km` : `${radius}m`} 상권 정밀 진단 <span class="tag tag-corp">${locGrade}</span> ${label ? `(${esc(label)})` : ''}</h3>
           <p class="card-sub">
             ${vworld ? `📍 <b>${esc(vworld.addr)}</b> · 용도지역 <b>${esc(vworld.zoning)}</b> · 공시지가 <b>${esc(vworld.jiga)}</b>${vworld.pyeongMan ? ` (평당 약 ${fmt(vworld.pyeongMan)}만원)` : ''}` : `📍 좌표 (${lat.toFixed(5)}, ${lon.toFixed(5)}) · 브이월드 필지·공시지가 조회 중…`}
           </p>
         </div>
         <div style="display:flex;gap:5px;flex-wrap:wrap">
-          ${stores.length ? `<button id="btnCatchCsv" class="btn btn-sm btn-emerald" type="button">📥 반경 리드팩 CSV (${fmt(stores.length)})</button>` : ''}
-          <button id="btnCatchPipe" class="btn btn-sm btn-primary" type="button">💼 CRM 담기</button>
+          <button id="btnCatchReport" class="btn btn-sm btn-primary" type="button">📄 반경 리포트 (PDF)</button>
+          ${stores.length ? `<button id="btnCatchCsv" class="btn btn-sm btn-emerald" type="button">📥 리드팩 CSV (${fmt(stores.length)})</button>` : ''}
+          <button id="btnCatchPipe" class="btn btn-sm" type="button">💼 CRM 담기</button>
         </div>
       </div>
+
+      <div class="comm-comment-box" style="margin-bottom:10px">${catchComment}</div>
 
       <div class="quant-strip" style="margin-bottom:8px">
         <div class="quant-box"><div class="q-lbl">반경 내 상가 (밀도)</div><div class="q-val" style="color:var(--c-sbiz)">${fmt(stats.cnt)}개</div><div class="q-sub">${fmt(density)}개/㎢ · ${fmt(stats.bldCnt)}동</div></div>
@@ -2718,6 +3040,53 @@ function renderCatchmentHud() {
       ` : '<div style="font-size:12px;color:var(--muted)">상단에서 해당 시도를 로드하면 반경 내 정확한 상가·신규개업·HHI 분석이 표시됩니다.</div>'}
     </div>
   `;
+
+  $('btnCatchReport')?.addEventListener('click', () => {
+    const today = new Date().toISOString().slice(0, 10);
+    const newStores = stores.filter((s) => s.isNew2026).slice(0, 12);
+    $('reportModalTitle').textContent = `📄 [반경 ${radius}m 상권 영업기회 리포트] ${vworld?.addr || label || ''}`;
+    $('reportPaper').innerHTML = `
+      <div class="rep-banner">
+        <div>
+          <div style="font-size:11px;font-weight:700;color:#6ee7b7;letter-spacing:0.05em">NEXUS ONE PRO · MICRO-CATCHMENT REPORT</div>
+          <h2>${esc(vworld?.addr || label || `${lat.toFixed(5)}, ${lon.toFixed(5)}`)} (반경 ${radius}m)</h2>
+          <p>적용 업종: ${esc(p.label)} · 기준일: ${today} · 용도지역: ${esc(vworld?.zoning || '-')} · 공시지가: ${esc(vworld?.jiga || '-')}</p>
+        </div>
+        <div style="text-align:right">
+          <div style="font-size:11px;color:#cbd5e1">반경 상권 등급</div>
+          <div style="font-size:20px;font-weight:900;color:#fde68a">${esc(locGrade)}</div>
+          <div style="font-size:11.5px;color:#a7f3d0">추정 가치 ${fmtDec(estCatchMan / 10000, 2)}억원</div>
+        </div>
+      </div>
+      <div class="rep-grid-4">
+        <div class="quant-box"><div class="q-lbl">총 입점 상가</div><div class="q-val" style="color:var(--c-sbiz)">${fmt(stats.cnt)}개</div><div class="q-sub">${fmt(density)}개/㎢ · ${fmt(stats.bldCnt)}동</div></div>
+        <div class="quant-box"><div class="q-lbl">🆕 2026 신규개업</div><div class="q-val" style="color:var(--c-bid)">+${fmt(stats.new2026)}개</div><div class="q-sub">신규율 ${stats.newRate}%</div></div>
+        <div class="quant-box"><div class="q-lbl">📊 업종 HHI</div><div class="q-val">${fmt(stats.hhi)}</div><div class="q-sub">${stats.hhi < 1800 ? '다각화' : stats.hhi < 2800 ? '적정 집중' : '과밀'}</div></div>
+        <div class="quant-box"><div class="q-lbl">💰 평당 공시지가</div><div class="q-val" style="color:var(--c-corp)">${vworld?.pyeongMan ? `${fmt(vworld.pyeongMan)}만` : '-'}</div><div class="q-sub">${esc(vworld?.zoning || '-')}</div></div>
+      </div>
+      <div class="rep-sec">
+        <h4><span>1. 상업적 영업기회 분석 코멘트</span></h4>
+        <div class="comm-comment-box">${catchComment}</div>
+        <div class="comm-talk"><b>💡 추천 제안 패키지:</b> ${esc(p.hook)}</div>
+      </div>
+      <div class="rep-sec">
+        <h4><span>2. 반경 내 🆕 2026 신규개업 우선 방문 리스트 (${newStores.length}개 샘플)</span></h4>
+        ${newStores.length ? `<div class="table-wrap"><table class="data-table"><thead><tr><th>상호명</th><th>업종</th><th>층/건물</th><th>도로명주소</th><th>등재</th></tr></thead><tbody>
+          ${newStores.map((st) => `<tr><td><b>${esc(st.name)}</b> ${esc(st.branch)}</td><td>${esc(st.l1)}·${esc(st.l3)}</td><td>${esc([st.bld, st.floor].filter(Boolean).join(' ') || '-')}</td><td>${esc(st.addr)}</td><td>${esc(st.regYm)}</td></tr>`).join('')}
+        </tbody></table></div>` : '<div style="font-size:12px;color:var(--muted)">반경 내 2026 신규개업 데이터가 없습니다.</div>'}
+      </div>
+    `;
+    $('reportFoot').innerHTML = `
+      <button id="btnCatchRepPrint" class="btn btn-primary btn-sm" type="button">🖨️ PDF 저장 / 인쇄</button>
+      <button id="btnCatchRepCopy" class="btn btn-emerald btn-sm" type="button">📋 리포트 텍스트 복사</button>
+    `;
+    $('reportBackdrop').classList.remove('hidden');
+    $('btnCatchRepPrint').addEventListener('click', () => window.print());
+    $('btnCatchRepCopy').addEventListener('click', () => {
+      const txt = `[반경 ${radius}m 상권 리포트] ${vworld?.addr || label || ''}\n• 등급: ${locGrade} · 상가 ${fmt(stats.cnt)}개(${fmt(stats.bldCnt)}동) · 2026신규 +${stats.new2026}개(${stats.newRate}%)\n• HHI: ${stats.hhi} · 용도지역: ${vworld?.zoning || '-'} · 공시지가: ${vworld?.jiga || '-'}\n• 추정 영업가치(${p.short}): ${fmtDec(estCatchMan / 10000, 2)}억원`;
+      navigator.clipboard?.writeText(txt).then(() => toast('📋 반경 리포트가 복사되었습니다!'));
+    });
+  });
 
   $('btnCatchCsv')?.addEventListener('click', () => {
     downloadCsv(
@@ -3480,7 +3849,13 @@ function openOptionsModal() {
   const o = S.opts;
   $('optionsBody').innerHTML = `
     <div class="opt-section">
-      <h4>🧠 기본 전략 모델 & 4축 가중치</h4>
+      <h4>💼 영업 업종 페르소나 & 기본 전략 모델 · 4축 가중치</h4>
+      <div class="opt-field" style="margin-bottom:10px">
+        <label>내 주력 영업 업종 (상업 기회 코멘트 · 추정 파이프라인 · 리포트 자동 맞춤)</label>
+        <select id="optBizPersona" class="select">
+          ${Object.entries(BIZ_PERSONAS).map(([k, v]) => `<option value="${k}" ${o.bizPersona === k ? 'selected' : ''}>${v.label} — ${esc(v.hook)}</option>`).join('')}
+        </select>
+      </div>
       <div class="chips" style="margin-bottom:10px">
         ${Object.entries(STRATEGY_PRESETS).map(([k, p]) => `<button class="chip ${o.preset === k ? 'active' : ''}" data-opt-preset="${k}" type="button">${p.label}</button>`).join('')}
       </div>
@@ -3581,6 +3956,7 @@ function openOptionsModal() {
   });
 
   $('btnOptSave').addEventListener('click', () => {
+    S.opts.bizPersona = $('optBizPersona')?.value || 'security';
     S.opts.weights = {
       corp: Math.max(0, Number($('optWCorp').value) || 0),
       bid: Math.max(0, Number($('optWBid').value) || 0),
@@ -3652,6 +4028,8 @@ async function init() {
   $('btnOptions').addEventListener('click', openOptionsModal);
   $('optionsClose').addEventListener('click', closeOptionsModal);
   $('optionsBackdrop').addEventListener('click', (e) => { if (e.target === $('optionsBackdrop')) closeOptionsModal(); });
+  $('reportClose').addEventListener('click', closeReportModal);
+  $('reportBackdrop').addEventListener('click', (e) => { if (e.target === $('reportBackdrop')) closeReportModal(); });
   $('brandHome').addEventListener('click', () => switchTab('overview'));
   $('btnGoPipe').addEventListener('click', () => switchTab('hub'));
   $('drawerClose').addEventListener('click', closeDrawer);

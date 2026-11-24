@@ -434,3 +434,94 @@ table.data-table tbody tr:hover { background: var(--surface-2); }
   .m-tab .m-ico { font-size: 17px; line-height: 1.1; }
   .m-tab.active { color: var(--c-accent); }
 }
+
+/* ===== PRO GIS, QUANT ANALYTICS & OPTIONS EXTENSIONS ===== */
+.preset-bar {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
+  padding: 10px 12px; border-radius: 12px; margin-bottom: 14px;
+  background: var(--surface); border: 1px solid var(--border); box-shadow: var(--shadow);
+}
+.slider-panel {
+  display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px;
+  padding: 12px; border-radius: 11px; margin-bottom: 14px;
+  background: var(--surface-2); border: 1px solid var(--border);
+}
+.slider-item label {
+  display: flex; justify-content: space-between; font-size: 12px; font-weight: 700; margin-bottom: 4px;
+}
+.slider-item input[type="range"] { width: 100%; accent-color: var(--c-accent); cursor: pointer; }
+
+.map-ctrl-float {
+  position: absolute; right: 10px; top: 10px; z-index: 15;
+  display: flex; flex-direction: column; gap: 4px;
+}
+.map-ctrl-float button {
+  width: 30px; height: 30px; border-radius: 8px; border: 1px solid var(--border-strong);
+  background: var(--surface); font-weight: 800; font-size: 13px; box-shadow: var(--shadow);
+}
+.map-legend {
+  display: flex; align-items: center; gap: 6px; width: 100%;
+  margin-top: 8px; font-size: 11px; color: var(--muted); justify-content: center;
+}
+.legend-bar {
+  height: 8px; width: 140px; border-radius: 999px;
+}
+
+.quant-strip {
+  display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 12px;
+}
+.quant-box {
+  padding: 9px 10px; border-radius: 10px; background: var(--surface-2); border: 1px solid var(--border);
+}
+.quant-box .q-lbl { font-size: 11px; color: var(--muted); font-weight: 700; }
+.quant-box .q-val { font-size: 15px; font-weight: 800; margin-top: 2px; }
+.quant-box .q-sub { font-size: 10.5px; color: var(--muted); margin-top: 1px; }
+
+.gis-deck {
+  display: flex; flex-direction: column; gap: 8px; padding: 10px 12px;
+  border-radius: 11px; background: var(--surface-2); border: 1px solid var(--border);
+  margin-bottom: 10px;
+}
+.gis-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.gis-label { font-size: 11.5px; font-weight: 800; color: var(--muted); margin-right: 4px; }
+.toggle-pill {
+  padding: 5px 10px; border-radius: 999px; border: 1px solid var(--border-strong);
+  background: var(--surface); font-size: 11.5px; font-weight: 700; color: var(--text-2);
+}
+.toggle-pill.on { background: var(--c-accent); color: #fff; border-color: var(--c-accent); }
+.toggle-pill.on-emerald { background: var(--c-sbiz); color: #fff; border-color: var(--c-sbiz); }
+
+.catchment-card {
+  padding: 13px 14px; border-radius: 12px; margin-top: 10px;
+  background: linear-gradient(135deg, rgba(5, 150, 105, 0.08), rgba(79, 70, 229, 0.06));
+  border: 1px solid rgba(5, 150, 105, 0.35);
+}
+.bar-row { display: flex; align-items: center; gap: 8px; font-size: 12px; margin: 4px 0; }
+.bar-track { flex: 1; height: 8px; border-radius: 999px; background: var(--border); overflow: hidden; }
+.bar-fill { height: 100%; border-radius: 999px; background: linear-gradient(90deg, #059669, #34d399); }
+
+.compare-win { color: var(--c-sbiz); font-weight: 800; }
+
+/* Options Modal */
+.modal-backdrop {
+  position: fixed; inset: 0; background: rgba(15, 23, 42, 0.55); z-index: 140;
+  display: flex; align-items: center; justify-content: center; padding: 16px;
+  backdrop-filter: blur(3px);
+}
+.modal-card {
+  width: 100%; max-width: 600px; max-height: 88dvh; background: var(--surface);
+  border-radius: 18px; border: 1px solid var(--border); box-shadow: var(--shadow-lg);
+  display: flex; flex-direction: column; overflow: hidden;
+}
+.opt-section { margin-bottom: 16px; padding-bottom: 14px; border-bottom: 1px solid var(--border); }
+.opt-section:last-child { border-bottom: none; margin-bottom: 0; }
+.opt-section h4 { margin: 0 0 8px; font-size: 13.5px; font-weight: 800; }
+.opt-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
+.opt-field label { display: block; font-size: 11.5px; font-weight: 700; color: var(--muted); margin-bottom: 4px; }
+.opt-field .input, .opt-field .select { width: 100%; }
+
+@media (max-width: 768px) {
+  .slider-panel, .quant-strip, .opt-grid { grid-template-columns: repeat(2, 1fr); }
+  .rank-lorenz-grid { grid-template-columns: 1fr !important; }
+  .hide-xs { display: none; }
+}

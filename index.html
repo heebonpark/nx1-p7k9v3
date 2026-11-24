@@ -67,6 +67,7 @@
         <button id="btnGoPipe" class="icon-btn" type="button" title="통합 파이프라인 CRM">
           💼 <span class="hide-xs">파이프라인</span> <span id="pipeBadge" class="pipe-badge">0</span>
         </button>
+        <button id="btnOptions" class="icon-btn" type="button" title="전문가 옵션 · 가중치 · GIS 설정">⚙️ <span class="hide-xs">옵션</span></button>
         <button id="btnTheme" class="icon-btn" type="button" title="다크/라이트 테마 전환">🌙</button>
         <button id="btnLockOut" class="icon-btn" type="button" title="볼트 잠금 (로그아웃)">🔒</button>
       </div>
@@ -103,6 +104,21 @@
       <div id="drawerBody" class="drawer-body"></div>
       <div id="drawerFoot" class="drawer-foot"></div>
     </aside>
+  </div>
+
+  <!-- ===== PRO OPTIONS & EXPERT SETTINGS MODAL ===== -->
+  <div id="optionsBackdrop" class="modal-backdrop hidden">
+    <div class="modal-card" role="dialog" aria-modal="true">
+      <div class="drawer-head">
+        <div>
+          <h3 style="margin:0;font-size:16px;font-weight:800">⚙️ 전문가 옵션 · GIS & 가중치 환경설정</h3>
+          <div style="font-size:12px;color:var(--muted);margin-top:2px">변경 사항은 브라우저에 영구 저장되며 전국 229 시군구·지도에 즉시 반영됩니다.</div>
+        </div>
+        <button id="optionsClose" class="icon-btn" type="button">✕</button>
+      </div>
+      <div id="optionsBody" class="drawer-body"></div>
+      <div id="optionsFoot" class="drawer-foot"></div>
+    </div>
   </div>
 
   <div id="toast" class="toast hidden"></div>

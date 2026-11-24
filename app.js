@@ -9,6 +9,44 @@ const IDB_STORE = 'keys';
 const PIPE_KEY = 'nexusone_pro_pipeline_v1';
 const OVERRIDE_KEYS = 'nexusone_pro_api_overrides_v1';
 const THEME_KEY = 'nexusone_pro_theme_v1';
+const OPT_KEY = 'nexusone_pro_options_v1';
+
+const STRATEGY_PRESETS = {
+  balanced:  { label: '⚖️ 균형 통합', weights: { corp: 30, bid: 25, sbiz: 25, re: 20 }, desc: '4대 도메인 균형 평가' },
+  b2b:       { label: '🛡️ 보안·CCTV·B2B', weights: { corp: 20, bid: 35, sbiz: 35, re: 10 }, desc: '입찰·사전규격 + 신규개업 상권 집중' },
+  finance:   { label: '🏢 법인금융·RM', weights: { corp: 55, bid: 15, sbiz: 20, re: 10 }, desc: '고매출·상장·강소법인 중심' },
+  franchise: { label: '🏪 프랜차이즈·출점', weights: { corp: 15, bid: 10, sbiz: 55, re: 20 }, desc: '상권밀도·신규개업·신축 배후단지' },
+  construct: { label: '🏗️ 건설·분양·입주', weights: { corp: 15, bid: 35, sbiz: 10, re: 40 }, desc: '건축인허가·착공·신축분양·K-apt' },
+};
+
+const DEFAULT_OPTS = {
+  preset: 'balanced',
+  weights: { corp: 30, bid: 25, sbiz: 25, re: 20 },
+  baseMap: 'vbase',       // vbase | vsat | vhyb | vwhite | vmidnight | osm
+  defaultRadius: 500,     // 300 | 500 | 1000 | 2000
+  markerCap: 1500,        // 800 | 1500 | 3000
+  showQuantBadges: true,
+  autoHeat: false,
+  autoCadastral: false,
+  autoZoning: false,
+  geminiKey: '',
+};
+
+function loadOpts() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(OPT_KEY) || '{}');
+    return {
+      ...DEFAULT_OPTS,
+      ...saved,
+      weights: { ...DEFAULT_OPTS.weights, ...(saved.weights || {}) },
+    };
+  } catch {
+    return { ...DEFAULT_OPTS, weights: { ...DEFAULT_OPTS.weights } };
+  }
+}
+function saveOpts() {
+  localStorage.setItem(OPT_KEY, JSON.stringify(S.opts));
+}
 
 // ===== GLOBAL APPLICATION STATE =====
 const S = {
@@ -28,18 +66,31 @@ const S = {
   corpTags: [],      // [{ id, label, set }]
   corpStatusBytes: null,
 
-  // Sbiz lazy per-sido cache
+  // Sbiz lazy per-sido cache & Pro GIS layers
   sbizCache: new Map(), // slug -> parsed sido object
   sbizActiveSlug: '',
   sbizLiveStores: [],
   leafletMap: null,
   leafletLayer: null,
   leafletTile: null,
-  leafletBaseMode: 'osm',
+  leafletHybrid: null,
+  leafletWms: {},       // { cadastral, zoning, emd, bldg }
+  leafletHeat: null,
+  leafletCatchLayer: null,
+  gisBase: 'vbase',
+  gisLayers: { cadastral: false, zoning: false, emd: false, bldg: false, heat: false },
+  gisRadius: 500,
+  catchment: null,      // { lat, lon, radius, stores, stats, vworld }
+  lastSbizMatchedIdx: [],
 
-  // UI Navigation & Filters
+  // UI Navigation, Pro Options & Expert State
+  opts: loadOpts(),
   tab: 'overview',
   selectedRid: -1,
+  compareRid: -1,
+  showSliders: false,
+  svgZoom: 1,
+  svgPan: { x: 0, y: 0 },
   mapMetric: 'total',
   rankSort: 'total',
 
@@ -266,12 +317,140 @@ async function queryVworldPoint(lon, lat) {
   const props = landRes?.response?.result?.featureCollection?.features?.[0]?.properties || {};
   const zFeats = zoneRes?.response?.result?.featureCollection?.features || [];
   const zoning = [...new Set(zFeats.map((f) => f?.properties?.uname).filter(Boolean))].join(', ');
+  const jigaNum = Number(props.jiga || 0);
+  const pyeongMan = jigaNum > 0 ? Math.round((jigaNum * 3.305785) / 10000) : 0;
   return {
     addr: addrText,
-    jiga: props.jiga ? `${fmt(props.jiga)}원/㎡` : '미제공',
+    jigaNum,
+    jiga: jigaNum > 0 ? `${fmt(jigaNum)}원/㎡` : '미제공',
+    pyeongMan,
     zoning: zoning || '미제공',
     pnu: props.pnu || '',
   };
+}
+
+async function searchVworldPlace(query) {
+  const { vworld } = getApiKeys();
+  if (!vworld) throw new Error('브이월드 키가 없습니다.');
+  const isLocal = /^(127\.0\.0\.1|localhost)$/.test(location.hostname);
+  const dom = encodeURIComponent((!isLocal && location.origin && /^https?:/.test(location.origin)) ? location.origin : 'https://heebonpark.github.io');
+  const q = encodeURIComponent(query.trim());
+  // Try Place search first, fallback to Address search
+  const j1 = await jsonp(`https://api.vworld.kr/req/search?service=search&request=search&version=2.0&crs=EPSG:4326&size=5&page=1&query=${q}&type=place&format=json&key=${vworld}&domain=${dom}`).catch(() => null);
+  let item = j1?.response?.result?.items?.[0];
+  if (!item) {
+    const j2 = await jsonp(`https://api.vworld.kr/req/search?service=search&request=search&version=2.0&crs=EPSG:4326&size=5&page=1&query=${q}&type=address&category=road&format=json&key=${vworld}&domain=${dom}`).catch(() => null);
+    item = j2?.response?.result?.items?.[0];
+  }
+  if (!item?.point) throw new Error('장소·주소를 찾을 수 없습니다.');
+  return {
+    title: item.title || item.address?.road || item.address?.parcel || query,
+    lat: Number(item.point.y),
+    lon: Number(item.point.x),
+  };
+}
+
+function downloadCsv(filename, headers, rows) {
+  const escCsv = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+  const content = '\uFEFF' + headers.map(escCsv).join(',') + '\n' + rows.map((r) => r.map(escCsv).join(',')).join('\n');
+  const blob = new Blob([content], { type: 'text/csv;charset=utf-8' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1500);
+}
+
+// ===== EXPERT QUANT ENGINE (HHI · LQ · BLUE-OCEAN · LORENZ/GINI · DYNAMIC WEIGHTS) =====
+function recomputeFusionQuant() {
+  if (!S.fusion?.regions?.length) return;
+  const regs = S.fusion.regions;
+  const w = S.opts.weights;
+  const wSum = Math.max(1, (Number(w.corp) || 0) + (Number(w.bid) || 0) + (Number(w.sbiz) || 0) + (Number(w.re) || 0));
+
+  const totCorp = regs.reduce((a, r) => a + (r.corp.cnt || 0), 0) || 1;
+  const totSbiz = regs.reduce((a, r) => a + (r.sbiz.cnt || 0), 0) || 1;
+  const totNew26 = regs.reduce((a, r) => a + (r.sbiz.new2026 || 0), 0) || 1;
+  const natNewRate = totNew26 / totSbiz;
+
+  // Raw blue-ocean demand-to-competition ratio
+  const rawBlue = regs.map((r) => {
+    const demand = (r.corp.cnt * 0.5) + (r.sbiz.new2026 * 2.5) + ((r.bid.preSpecCnt + r.bid.archCnt + r.re.aptCnt) * 40);
+    const comp = 10 + (r.bid.builderCnt || 0) * 1.4;
+    return demand / comp;
+  });
+  const maxLogBlue = Math.max(1, Math.log1p(Math.max(...rawBlue)));
+  const maxNewRate = Math.max(0.01, ...regs.map((r) => (r.sbiz.cnt > 50 ? r.sbiz.new2026 / r.sbiz.cnt : 0)));
+
+  regs.forEach((r, idx) => {
+    const customTotal = Math.round(
+      (r.scores.corp * w.corp + r.scores.bid * w.bid + r.scores.sbiz * w.sbiz + r.scores.re * w.re) / wSum
+    );
+    r.scores.total = customTotal;
+
+    const sbizCnt = r.sbiz.cnt || 0;
+    const newRatePct = sbizCnt > 0 ? (r.sbiz.new2026 / sbizCnt) * 100 : 0;
+
+    // HHI from topL1 distribution (0..10,000)
+    let hhi = 0;
+    if (sbizCnt > 0 && r.sbiz.topL1?.length) {
+      let accounted = 0;
+      for (const [, cnt] of r.sbiz.topL1) {
+        const sh = (cnt / sbizCnt) * 100;
+        hhi += sh * sh;
+        accounted += cnt;
+      }
+      const rem = Math.max(0, sbizCnt - accounted);
+      if (rem > 0) {
+        const avgRem = (rem / 4 / sbizCnt) * 100;
+        hhi += 4 * avgRem * avgRem;
+      }
+      hhi = Math.min(10000, Math.round(hhi));
+    }
+
+    // Location Quotient (LQ): Corp share vs Sbiz share (1.0 = national avg)
+    const shareCorp = r.corp.cnt / totCorp;
+    const shareSbiz = sbizCnt / totSbiz;
+    const lqCorp = shareSbiz > 0 ? Math.round((shareCorp / shareSbiz) * 100) / 100 : (r.corp.cnt > 0 ? 2.0 : 0);
+    const lqNew26 = natNewRate > 0 && sbizCnt > 0 ? Math.round(((r.sbiz.new2026 / sbizCnt) / natNewRate) * 100) / 100 : 0;
+
+    const blueOcean = Math.min(100, Math.round((Math.log1p(rawBlue[idx]) / maxLogBlue) * 100));
+    const newRateScore = Math.min(100, Math.round(((sbizCnt > 50 ? (r.sbiz.new2026 / sbizCnt) : 0) / maxNewRate) * 100));
+    const lqScore = Math.min(100, Math.round(Math.min(3, lqCorp) / 3 * 100));
+
+    r.quant = {
+      newRatePct: Math.round(newRatePct * 10) / 10,
+      newRateScore,
+      hhi,
+      hhiLabel: hhi < 1500 ? '다각화 상권' : hhi < 2500 ? '적정 집중' : '특정업종 과밀',
+      lqCorp,
+      lqNew26,
+      lqScore,
+      blueOcean,
+    };
+  });
+}
+
+function computeLorenzGini(values) {
+  const arr = values.map((v) => Math.max(0, Number(v) || 0)).sort((a, b) => a - b);
+  const n = arr.length;
+  const total = arr.reduce((a, b) => a + b, 0);
+  if (!n || !total) return { gini: 0, top20Share: 0, points: [[0, 0], [1, 1]] };
+  let cum = 0, area = 0;
+  const points = [[0, 0]];
+  for (let i = 0; i < n; i++) {
+    const prevY = cum / total;
+    cum += arr[i];
+    const currY = cum / total;
+    area += (prevY + currY) / 2 / n;
+    if (i % Math.max(1, Math.floor(n / 25)) === 0 || i === n - 1) {
+      points.push([(i + 1) / n, currY]);
+    }
+  }
+  const gini = Math.max(0, Math.min(1, 1 - 2 * area));
+  const top20Cnt = Math.max(1, Math.round(n * 0.2));
+  const top20Sum = arr.slice(-top20Cnt).reduce((a, b) => a + b, 0);
+  return { gini: Math.round(gini * 1000) / 1000, top20Share: Math.round((top20Sum / total) * 1000) / 10, points };
 }
 
 // ===== CORE BOOTSTRAP =====
@@ -290,6 +469,14 @@ async function unlockAndBoot(key) {
   S.fusionByRid = new Map((fusion.regions || []).map((r) => [r.rid, r]));
   S.opps = (oppsObj.items || []).map(enrichOpp);
   S.re = reObj;
+
+  // Apply persisted Pro GIS defaults & compute expert quant metrics
+  S.gisBase = S.opts.baseMap || 'vbase';
+  S.gisRadius = S.opts.defaultRadius || 500;
+  S.gisLayers.heat = !!S.opts.autoHeat;
+  S.gisLayers.cadastral = !!S.opts.autoCadastral;
+  S.gisLayers.zoning = !!S.opts.autoZoning;
+  recomputeFusionQuant();
 
   // Pick initial spotlight region (#1 Fusion Score or 부평구)
   const sorted = [...fusion.regions].sort((a, b) => b.scores.total - a.scores.total);
@@ -415,14 +602,38 @@ function renderCurrentTab() {
 }
 
 // =========================================================================
-// TAB 1: ⚡ 통합 360° 커맨드 센터 (4-WAY CROSS-DOMAIN FUSION ENGINE)
+// TAB 1: ⚡ 통합 360° 커맨드 센터 (4-WAY CROSS-DOMAIN FUSION + QUANT EXPERT)
 // =========================================================================
+function getMetricValue(f, metric) {
+  if (!f) return 0;
+  if (metric === 'newRate') return f.quant?.newRateScore ?? 0;
+  if (metric === 'lq') return f.quant?.lqScore ?? 0;
+  if (metric === 'blueOcean') return f.quant?.blueOcean ?? 0;
+  return f.scores[metric] ?? f.scores.total;
+}
+
 function renderOverview() {
+  recomputeFusionQuant();
   const st = S.core.stats;
   const reg = S.fusionByRid.get(S.selectedRid) || S.fusion.regions[0];
+  const cmpReg = S.compareRid >= 0 && S.compareRid !== reg.rid ? S.fusionByRid.get(S.compareRid) : null;
   const quickRids = ['송파구', '강남구', '부평구', '계양구', '화성시', '수원시', '성남시', '해운대구']
     .map((nm) => S.fusion.regions.find((r) => r.name === nm))
     .filter(Boolean);
+  const w = S.opts.weights;
+  const wSum = Math.max(1, w.corp + w.bid + w.sbiz + w.re);
+  const wPct = (v) => Math.round((v / wSum) * 100);
+
+  // Pareto / Lorenz stats for current rankSort
+  const lorenzVals = S.fusion.regions.map((r) => {
+    if (S.rankSort === 'corp') return r.corp.cnt;
+    if (S.rankSort === 'sbiz') return r.sbiz.cnt;
+    if (S.rankSort === 'new26') return r.sbiz.new2026;
+    if (S.rankSort === 'bid') return r.bid.bidCnt + r.bid.preSpecCnt + r.bid.archCnt + r.bid.aptOppCnt + r.bid.builderCnt * 0.1;
+    if (S.rankSort === 're') return r.re.aptCnt + r.re.remndrCnt + r.re.startCnt + r.re.kaptCnt;
+    return r.scores.total;
+  });
+  const lorenz = computeLorenzGini(lorenzVals);
 
   $('mainStage').innerHTML = `
     <div class="kpi-strip">
@@ -448,20 +659,55 @@ function renderOverview() {
       </div>
     </div>
 
+    <!-- EXPERT STRATEGY PRESET BAR -->
+    <div class="preset-bar">
+      <span class="gis-label">🧠 전문가 전략 모델:</span>
+      ${Object.entries(STRATEGY_PRESETS).map(([k, p]) => `
+        <button class="chip ${S.opts.preset === k ? 'active' : ''}" data-preset="${k}" title="${esc(p.desc)}">${p.label}</button>
+      `).join('')}
+      <button id="btnToggleSliders" class="btn btn-sm" style="margin-left:auto" type="button">
+        🎚️ 가중치 커스텀 (${wPct(w.corp)}/${wPct(w.bid)}/${wPct(w.sbiz)}/${wPct(w.re)})
+      </button>
+    </div>
+
+    ${S.showSliders ? `
+      <div class="slider-panel">
+        <div class="slider-item">
+          <label><span style="color:var(--c-corp)">🏢 기업 가중치</span><span>${wPct(w.corp)}%</span></label>
+          <input type="range" min="0" max="100" value="${w.corp}" data-w-key="corp" />
+        </div>
+        <div class="slider-item">
+          <label><span style="color:var(--c-bid)">🎯 입찰 가중치</span><span>${wPct(w.bid)}%</span></label>
+          <input type="range" min="0" max="100" value="${w.bid}" data-w-key="bid" />
+        </div>
+        <div class="slider-item">
+          <label><span style="color:var(--c-sbiz)">🏪 상권 가중치</span><span>${wPct(w.sbiz)}%</span></label>
+          <input type="range" min="0" max="100" value="${w.sbiz}" data-w-key="sbiz" />
+        </div>
+        <div class="slider-item">
+          <label><span style="color:var(--c-re)">🏠 부동산 가중치</span><span>${wPct(w.re)}%</span></label>
+          <input type="range" min="0" max="100" value="${w.re}" data-w-key="re" />
+        </div>
+      </div>
+    ` : ''}
+
     <div class="grid-2">
-      <!-- LEFT: Interactive Korea 229 Sigungu Map -->
+      <!-- LEFT: Interactive Korea 229 Sigungu Map (Zoom/Pan + 8 Metrics) -->
       <div class="card">
         <div class="card-head">
           <div>
-            <h2 class="card-title">🗺️ 대한민국 229 시군구 통합 히트맵</h2>
-            <p class="card-sub">시군구를 클릭하면 4대 도메인(기업·입찰·상권·부동산) 360° 분석이 즉시 갱신됩니다.</p>
+            <h2 class="card-title">🗺️ 대한민국 229 시군구 통합 GIS 히트맵</h2>
+            <p class="card-sub">클릭=360° 스캔 · 휠/버튼=확대 · 드래그=이동 · 8대 전문가 지표 전환</p>
           </div>
           <select id="ovMapMetric" class="select">
-            <option value="total" ${S.mapMetric === 'total' ? 'selected' : ''}>🏆 통합 융합지수</option>
-            <option value="corp" ${S.mapMetric === 'corp' ? 'selected' : ''}>🏢 기업 활력</option>
-            <option value="bid" ${S.mapMetric === 'bid' ? 'selected' : ''}>🎯 입찰·인허가·건설</option>
-            <option value="sbiz" ${S.mapMetric === 'sbiz' ? 'selected' : ''}>🏪 상권 밀도·신규개업</option>
+            <option value="total" ${S.mapMetric === 'total' ? 'selected' : ''}>🏆 통합 융합지수 (가중치 반영)</option>
+            <option value="corp" ${S.mapMetric === 'corp' ? 'selected' : ''}>🏢 기업 활력지수</option>
+            <option value="bid" ${S.mapMetric === 'bid' ? 'selected' : ''}>🎯 입찰·사전규격·인허가</option>
+            <option value="sbiz" ${S.mapMetric === 'sbiz' ? 'selected' : ''}>🏪 상권 밀도</option>
+            <option value="newRate" ${S.mapMetric === 'newRate' ? 'selected' : ''}>🆕 2026 신규개업 활력률(%)</option>
             <option value="re" ${S.mapMetric === 're' ? 'selected' : ''}>🏠 청약·착공·K-apt</option>
+            <option value="lq" ${S.mapMetric === 'lq' ? 'selected' : ''}>📐 기업 특화 입지계수(LQ)</option>
+            <option value="blueOcean" ${S.mapMetric === 'blueOcean' ? 'selected' : ''}>💎 미개척 블루오션 지수</option>
           </select>
         </div>
 
@@ -469,89 +715,163 @@ function renderOverview() {
           ${quickRids.map((r) => `<button class="chip ${r.rid === reg.rid ? 'active' : ''}" data-pick-rid="${r.rid}">${esc(r.sidoShort)} ${esc(r.name)}</button>`).join('')}
         </div>
 
-        <div class="korea-map-box">
+        <div class="korea-map-box" id="koreaMapBox">
+          <div class="map-ctrl-float">
+            <button id="btnMapZoomIn" type="button" title="확대">+</button>
+            <button id="btnMapZoomOut" type="button" title="축소">−</button>
+            <button id="btnMapReset" type="button" title="원래 크기">⟳</button>
+          </div>
           <div id="koreaMapTooltip" class="map-tooltip hidden"></div>
-          ${renderKoreaSvg(reg.rid)}
+          ${renderKoreaSvg(reg.rid, S.compareRid)}
+          <div class="map-legend">
+            <span>낮음</span>
+            <div class="legend-bar" style="background:linear-gradient(90deg,${getPalette(S.mapMetric).join(',')})"></div>
+            <span>높음 (상위 거점)</span>
+            <span style="margin-left:8px;color:var(--text)">확대 ${Math.round(S.svgZoom * 100)}%</span>
+          </div>
         </div>
       </div>
 
-      <!-- RIGHT: Selected District 360° Cross-Domain Spotlight -->
+      <!-- RIGHT: Selected District 360° Cross-Domain Spotlight (+ Dual Compare) -->
       <div class="card" id="spotlightCard">
-        ${renderSpotlightHtml(reg)}
+        ${renderSpotlightHtml(reg, cmpReg)}
       </div>
     </div>
 
-    <!-- TOP 25 RANKING TABLE -->
+    ${cmpReg ? renderCompareMatrixCard(reg, cmpReg) : ''}
+
+    <!-- TOP 25 RANKING + PARETO/LORENZ EXPERT CARD -->
     <div class="card" style="margin-top:16px">
       <div class="card-head">
         <div>
           <h2 class="card-title">🏆 전국 229 시군구 4-Way 통합 기회 랭킹 TOP 25</h2>
-          <p class="card-sub">기업·입찰·상권·부동산 데이터를 교차 점수화한 핵심 영업/투자 거점 순위</p>
+          <p class="card-sub">
+            상위 20% 시군구 집중도(파레토): <b>${lorenz.top20Share}%</b> · 지니계수(Gini): <b>${lorenz.gini}</b>
+            (${lorenz.gini >= 0.45 ? '고집중·핵심거점 타깃팅 유리' : '전국 분산형 시장'})
+          </p>
         </div>
-        <div class="chips">
-          ${[
-            ['total', '통합점수'],
-            ['corp', '법인수'],
-            ['bid', '입찰·인허가'],
-            ['sbiz', '소상공인'],
-            ['new26', '2026신규개업'],
-            ['re', '청약·착공'],
-          ].map(([k, lb]) => `<button class="chip ${S.rankSort === k ? 'active' : ''}" data-rank-sort="${k}">${lb}</button>`).join('')}
+        <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+          <div class="chips">
+            ${[
+              ['total', '통합점수'],
+              ['blueOcean', '💎 블루오션'],
+              ['corp', '법인수'],
+              ['bid', '입찰·인허가'],
+              ['sbiz', '소상공인'],
+              ['newRate', '🆕 신규율%'],
+              ['re', '청약·착공'],
+            ].map(([k, lb]) => `<button class="chip ${S.rankSort === k ? 'active' : ''}" data-rank-sort="${k}">${lb}</button>`).join('')}
+          </div>
+          <button id="btnExport229Csv" class="btn btn-sm btn-emerald" type="button">📥 229시군구 CSV</button>
         </div>
       </div>
-      <div class="table-wrap">
-        <table class="data-table">
-          <thead>
-            <tr>
-              <th>#</th>
-              <th>시군구</th>
-              <th>통합지수</th>
-              <th>🏢 법인(상장/강소)</th>
-              <th>🎯 입찰·사전·인허가</th>
-              <th>🏪 상가(2026신규)</th>
-              <th>🏠 분양·착공·K-apt</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${getSortedFusion(S.rankSort).slice(0, 25).map((r, i) => `
-              <tr data-pick-rid="${r.rid}" ${r.rid === reg.rid ? 'style="background:var(--c-corp-bg)"' : ''}>
-                <td><b>${i + 1}</b></td>
-                <td><b>${esc(r.fullName)}</b></td>
-                <td><span class="tag tag-corp">${r.scores.total}점</span></td>
-                <td>${fmt(r.corp.cnt)} <span style="color:var(--muted)">(${r.corp.listed}/${r.corp.strong})</span></td>
-                <td>${fmt(r.bid.bidCnt + r.bid.preSpecCnt + r.bid.archCnt + r.bid.aptOppCnt)}건 <span style="color:var(--muted)">· 건설 ${fmt(r.bid.builderCnt)}</span></td>
-                <td>${fmt(r.sbiz.cnt)} <span style="color:var(--c-sbiz)">(+${fmt(r.sbiz.new2026)})</span></td>
-                <td>분양 ${r.re.aptCnt + r.re.remndrCnt} · 착공 ${r.re.startCnt} · K-apt ${r.re.kaptCnt}</td>
+
+      <div style="display:grid;grid-template-columns:1fr 220px;gap:14px;align-items:start" class="rank-lorenz-grid">
+        <div class="table-wrap">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>시군구</th>
+                <th>통합(블루오션)</th>
+                <th>🏢 법인(LQ)</th>
+                <th>🎯 입찰·사전·인허가</th>
+                <th>🏪 상가(2026신규율)</th>
+                <th>🏠 분양·착공</th>
+                <th>비교</th>
               </tr>
-            `).join('')}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              ${getSortedFusion(S.rankSort).slice(0, 25).map((r, i) => `
+                <tr data-pick-rid="${r.rid}" ${r.rid === reg.rid ? 'style="background:var(--c-corp-bg)"' : ''}>
+                  <td><b>${i + 1}</b></td>
+                  <td><b>${esc(r.fullName)}</b></td>
+                  <td><span class="tag tag-corp">${r.scores.total}점</span> <span class="tag tag-sbiz" title="블루오션 지수">💎${r.quant?.blueOcean ?? 0}</span></td>
+                  <td>${fmt(r.corp.cnt)} <span style="color:var(--muted)">(LQ ${r.quant?.lqCorp ?? 0})</span></td>
+                  <td>${fmt(r.bid.bidCnt + r.bid.preSpecCnt + r.bid.archCnt + r.bid.aptOppCnt)}건</td>
+                  <td>${fmt(r.sbiz.cnt)} <span style="color:var(--c-sbiz)">(${r.quant?.newRatePct ?? 0}%)</span></td>
+                  <td>분양 ${r.re.aptCnt + r.re.remndrCnt} · 착공 ${r.re.startCnt}</td>
+                  <td><button class="btn btn-sm" data-set-cmp="${r.rid}" type="button">${S.compareRid === r.rid ? '✓비교중' : '⚔️비교'}</button></td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+
+        <div class="domain-box" style="text-align:center">
+          <h4 style="justify-content:center;margin-bottom:4px">📈 파레토 · 로렌츠 곡선</h4>
+          ${renderLorenzSvg(lorenz)}
+          <div style="font-size:11.5px;color:var(--text-2);margin-top:6px;line-height:1.5">
+            지니계수 <b>${lorenz.gini}</b><br/>상위 20% 비중 <b>${lorenz.top20Share}%</b>
+          </div>
+        </div>
       </div>
     </div>
   `;
 
   // Wire Overview Events
-  $('mainStage').querySelectorAll('[data-jump]').forEach((el) => {
-    el.addEventListener('click', () => switchTab(el.dataset.jump));
-  });
-  $('ovMapMetric').addEventListener('change', (e) => {
-    S.mapMetric = e.target.value;
-    renderOverview();
-  });
-  $('mainStage').querySelectorAll('[data-pick-rid]').forEach((el) => {
+  $('mainStage').querySelectorAll('[data-jump]').forEach((el) => el.addEventListener('click', () => switchTab(el.dataset.jump)));
+  $('mainStage').querySelectorAll('[data-preset]').forEach((el) => {
     el.addEventListener('click', () => {
+      const k = el.dataset.preset;
+      S.opts.preset = k;
+      S.opts.weights = { ...STRATEGY_PRESETS[k].weights };
+      saveOpts();
+      toast(`🧠 전략 프리셋 적용: ${STRATEGY_PRESETS[k].label}`);
+      renderOverview();
+    });
+  });
+  $('btnToggleSliders').addEventListener('click', () => { S.showSliders = !S.showSliders; renderOverview(); });
+  $('mainStage').querySelectorAll('input[data-w-key]').forEach((inp) => {
+    inp.addEventListener('input', () => {
+      S.opts.preset = 'custom';
+      S.opts.weights[inp.dataset.wKey] = Number(inp.value);
+      saveOpts();
+      renderOverview();
+    });
+  });
+  $('ovMapMetric').addEventListener('change', (e) => { S.mapMetric = e.target.value; renderOverview(); });
+  $('mainStage').querySelectorAll('[data-pick-rid]').forEach((el) => {
+    el.addEventListener('click', (e) => {
+      if (e.target.closest('[data-set-cmp]')) return;
       S.selectedRid = Number(el.dataset.pickRid);
       renderOverview();
     });
   });
-  $('mainStage').querySelectorAll('[data-rank-sort]').forEach((el) => {
-    el.addEventListener('click', () => {
-      S.rankSort = el.dataset.rankSort;
+  $('mainStage').querySelectorAll('[data-set-cmp]').forEach((btn) => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const id = Number(btn.dataset.setCmp);
+      S.compareRid = S.compareRid === id ? -1 : id;
       renderOverview();
     });
   });
+  $('mainStage').querySelectorAll('[data-rank-sort]').forEach((el) => {
+    el.addEventListener('click', () => { S.rankSort = el.dataset.rankSort; renderOverview(); });
+  });
+  $('btnExport229Csv').addEventListener('click', () => {
+    const sorted = getSortedFusion(S.rankSort);
+    downloadCsv(
+      `nexusone_229_regions_${new Date().toISOString().slice(0, 10)}.csv`,
+      ['순위', '시군구', '통합점수', '블루오션', '법인수', '상장사', '강소산단', '기업LQ', '입찰', '사전규격', '건축인허가', '건설사', '소상공인상가', '2026신규개업', '신규개업률(%)', '업종HHI', '청약APT', '무순위', '착공현장'],
+      sorted.map((r, i) => [
+        i + 1, r.fullName, r.scores.total, r.quant?.blueOcean ?? 0,
+        r.corp.cnt, r.corp.listed, r.corp.strong, r.quant?.lqCorp ?? 0,
+        r.bid.bidCnt, r.bid.preSpecCnt, r.bid.archCnt, r.bid.builderCnt,
+        r.sbiz.cnt, r.sbiz.new2026, r.quant?.newRatePct ?? 0, r.quant?.hhi ?? 0,
+        r.re.aptCnt, r.re.remndrCnt, r.re.startCnt,
+      ])
+    );
+    toast('📥 전국 229 시군구 통합 랭킹 CSV 다운로드 완료!');
+  });
+
+  // Zoom / Pan controls
+  $('btnMapZoomIn').addEventListener('click', () => { S.svgZoom = Math.min(4, +(S.svgZoom + 0.4).toFixed(2)); renderOverview(); });
+  $('btnMapZoomOut').addEventListener('click', () => { S.svgZoom = Math.max(1, +(S.svgZoom - 0.4).toFixed(2)); if (S.svgZoom === 1) S.svgPan = { x: 0, y: 0 }; renderOverview(); });
+  $('btnMapReset').addEventListener('click', () => { S.svgZoom = 1; S.svgPan = { x: 0, y: 0 }; renderOverview(); });
+
   wireMapTooltips();
-  wireSpotlightButtons(reg);
+  wireSpotlightButtons(reg, cmpReg);
 }
 
 function getSortedFusion(sortKey) {
@@ -560,70 +880,123 @@ function getSortedFusion(sortKey) {
   if (sortKey === 'bid') return arr.sort((a, b) => (b.bid.bidCnt + b.bid.preSpecCnt + b.bid.archCnt + b.bid.aptOppCnt + b.bid.builderCnt * 0.1) - (a.bid.bidCnt + a.bid.preSpecCnt + a.bid.archCnt + a.bid.aptOppCnt + a.bid.builderCnt * 0.1));
   if (sortKey === 'sbiz') return arr.sort((a, b) => b.sbiz.cnt - a.sbiz.cnt);
   if (sortKey === 'new26') return arr.sort((a, b) => b.sbiz.new2026 - a.sbiz.new2026);
+  if (sortKey === 'newRate') return arr.sort((a, b) => (b.quant?.newRatePct || 0) - (a.quant?.newRatePct || 0));
+  if (sortKey === 'blueOcean') return arr.sort((a, b) => (b.quant?.blueOcean || 0) - (a.quant?.blueOcean || 0));
   if (sortKey === 're') return arr.sort((a, b) => (b.re.aptCnt + b.re.remndrCnt + b.re.startCnt + b.re.kaptCnt) - (a.re.aptCnt + a.re.remndrCnt + a.re.startCnt + a.re.kaptCnt));
   return arr.sort((a, b) => b.scores.total - a.scores.total);
 }
 
-function scoreColor(val, metric) {
-  const t = Math.max(0, Math.min(1, val / 100));
+function getPalette(metric) {
   const palettes = {
     total: ['#e2e8f0', '#c7d2fe', '#818cf8', '#4f46e5', '#312e81'],
     corp: ['#e2e8f0', '#ddd6fe', '#8b5cf6', '#5b21b6', '#3b0764'],
     bid: ['#e2e8f0', '#fde68a', '#f59e0b', '#d97706', '#92400e'],
     sbiz: ['#e2e8f0', '#a7f3d0', '#34d399', '#059669', '#064e3b'],
+    newRate: ['#e2e8f0', '#bae6fd', '#38bdf8', '#0284c7', '#0c4a6e'],
     re: ['#e2e8f0', '#fecdd3', '#fb7185', '#e11d48', '#881337'],
+    lq: ['#e2e8f0', '#f5d0fe', '#d946ef', '#a21caf', '#701a75'],
+    blueOcean: ['#e2e8f0', '#99f6e4', '#14b8a6', '#0f766e', '#134e4a'],
   };
-  const pal = palettes[metric] || palettes.total;
+  return palettes[metric] || palettes.total;
+}
+
+function scoreColor(val, metric) {
+  const t = Math.max(0, Math.min(1, val / 100));
+  const pal = getPalette(metric);
   const idx = Math.min(pal.length - 1, Math.floor(t * (pal.length - 0.01)));
   return pal[idx];
 }
 
-function renderKoreaSvg(selectedRid) {
+function renderKoreaSvg(selectedRid, compareRid = -1) {
   const { w, h, regions } = S.map;
+  const vw = w / S.svgZoom;
+  const vh = h / S.svgZoom;
+  const vx = Math.max(0, Math.min(w - vw, (w - vw) / 2 - S.svgPan.x));
+  const vy = Math.max(0, Math.min(h - vh, (h - vh) / 2 - S.svgPan.y));
   const paths = regions.map((r) => {
     const f = S.fusionByRid.get(r.id);
-    const val = f ? (f.scores[S.mapMetric] ?? f.scores.total) : 0;
+    const val = getMetricValue(f, S.mapMetric);
     const fill = scoreColor(val, S.mapMetric);
-    return `<path d="${r.d}" fill="${fill}" class="${r.id === selectedRid ? 'selected' : ''}" data-rid="${r.id}"></path>`;
+    const cls = r.id === selectedRid ? 'selected' : (r.id === compareRid ? 'selected' : '');
+    const style = r.id === compareRid ? 'stroke:#059669;stroke-width:2.2' : '';
+    return `<path d="${r.d}" fill="${fill}" class="${cls}" style="${style}" data-rid="${r.id}"></path>`;
   }).join('');
-  return `<svg class="korea-svg" viewBox="0 0 ${w} ${h}" aria-label="대한민국 229 시군구 통합 지도">${paths}</svg>`;
+  return `<svg class="korea-svg" viewBox="${vx.toFixed(1)} ${vy.toFixed(1)} ${vw.toFixed(1)} ${vh.toFixed(1)}" aria-label="대한민국 229 시군구 통합 지도">${paths}</svg>`;
+}
+
+function renderLorenzSvg(lorenz) {
+  const W = 180, H = 140, P = 20;
+  const x = (t) => P + t * (W - P * 2);
+  const y = (t) => H - P - t * (H - P * 2);
+  const pathD = lorenz.points.map(([px, py], i) => `${i === 0 ? 'M' : 'L'}${x(px).toFixed(1)},${y(py).toFixed(1)}`).join(' ');
+  const fillD = `${pathD} L${x(1).toFixed(1)},${y(0).toFixed(1)} L${x(0).toFixed(1)},${y(0).toFixed(1)} Z`;
+  return `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" style="max-width:100%">
+    <line x1="${P}" y1="${H - P}" x2="${W - P}" y2="${P}" stroke="var(--border-strong)" stroke-dasharray="3 3" stroke-width="1"/>
+    <path d="${fillD}" fill="rgba(79,70,229,0.16)"/>
+    <path d="${pathD}" fill="none" stroke="#4f46e5" stroke-width="2.2"/>
+    <rect x="${P}" y="${P}" width="${W - P * 2}" height="${H - P * 2}" fill="none" stroke="var(--border-strong)" stroke-width="1"/>
+    <text x="${W / 2}" y="${H - 4}" text-anchor="middle" font-size="9.5" fill="var(--muted)">누적 시군구 비율 (%)</text>
+  </svg>`;
 }
 
 function wireMapTooltips() {
   const svg = document.querySelector('.korea-svg');
   const tip = $('koreaMapTooltip');
   if (!svg || !tip) return;
+
+  // Drag pan when zoomed
+  let dragging = false, sx = 0, sy = 0, ox = 0, oy = 0, moved = false;
+  svg.addEventListener('mousedown', (e) => {
+    if (S.svgZoom <= 1) return;
+    dragging = true; moved = false; sx = e.clientX; sy = e.clientY; ox = S.svgPan.x; oy = S.svgPan.y;
+  });
+  window.addEventListener('mousemove', (e) => {
+    if (!dragging) return;
+    const dx = (e.clientX - sx) / S.svgZoom;
+    const dy = (e.clientY - sy) / S.svgZoom;
+    if (Math.abs(dx) > 3 || Math.abs(dy) > 3) moved = true;
+    S.svgPan = { x: ox + dx, y: oy + dy };
+    const { w, h } = S.map;
+    const vw = w / S.svgZoom, vh = h / S.svgZoom;
+    const vx = Math.max(0, Math.min(w - vw, (w - vw) / 2 - S.svgPan.x));
+    const vy = Math.max(0, Math.min(h - vh, (h - vh) / 2 - S.svgPan.y));
+    svg.setAttribute('viewBox', `${vx.toFixed(1)} ${vy.toFixed(1)} ${vw.toFixed(1)} ${vh.toFixed(1)}`);
+  });
+  window.addEventListener('mouseup', () => { dragging = false; });
+
   svg.querySelectorAll('path[data-rid]').forEach((p) => {
     p.addEventListener('mouseenter', () => {
       const f = S.fusionByRid.get(Number(p.dataset.rid));
       if (!f) return;
-      tip.innerHTML = `<b>${esc(f.fullName)}</b> · 통합 ${f.scores.total}점<br/>법인 ${fmt(f.corp.cnt)} · 상가 ${fmt(f.sbiz.cnt)} · 입찰/기회 ${fmt(f.bid.bidCnt + f.bid.preSpecCnt + f.bid.archCnt + f.bid.aptOppCnt)} · 분양/착공 ${fmt(f.re.aptCnt + f.re.remndrCnt + f.re.startCnt)}`;
+      tip.innerHTML = `<b>${esc(f.fullName)}</b> · 통합 ${f.scores.total}점 · 블루오션 💎${f.quant?.blueOcean ?? 0}<br/>법인 ${fmt(f.corp.cnt)} (LQ ${f.quant?.lqCorp ?? 0}) · 상가 ${fmt(f.sbiz.cnt)} (신규 ${f.quant?.newRatePct ?? 0}%)`;
       tip.classList.remove('hidden');
     });
     p.addEventListener('mousemove', (e) => {
       const box = svg.parentElement.getBoundingClientRect();
-      tip.style.left = `${Math.min(box.width - 210, Math.max(8, e.clientX - box.left + 12))}px`;
+      tip.style.left = `${Math.min(box.width - 230, Math.max(8, e.clientX - box.left + 12))}px`;
       tip.style.top = `${Math.max(8, e.clientY - box.top - 48)}px`;
     });
     p.addEventListener('mouseleave', () => tip.classList.add('hidden'));
     p.addEventListener('click', () => {
+      if (moved) return;
       S.selectedRid = Number(p.dataset.rid);
       renderOverview();
     });
   });
 }
 
-function renderRadarSvg(scores) {
+function renderRadarSvg(scores, cmpScores = null) {
   const cx = 115, cy = 88, R = 52;
   const axes = [
-    { label: '기업', val: scores.corp, ang: -Math.PI / 2, color: '#4f46e5', dx: 0, dy: -12 },
-    { label: '입찰', val: scores.bid, ang: 0, color: '#d97706', dx: 26, dy: 4 },
-    { label: '상권', val: scores.sbiz, ang: Math.PI / 2, color: '#059669', dx: 0, dy: 18 },
-    { label: '부동산', val: scores.re, ang: Math.PI, color: '#e11d48', dx: -28, dy: 4 },
+    { label: '기업', val: scores.corp, cmp: cmpScores?.corp, ang: -Math.PI / 2, color: '#4f46e5', dx: 0, dy: -12 },
+    { label: '입찰', val: scores.bid, cmp: cmpScores?.bid, ang: 0, color: '#d97706', dx: 26, dy: 4 },
+    { label: '상권', val: scores.sbiz, cmp: cmpScores?.sbiz, ang: Math.PI / 2, color: '#059669', dx: 0, dy: 18 },
+    { label: '부동산', val: scores.re, cmp: cmpScores?.re, ang: Math.PI, color: '#e11d48', dx: -28, dy: 4 },
   ];
   const pt = (ang, ratio) => `${(cx + Math.cos(ang) * R * ratio).toFixed(1)},${(cy + Math.sin(ang) * R * ratio).toFixed(1)}`;
   const rings = [0.33, 0.66, 1].map((r) => `<polygon points="${axes.map((a) => pt(a.ang, r)).join(' ')}" fill="none" stroke="var(--border-strong)" stroke-width="0.9" stroke-dasharray="${r < 1 ? '2 2' : ''}"/>`).join('');
   const poly = `<polygon points="${axes.map((a) => pt(a.ang, Math.max(0.12, a.val / 100))).join(' ')}" fill="rgba(79,70,229,0.22)" stroke="#4f46e5" stroke-width="2.2"/>`;
+  const cmpPoly = cmpScores ? `<polygon points="${axes.map((a) => pt(a.ang, Math.max(0.12, (a.cmp || 0) / 100))).join(' ')}" fill="rgba(5,150,105,0.16)" stroke="#059669" stroke-width="2" stroke-dasharray="4 2"/>` : '';
   const dots = axes.map((a) => {
     const x = cx + Math.cos(a.ang) * R * Math.max(0.12, a.val / 100);
     const y = cy + Math.sin(a.ang) * R * Math.max(0.12, a.val / 100);
@@ -632,42 +1005,71 @@ function renderRadarSvg(scores) {
     return `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="4" fill="${a.color}"/>
       <text x="${lx.toFixed(1)}" y="${ly.toFixed(1)}" text-anchor="middle" font-size="10.5" font-weight="700" fill="var(--text-2)">${a.label} ${a.val}</text>`;
   }).join('');
-  return `<svg width="230" height="176" viewBox="0 0 230 176" style="max-width:100%">${rings}${poly}${dots}</svg>`;
+  return `<svg width="230" height="176" viewBox="0 0 230 176" style="max-width:100%">${rings}${cmpPoly}${poly}${dots}</svg>`;
 }
 
-function renderSpotlightHtml(r) {
+function renderSpotlightHtml(r, cmpReg = null) {
   const oppSum = r.bid.bidCnt + r.bid.preSpecCnt + r.bid.archCnt + r.bid.aptOppCnt;
+  const q = r.quant || { newRatePct: 0, hhi: 0, hhiLabel: '-', lqCorp: 0, lqNew26: 0, blueOcean: 0 };
   return `
     <div class="card-head">
       <div>
-        <h2 class="card-title">⚡ ${esc(r.fullName)} — 360° 통합 스캔</h2>
-        <p class="card-sub">기업 · 입찰 · 상권 · 부동산 4대 데이터 실시간 교차 요약</p>
+        <h2 class="card-title">⚡ ${esc(r.fullName)} — 360° 전문가 스캔</h2>
+        <p class="card-sub">${cmpReg ? `⚔️ 비교 중: <b style="color:var(--c-sbiz)">${esc(cmpReg.fullName)}</b> (점선 레이더)` : '기업 · 입찰 · 상권 · 부동산 4대 데이터 + 퀀트 지표(HHI·LQ·블루오션)'}</p>
       </div>
-      <div style="display:flex;gap:6px;flex-wrap:wrap">
-        <button id="btnCopyBrief" class="btn btn-sm btn-primary" type="button">📋 브리핑 복사</button>
-        <button id="btnAddRegionPipe" class="btn btn-sm" type="button">+ 파이프라인</button>
+      <div style="display:flex;gap:5px;flex-wrap:wrap">
+        <button id="btnPinCompare" class="btn btn-sm" type="button">${cmpReg ? '✕ 비교 해제' : '⚔️ 비교 고정'}</button>
+        <button id="btnAiStrategy" class="btn btn-sm btn-emerald" type="button">✨ 전략 진단</button>
+        <button id="btnCopyBrief" class="btn btn-sm btn-primary" type="button">📋 브리핑</button>
+        <button id="btnAddRegionPipe" class="btn btn-sm" type="button">+ CRM</button>
       </div>
     </div>
 
     <div class="fusion-hero">
       <div>
-        <div style="font-size:11.5px;font-weight:700;color:var(--muted)">4-WAY 융합 기회 종합지수</div>
-        <div style="display:flex;align-items:baseline;gap:8px;margin:4px 0 8px">
+        <div style="font-size:11.5px;font-weight:700;color:var(--muted)">4-WAY 융합 기회 종합지수 (${esc(STRATEGY_PRESETS[S.opts.preset]?.label || '커스텀 가중치')})</div>
+        <div style="display:flex;align-items:baseline;gap:8px;margin:4px 0 8px;flex-wrap:wrap">
           <span class="fusion-score-big">${r.scores.total}</span>
           <span style="font-size:13px;font-weight:700;color:var(--muted)">/ 100점</span>
           <span class="tag ${r.scores.total >= 80 ? 'tag-corp' : r.scores.total >= 65 ? 'tag-sbiz' : 'tag-gray'}">
-            ${r.scores.total >= 80 ? 'S등급 초핵심 거점' : r.scores.total >= 65 ? 'A등급 유망 거점' : 'B등급 성장 거점'}
+            ${r.scores.total >= 80 ? 'S등급 초핵심' : r.scores.total >= 65 ? 'A등급 유망' : 'B등급 성장'}
           </span>
         </div>
         <div style="font-size:12px;color:var(--text-2);line-height:1.55">
-          법인 <b>${fmt(r.corp.cnt)}사</b> · 소상공인 <b>${fmt(r.sbiz.cnt)}개</b>(2026 신규 <b>+${fmt(r.sbiz.new2026)}</b>) · 입찰/인허가 <b>${fmt(oppSum)}건</b> · 청약/착공/단지 <b>${fmt(r.re.aptCnt + r.re.remndrCnt + r.re.startCnt + r.re.kaptCnt)}건</b>
+          법인 <b>${fmt(r.corp.cnt)}사</b> · 소상공인 <b>${fmt(r.sbiz.cnt)}개</b>(2026 <b>+${fmt(r.sbiz.new2026)}</b>) · 입찰/인허가 <b>${fmt(oppSum)}건</b> · 청약/착공 <b>${fmt(r.re.aptCnt + r.re.remndrCnt + r.re.startCnt)}건</b>
         </div>
       </div>
-      <div style="display:flex;justify-content:center">${renderRadarSvg(r.scores)}</div>
+      <div style="display:flex;justify-content:center">${renderRadarSvg(r.scores, cmpReg?.scores || null)}</div>
     </div>
 
+    ${S.opts.showQuantBadges ? `
+      <div class="quant-strip">
+        <div class="quant-box">
+          <div class="q-lbl">💎 블루오션 지수</div>
+          <div class="q-val" style="color:var(--c-sbiz)">${q.blueOcean}점</div>
+          <div class="q-sub">수요 대비 경쟁여력</div>
+        </div>
+        <div class="quant-box">
+          <div class="q-lbl">📐 기업 입지계수(LQ)</div>
+          <div class="q-val" style="color:var(--c-corp)">${q.lqCorp}</div>
+          <div class="q-sub">${q.lqCorp >= 1.2 ? '법인 특화거점' : q.lqCorp <= 0.8 ? '소비·상권형' : '균형 분포'}</div>
+        </div>
+        <div class="quant-box">
+          <div class="q-lbl">📊 업종 HHI 집중도</div>
+          <div class="q-val">${fmt(q.hhi)}</div>
+          <div class="q-sub">${esc(q.hhiLabel)}</div>
+        </div>
+        <div class="quant-box">
+          <div class="q-lbl">🆕 2026 신규개업률</div>
+          <div class="q-val" style="color:var(--c-bid)">${q.newRatePct}%</div>
+          <div class="q-sub">전국대비 LQ ${q.lqNew26}</div>
+        </div>
+      </div>
+    ` : ''}
+
+    <div id="aiStrategyBox"></div>
+
     <div class="domain-box-grid">
-      <!-- 1. Corp -->
       <div class="domain-box">
         <h4><span style="color:var(--c-corp)">🏢 기업 생태계</span><button class="btn btn-sm" data-go-domain="corp">상세 →</button></h4>
         <div class="domain-stat-row"><span>총 법인 수</span><b>${fmt(r.corp.cnt)}사</b></div>
@@ -677,26 +1079,20 @@ function renderSpotlightHtml(r) {
           대표기업: ${r.corp.top.slice(0, 3).map((t) => `<b style="color:var(--text)">${esc(t[0])}</b>`).join(', ')}
         </div>` : ''}
       </div>
-
-      <!-- 2. Bid -->
       <div class="domain-box">
         <h4><span style="color:var(--c-bid)">🎯 입찰·사전규격·인허가</span><button class="btn btn-sm" data-go-domain="bid">상세 →</button></h4>
         <div class="domain-stat-row"><span>입찰공고 · 사전규격</span><b>입찰 ${fmt(r.bid.bidCnt)} · 사전 ${fmt(r.bid.preSpecCnt)}</b></div>
         <div class="domain-stat-row"><span>건축인허가 · K-apt</span><b>인허가 ${fmt(r.bid.archCnt)} · 단지 ${fmt(r.bid.aptOppCnt)}</b></div>
         <div class="domain-stat-row"><span>포착 예산 / 건설사</span><b>${r.bid.budgetMan > 0 ? `${fmtDec(r.bid.budgetMan / 10000, 1)}억` : '-'} · ${fmt(r.bid.builderCnt)}사</b></div>
       </div>
-
-      <!-- 3. Sbiz -->
       <div class="domain-box">
-        <h4><span style="color:var(--c-sbiz)">🏪 소상공인 상권</span><button class="btn btn-sm" data-go-domain="sbiz">지도 열기 →</button></h4>
+        <h4><span style="color:var(--c-sbiz)">🏪 소상공인 상권</span><button class="btn btn-sm" data-go-domain="sbiz">정밀 GIS →</button></h4>
         <div class="domain-stat-row"><span>총 상가 / 건물 수</span><b>${fmt(r.sbiz.cnt)}개 · ${fmt(r.sbiz.bldCnt)}동</b></div>
-        <div class="domain-stat-row"><span>2026 신규개업</span><b style="color:var(--c-sbiz)">+${fmt(r.sbiz.new2026)}개소</b></div>
+        <div class="domain-stat-row"><span>2026 신규개업</span><b style="color:var(--c-sbiz)">+${fmt(r.sbiz.new2026)}개소 (${q.newRatePct}%)</b></div>
         <div style="margin-top:6px;display:flex;flex-wrap:wrap;gap:4px">
           ${(r.sbiz.topL1 || []).slice(0, 4).map(([nm, cnt]) => `<span class="tag tag-sbiz">${esc(nm)} ${fmt(cnt)}</span>`).join('')}
         </div>
       </div>
-
-      <!-- 4. RealEstate -->
       <div class="domain-box">
         <h4><span style="color:var(--c-re)">🏠 부동산·청약·착공</span><button class="btn btn-sm" data-go-domain="realestate">상세 →</button></h4>
         <div class="domain-stat-row"><span>신축 APT · 무순위</span><b>APT ${fmt(r.re.aptCnt)} · 줍줍 ${fmt(r.re.remndrCnt)}</b></div>
@@ -707,26 +1103,111 @@ function renderSpotlightHtml(r) {
   `;
 }
 
-function wireSpotlightButtons(r) {
+function renderCompareMatrixCard(a, b) {
+  const rows = [
+    ['4-Way 통합점수', a.scores.total, b.scores.total, '점'],
+    ['💎 블루오션 지수', a.quant?.blueOcean || 0, b.quant?.blueOcean || 0, '점'],
+    ['🏢 법인 수', a.corp.cnt, b.corp.cnt, '사'],
+    ['📐 기업 입지계수(LQ)', a.quant?.lqCorp || 0, b.quant?.lqCorp || 0, ''],
+    ['🎯 입찰·사전·인허가·K-apt', a.bid.bidCnt + a.bid.preSpecCnt + a.bid.archCnt + a.bid.aptOppCnt, b.bid.bidCnt + b.bid.preSpecCnt + b.bid.archCnt + b.bid.aptOppCnt, '건'],
+    ['🏗️ 건설·시설사', a.bid.builderCnt, b.bid.builderCnt, '사'],
+    ['🏪 소상공인 상가', a.sbiz.cnt, b.sbiz.cnt, '개'],
+    ['🆕 2026 신규개업률', a.quant?.newRatePct || 0, b.quant?.newRatePct || 0, '%'],
+    ['📊 업종 HHI (낮을수록 다각화)', a.quant?.hhi || 0, b.quant?.hhi || 0, '', true],
+    ['🏠 신축분양·착공·K-apt', a.re.aptCnt + a.re.remndrCnt + a.re.startCnt + a.re.kaptCnt, b.re.aptCnt + b.re.remndrCnt + b.re.startCnt + b.re.kaptCnt, '건'],
+  ];
+  return `
+    <div class="card" style="margin-top:16px">
+      <div class="card-head">
+        <div>
+          <h3 class="card-title">⚔️ 전문가 2개 지역 정밀 비교 매트릭스</h3>
+          <p class="card-sub"><b style="color:var(--c-corp)">${esc(a.fullName)}</b> vs <b style="color:var(--c-sbiz)">${esc(b.fullName)}</b> · 항목별 우위 지역 자동 하이라이트</p>
+        </div>
+        <button id="btnClearCmpMatrix" class="btn btn-sm" type="button">✕ 비교 닫기</button>
+      </div>
+      <div class="table-wrap">
+        <table class="data-table">
+          <thead><tr><th>비교 지표</th><th>🟦 ${esc(a.fullName)}</th><th>🟩 ${esc(b.fullName)}</th><th>차이</th></tr></thead>
+          <tbody>
+            ${rows.map(([lbl, va, vb, unit, lowerBetter]) => {
+              const aWin = lowerBetter ? (va < vb) : (va > vb);
+              const bWin = lowerBetter ? (vb < va) : (vb > va);
+              const diff = +(va - vb).toFixed(2);
+              return `<tr>
+                <td><b>${lbl}</b></td>
+                <td class="${aWin ? 'compare-win' : ''}">${typeof va === 'number' && !Number.isInteger(va) ? va : fmt(va)}${unit} ${aWin ? '👑' : ''}</td>
+                <td class="${bWin ? 'compare-win' : ''}">${typeof vb === 'number' && !Number.isInteger(vb) ? vb : fmt(vb)}${unit} ${bWin ? '👑' : ''}</td>
+                <td style="color:var(--muted)">${diff > 0 ? '+' : ''}${typeof diff === 'number' && !Number.isInteger(diff) ? diff : fmt(diff)}${unit}</td>
+              </tr>`;
+            }).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+}
+
+function wireSpotlightButtons(r, cmpReg) {
+  $('btnPinCompare')?.addEventListener('click', () => {
+    if (cmpReg) { S.compareRid = -1; renderOverview(); }
+    else { S.compareRid = r.rid; toast(`⚔️ ${r.fullName} 비교 기준 고정! 지도/표에서 다른 시군구를 클릭하세요.`); }
+  });
+  $('btnClearCmpMatrix')?.addEventListener('click', () => { S.compareRid = -1; renderOverview(); });
+
+  $('btnAiStrategy')?.addEventListener('click', async () => {
+    const box = $('aiStrategyBox');
+    const q = r.quant || {};
+    const oppSum = r.bid.bidCnt + r.bid.preSpecCnt + r.bid.archCnt + r.bid.aptOppCnt;
+    // Rule-based instant expert insight + optional Gemini Live enrichment
+    const recs = [];
+    if (q.lqCorp >= 1.2) recs.push(`<b>법인 특화 거점(LQ ${q.lqCorp})</b>: 상장 ${r.corp.listed}·강소 ${r.corp.strong}사 중심으로 B2B 법인영업(보안·통신·법인금융) 우선 공략 권장.`);
+    if (q.newRatePct >= 8.0) recs.push(`<b>고성장 신규개업 상권(${q.newRatePct}%)</b>: 2026 신규개업 ${fmt(r.sbiz.new2026)}개소 대상 초도 설비·CCTV·POS·결제 패키지 영업 골든타임.`);
+    if (r.bid.preSpecCnt + r.bid.archCnt > 0) recs.push(`<b>조기포착 시그널 ${r.bid.preSpecCnt + r.bid.archCnt}건</b>: 사전규격(${r.bid.preSpecCnt})·건축인허가(${r.bid.archCnt}) 선제 스펙인 영업 가능.`);
+    if (q.blueOcean >= 70) recs.push(`<b>블루오션 상위권(${q.blueOcean}점)</b>: 수요 대비 지역 건설·시설 경쟁 밀도가 낮아 점유율 확대 효율 우수.`);
+    if (r.re.aptCnt + r.re.startCnt > 0) recs.push(`<b>신축 공급 파이프라인</b>: 신축분양 ${r.re.aptCnt}·착공 ${r.re.startCnt} 현장 준공 전 입주·스마트홈 제안 적합.`);
+    if (!recs.length) recs.push(`핵심 업종(${(r.sbiz.topL1 || []).slice(0, 2).map(([k]) => k).join('·')}) 및 기축 단지 중심의 타깃 영업 권장.`);
+
+    box.innerHTML = `<div class="catchment-card" style="margin:0 0 12px">
+      <div style="font-weight:800;font-size:13px;margin-bottom:6px">✨ ${esc(r.fullName)} 전문가 실행 전략 진단</div>
+      <ul style="margin:0;padding-left:18px;font-size:12px;line-height:1.65">${recs.map((x) => `<li>${x}</li>`).join('')}</ul>
+      <div id="geminiOut" style="margin-top:8px;font-size:12px;color:var(--text-2)"></div>
+    </div>`;
+
+    if (S.opts.geminiKey) {
+      const gOut = $('geminiOut');
+      gOut.textContent = '🤖 Gemini AI 심층 전략 리포트 생성 중…';
+      try {
+        const prompt = `한국 B2B 영업·부동산 전문가로서 ${r.fullName} 데이터를 보고 3줄 핵심 실행 전략을 작성해줘: 법인 ${r.corp.cnt}사(상장 ${r.corp.listed}, 강소 ${r.corp.strong}, LQ ${q.lqCorp}), 입찰/사전규격/건축인허가 ${oppSum}건, 소상공인 ${r.sbiz.cnt}개(2026신규 ${r.sbiz.new2026}개, 신규율 ${q.newRatePct}%, HHI ${q.hhi}), 청약 ${r.re.aptCnt}/착공 ${r.re.startCnt}.`;
+        const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${encodeURIComponent(S.opts.geminiKey)}`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] }),
+        });
+        const j = await res.json();
+        const txt = j?.candidates?.[0]?.content?.parts?.[0]?.text;
+        gOut.innerHTML = txt ? `<div style="padding-top:8px;border-top:1px dashed var(--border)"><b>🤖 Gemini AI 심층 코멘트:</b><br/>${esc(txt).replace(/\n/g, '<br/>')}</div>` : 'Gemini 응답 없음';
+      } catch (e) {
+        gOut.textContent = `Gemini 호출 오류: ${e.message}`;
+      }
+    }
+  });
+
   $('btnCopyBrief')?.addEventListener('click', () => {
     const oppSum = r.bid.bidCnt + r.bid.preSpecCnt + r.bid.archCnt + r.bid.aptOppCnt;
-    const text = `[넥서스원 PRO 360° 지역 브리핑] ${r.fullName}
-• 4-Way 통합 기회지수: ${r.scores.total}/100 (기업 ${r.scores.corp} · 입찰 ${r.scores.bid} · 상권 ${r.scores.sbiz} · 부동산 ${r.scores.re})
+    const q = r.quant || {};
+    const text = `[넥서스원 PRO 360° 전문가 브리핑] ${r.fullName}
+• 4-Way 통합점수: ${r.scores.total}/100 · 블루오션 ${q.blueOcean}점 · 기업LQ ${q.lqCorp} · 업종HHI ${fmt(q.hhi)}(${q.hhiLabel})
 • 🏢 기업 생태계: 총 ${fmt(r.corp.cnt)}사 (상장 ${fmt(r.corp.listed)} / 강소·산단 ${fmt(r.corp.strong)} / 대표: ${r.corp.top.slice(0, 3).map((x) => x[0]).join(', ') || '-'})
 • 🎯 입찰·인허가: ${fmt(oppSum)}건 (입찰 ${r.bid.bidCnt}, 사전규격 ${r.bid.preSpecCnt}, 건축인허가 ${r.bid.archCnt}, K-apt ${r.bid.aptOppCnt}) · 지역 건설·시설사 ${fmt(r.bid.builderCnt)}사
-• 🏪 소상공인 상권: ${fmt(r.sbiz.cnt)}개 상가 / ${fmt(r.sbiz.bldCnt)}개 건물 / 2026 신규개업 +${fmt(r.sbiz.new2026)}개 (핵심: ${r.sbiz.topL1.slice(0, 3).map(([k, v]) => `${k} ${fmt(v)}`).join(', ')})
+• 🏪 소상공인 상권: ${fmt(r.sbiz.cnt)}개 상가 / ${fmt(r.sbiz.bldCnt)}동 / 2026 신규 +${fmt(r.sbiz.new2026)}개 (${q.newRatePct}%)
 • 🏠 부동산 공급: 신축분양 ${r.re.aptCnt} · 무순위 ${r.re.remndrCnt} · 착공 ${r.re.startCnt} · K-apt ${r.re.kaptCnt}`;
-    navigator.clipboard?.writeText(text).then(() => toast('📋 360° 통합 브리핑이 클립보드에 복사되었습니다!')).catch(() => toast('클립보드 복사 실패'));
+    navigator.clipboard?.writeText(text).then(() => toast('📋 360° 전문가 브리핑이 복사되었습니다!')).catch(() => toast('클립보드 복사 실패'));
   });
 
   $('btnAddRegionPipe')?.addEventListener('click', () => {
     addToPipeline({
-      id: `region:${r.rid}`,
-      domain: 'corp',
-      title: `[360° 거점] ${r.fullName}`,
-      sub: `통합 ${r.scores.total}점 · 법인 ${fmt(r.corp.cnt)} · 상가 ${fmt(r.sbiz.cnt)}`,
-      region: r.fullName,
-      valueMan: r.bid.budgetMan,
+      id: `region:${r.rid}`, domain: 'corp', title: `[360° 거점] ${r.fullName}`,
+      sub: `통합 ${r.scores.total}점 · 블루오션 ${r.quant?.blueOcean ?? 0} · 상가 ${fmt(r.sbiz.cnt)}`,
+      region: r.fullName, valueMan: r.bid.budgetMan,
     });
   });
 
@@ -1253,8 +1734,69 @@ async function renderBidBuildersBody() {
 }
 
 // =========================================================================
-// TAB 4: 🏪 소상공인 상권지도 PRO (전국 275만 3,778개 · 16개 시도 온디맨드)
+// TAB 4: 🏪 소상공인 상권지도 PRO (전국 275만 · VWorld 디지털트윈 GIS · 반경분석)
 // =========================================================================
+const VWORLD_WMS_CFG = {
+  cadastral: { layers: 'lp_pa_cbnd_bonbun,lp_pa_cbnd_bubun', styles: '', opacity: 0.88, minZoom: 14, label: '📐 연속지적도' },
+  zoning:    { layers: 'lt_c_uq111', styles: 'lt_c_uq111', opacity: 0.44, minZoom: 11, label: '🏙️ 용도지역' },
+  emd:       { layers: 'lt_c_ademd_info', styles: 'lt_c_ademd', opacity: 0.82, minZoom: 11, label: '🏘️ 읍면동경계' },
+  bldg:      { layers: 'lt_c_bldginfo', styles: '', opacity: 0.72, minZoom: 15, label: '🏢 건물' },
+};
+
+function haversineM(lat1, lon1, lat2, lon2) {
+  const R = 6371000;
+  const toRad = (d) => d * Math.PI / 180;
+  const dLat = toRad(lat2 - lat1), dLon = toRad(lon2 - lon1);
+  const a = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+  return 2 * R * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+function createCanvasHeatLayer(points) {
+  const Heat = L.Layer.extend({
+    initialize(pts) { this._pts = pts || []; },
+    setPoints(pts) { this._pts = pts || []; this._redraw(); },
+    onAdd(map) {
+      this._map = map;
+      this._canvas = L.DomUtil.create('canvas', 'leaflet-heat-canvas');
+      this._canvas.style.cssText = 'position:absolute;top:0;left:0;pointer-events:none;z-index:240;';
+      map.getPanes().overlayPane.appendChild(this._canvas);
+      map.on('moveend zoomend resize', this._redraw, this);
+      this._redraw();
+    },
+    onRemove(map) {
+      map.off('moveend zoomend resize', this._redraw, this);
+      this._canvas?.remove();
+    },
+    _redraw() {
+      if (!this._map || !this._canvas) return;
+      const size = this._map.getSize();
+      const topLeft = this._map.containerPointToLayerPoint([0, 0]);
+      L.DomUtil.setPosition(this._canvas, topLeft);
+      this._canvas.width = size.x;
+      this._canvas.height = size.y;
+      const ctx = this._canvas.getContext('2d');
+      ctx.clearRect(0, 0, size.x, size.y);
+      if (!this._pts.length) return;
+      const bounds = this._map.getBounds().pad(0.15);
+      const r = Math.max(12, Math.min(28, this._map.getZoom() * 1.4));
+      for (let i = 0; i < this._pts.length; i++) {
+        const [lat, lon, w] = this._pts[i];
+        if (!bounds.contains([lat, lon])) continue;
+        const p = this._map.latLngToContainerPoint([lat, lon]);
+        const grad = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, r);
+        grad.addColorStop(0, `rgba(239,68,68,${Math.min(0.28, 0.08 * (w || 1))})`);
+        grad.addColorStop(0.5, `rgba(245,158,11,${Math.min(0.18, 0.05 * (w || 1))})`);
+        grad.addColorStop(1, 'rgba(16,185,129,0)');
+        ctx.fillStyle = grad;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    },
+  });
+  return new Heat(points);
+}
+
 function parseSbizStore(sido, i) {
   const parts = String(sido.strs[i] || '').split('\t');
   const id = parts[0] || '';
@@ -1287,12 +1829,12 @@ function renderSbizTab() {
     <div class="card" style="margin-bottom:14px">
       <div class="card-head">
         <div>
-          <h2 class="card-title">🏪 전국 소상공인 상권지도 PRO <span class="tag tag-sbiz">총 ${fmt(S.core.stats.sbizCount)}개 상가</span></h2>
-          <p class="card-sub">원하는 시도를 클릭하면 해당 시도 암호화 볼트만 즉시 복호화하여 지도·건물·2026 신규개업을 분석합니다.</p>
+          <h2 class="card-title">🏪 전국 소상공인 상권 · 디지털트윈 GIS PRO <span class="tag tag-sbiz">총 ${fmt(S.core.stats.sbizCount)}개</span></h2>
+          <p class="card-sub">브이월드 위성·연속지적도·용도지역·상권 히트맵 + 지도 클릭 반경 상권분석(HHI·신규개업률·공시지가)</p>
         </div>
         <div style="display:flex;gap:6px;flex-wrap:wrap">
-          <button id="btnSbizLiveRadius" class="btn btn-emerald btn-sm" type="button">📡 지도 중심 500m 실시간 API</button>
-          <button id="btnSbizVworld" class="btn btn-sm" type="button">📍 중심 공시지가(브이월드)</button>
+          <button id="btnSbizLiveRadius" class="btn btn-emerald btn-sm" type="button">📡 반경 실시간 API</button>
+          <button id="btnSbizVworld" class="btn btn-sm" type="button">📍 중심 반경분석</button>
         </div>
       </div>
 
@@ -1307,9 +1849,40 @@ function renderSbizTab() {
         }).join('')}
       </div>
 
+      <!-- PRO GIS CONTROL DECK -->
+      <div class="gis-deck">
+        <div class="gis-row">
+          <span class="gis-label">🗺️ 배경지도:</span>
+          ${[
+            ['vbase', '브이월드 기본'],
+            ['vsat', '🛰️ 항공위성'],
+            ['vhyb', '🛰️ 위성+도로'],
+            ['vwhite', '백지도'],
+            ['vmidnight', '🌙 다크'],
+            ['osm', 'OSM'],
+          ].map(([k, lb]) => `<button class="toggle-pill ${S.gisBase === k ? 'on' : ''}" data-gis-base="${k}" type="button">${lb}</button>`).join('')}
+        </div>
+        <div class="gis-row">
+          <span class="gis-label">🛰️ 국토부 GIS·히트맵:</span>
+          <button class="toggle-pill ${S.gisLayers.heat ? 'on-emerald' : ''}" data-gis-layer="heat" type="button">🔥 상권 밀도 히트맵</button>
+          <button class="toggle-pill ${S.gisLayers.cadastral ? 'on-emerald' : ''}" data-gis-layer="cadastral" type="button">📐 연속지적도 (줌14+)</button>
+          <button class="toggle-pill ${S.gisLayers.zoning ? 'on-emerald' : ''}" data-gis-layer="zoning" type="button">🏙️ 용도지역 (줌11+)</button>
+          <button class="toggle-pill ${S.gisLayers.emd ? 'on-emerald' : ''}" data-gis-layer="emd" type="button">🏘️ 읍면동경계</button>
+          <button class="toggle-pill ${S.gisLayers.bldg ? 'on-emerald' : ''}" data-gis-layer="bldg" type="button">🏢 건물 (줌15+)</button>
+        </div>
+        <div class="gis-row">
+          <span class="gis-label">🎯 클릭 반경분석:</span>
+          ${[300, 500, 1000, 2000].map((r) => `<button class="toggle-pill ${S.gisRadius === r ? 'on' : ''}" data-gis-rad="${r}" type="button">${r >= 1000 ? `${r / 1000}km` : `${r}m`}</button>`).join('')}
+          <div style="display:flex;gap:5px;margin-left:auto;flex:1;min-width:210px;max-width:340px">
+            <input id="fGisPlace" class="input" style="flex:1;padding:5px 9px;font-size:12px" placeholder="📍 장소·주소 이동 (예: 부평역, 강남역)" />
+            <button id="btnGisPlaceGo" class="btn btn-sm btn-primary" type="button">이동</button>
+          </div>
+        </div>
+      </div>
+
       ${active ? renderSbizControlsHtml(active) : `
-        <div style="padding:14px;border-radius:11px;background:var(--c-sbiz-bg);font-size:13px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:12px">
-          <span>💡 위 시도 버튼을 눌러 상권 데이터를 여세요. 빠른 테스트는 <b>세종(0.7MB)</b> 또는 <b>인천(6.7MB)</b>을 추천합니다!</span>
+        <div style="padding:12px 14px;border-radius:11px;background:var(--c-sbiz-bg);font-size:13px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:10px">
+          <span>💡 시도를 선택하면 275만 상권 데이터 + 히트맵 + 클릭 반경분석이 즉시 활성화됩니다.</span>
           <div style="display:flex;gap:6px">
             <button class="btn btn-emerald btn-sm" data-load-sido="incheon">인천 열기 (6.7MB)</button>
             <button class="btn btn-sm" data-load-sido="sejong">세종 열기 (0.7MB)</button>
@@ -1317,8 +1890,8 @@ function renderSbizTab() {
         </div>
       `}
 
-      <div id="sbizVworldRes" style="margin-bottom:10px"></div>
       <div id="sbizMap" class="leaflet-box"></div>
+      <div id="sbizCatchmentBox"></div>
     </div>
 
     <div id="sbizListCard"></div>
@@ -1327,46 +1900,85 @@ function renderSbizTab() {
   $('mainStage').querySelectorAll('[data-load-sido]').forEach((b) => {
     b.addEventListener('click', async () => {
       await loadSbizSido(b.dataset.loadSido);
+      S.catchment = null;
       renderSbizTab();
     });
   });
 
   initSbizLeaflet(active);
 
+  // Wire Pro GIS controls
+  $('mainStage').querySelectorAll('[data-gis-base]').forEach((b) => {
+    b.addEventListener('click', () => {
+      S.gisBase = b.dataset.gisBase;
+      $('mainStage').querySelectorAll('[data-gis-base]').forEach((x) => x.classList.toggle('on', x.dataset.gisBase === S.gisBase));
+      applyGisBaseMap();
+    });
+  });
+  $('mainStage').querySelectorAll('[data-gis-layer]').forEach((b) => {
+    b.addEventListener('click', () => {
+      const k = b.dataset.gisLayer;
+      S.gisLayers[k] = !S.gisLayers[k];
+      b.classList.toggle('on-emerald', S.gisLayers[k]);
+      applyGisOverlays(active);
+      if (S.gisLayers[k] && (k === 'cadastral' || k === 'bldg') && S.leafletMap && S.leafletMap.getZoom() < 15) {
+        S.leafletMap.setZoom(15);
+        toast(`${VWORLD_WMS_CFG[k].label} 표시를 위해 줌 15로 자동 확대했습니다.`);
+      }
+    });
+  });
+  $('mainStage').querySelectorAll('[data-gis-rad]').forEach((b) => {
+    b.addEventListener('click', () => {
+      S.gisRadius = Number(b.dataset.gisRad);
+      $('mainStage').querySelectorAll('[data-gis-rad]').forEach((x) => x.classList.toggle('on', Number(x.dataset.gisRad) === S.gisRadius));
+      if (S.catchment) runRadiusCatchment(S.catchment.lat, S.catchment.lon, active);
+    });
+  });
+
+  const doPlaceJump = async () => {
+    const q = $('fGisPlace')?.value.trim();
+    if (!q || !S.leafletMap) return;
+    toast(`📍 '${q}' 위치 검색 중…`);
+    try {
+      const pt = await searchVworldPlace(q);
+      S.leafletMap.setView([pt.lat, pt.lon], 16);
+      runRadiusCatchment(pt.lat, pt.lon, active, pt.title);
+      toast(`✓ '${pt.title}' 이동 및 반경 ${S.gisRadius}m 분석 완료`);
+    } catch (e) {
+      toast(`위치 검색 실패: ${e.message}`);
+    }
+  };
+  $('btnGisPlaceGo').addEventListener('click', doPlaceJump);
+  $('fGisPlace').addEventListener('keydown', (e) => { if (e.key === 'Enter') doPlaceJump(); });
+
   $('btnSbizLiveRadius').addEventListener('click', async () => {
     if (!S.leafletMap) return;
     const c = S.leafletMap.getCenter();
     const { dataGoEnc } = getApiKeys();
-    toast('📡 소상공인 반경 500m 실시간 상가 조회 중…');
+    toast(`📡 소상공인 반경 ${S.gisRadius}m 실시간 API 조회 중…`);
     try {
-      const r = await fetch(`https://apis.data.go.kr/B553077/api/open/sdsc2/storeListInRadius?serviceKey=${dataGoEnc}&pageNo=1&numOfRows=100&radius=500&cx=${c.lng.toFixed(6)}&cy=${c.lat.toFixed(6)}&type=json`);
+      const r = await fetch(`https://apis.data.go.kr/B553077/api/open/sdsc2/storeListInRadius?serviceKey=${dataGoEnc}&pageNo=1&numOfRows=100&radius=${S.gisRadius}&cx=${c.lng.toFixed(6)}&cy=${c.lat.toFixed(6)}&type=json`);
       const j = await r.json();
       const items = j?.body?.items || [];
       S.sbizLiveStores = items;
       plotLiveSbizMarkers(items);
-      toast(`✓ 반경 500m 실시간 상가 ${items.length}개 표시됨!`);
+      toast(`✓ 반경 ${S.gisRadius}m 실시간 상가 ${items.length}개 표시됨!`);
     } catch (e) {
       toast(`실시간 상권 조회 오류: ${e.message}`);
     }
   });
 
-  $('btnSbizVworld').addEventListener('click', async () => {
+  $('btnSbizVworld').addEventListener('click', () => {
     if (!S.leafletMap) return;
     const c = S.leafletMap.getCenter();
-    const box = $('sbizVworldRes');
-    box.innerHTML = '<div class="tag tag-gray">📍 브이월드 주소·공시지가 조회 중…</div>';
-    try {
-      const info = await queryVworldPoint(c.lng.toFixed(6), c.lat.toFixed(6));
-      box.innerHTML = `<div class="diag-card ok"><div class="diag-title">📍 ${esc(info.addr)}</div><div class="diag-detail">개별공시지가: <b>${esc(info.jiga)}</b> · 좌표 (${c.lat.toFixed(5)}, ${c.lng.toFixed(5)})</div></div>`;
-    } catch (e) {
-      box.innerHTML = `<div class="diag-card err">조회 실패: ${esc(e.message)}</div>`;
-    }
+    runRadiusCatchment(c.lat, c.lng, active);
   });
 
   if (active) {
     wireSbizFilters(active);
     updateSbizView(active);
   }
+  if (S.catchment) renderCatchmentHud();
 }
 
 function renderSbizControlsHtml(active) {
@@ -1384,7 +1996,7 @@ function renderSbizControlsHtml(active) {
         ${l1s.map((l) => `<option value="${esc(l)}" ${S.sbizL1 === l ? 'selected' : ''}>${esc(l)}</option>`).join('')}
       </select>
       <label style="display:inline-flex;align-items:center;gap:5px;font-size:12.5px;font-weight:700;cursor:pointer">
-        <input id="fSbiz2026" type="checkbox" ${S.sbizOnly2026 ? 'checked' : ''} /> 🆕 2026 신규개업만
+        <input id="fSbiz2026" type="checkbox" ${S.sbizOnly2026 ? 'checked' : ''} /> 🆕 2026 신규만
       </label>
       <div class="chips">
         <button class="chip ${S.sbizView === 'stores' ? 'active' : ''}" data-sbiz-view="stores">개별 상가</button>
@@ -1394,17 +2006,209 @@ function renderSbizControlsHtml(active) {
   `;
 }
 
+function applyGisBaseMap() {
+  if (!S.leafletMap) return;
+  if (S.leafletTile) { S.leafletMap.removeLayer(S.leafletTile); S.leafletTile = null; }
+  if (S.leafletHybrid) { S.leafletMap.removeLayer(S.leafletHybrid); S.leafletHybrid = null; }
+  const { vworld } = getApiKeys();
+  const mode = S.gisBase;
+  if (mode === 'osm' || !vworld) {
+    S.leafletTile = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '© OpenStreetMap' }).addTo(S.leafletMap);
+    return;
+  }
+  const vwTile = (t, ext = 'png', maxN = 19) => L.tileLayer(
+    `https://api.vworld.kr/req/wmts/1.0.0/${encodeURIComponent(vworld)}/${t}/{z}/{y}/{x}.${ext}`,
+    { maxZoom: 20, maxNativeZoom: maxN, minZoom: 6, attribution: '© VWorld 국토교통부' }
+  );
+  if (mode === 'vsat' || mode === 'vhyb') {
+    S.leafletTile = vwTile('Satellite', 'jpeg', 19).addTo(S.leafletMap);
+    if (mode === 'vhyb') {
+      S.leafletHybrid = L.tileLayer(`https://api.vworld.kr/req/wmts/1.0.0/${encodeURIComponent(vworld)}/Hybrid/{z}/{y}/{x}.png`, { maxZoom: 20, maxNativeZoom: 19, zIndex: 260 }).addTo(S.leafletMap);
+    }
+  } else if (mode === 'vwhite') {
+    S.leafletTile = vwTile('white', 'png', 18).addTo(S.leafletMap);
+  } else if (mode === 'vmidnight') {
+    S.leafletTile = vwTile('midnight', 'png', 18).addTo(S.leafletMap);
+  } else {
+    S.leafletTile = vwTile('Base', 'png', 19).addTo(S.leafletMap);
+  }
+}
+
+function applyGisOverlays(active) {
+  if (!S.leafletMap) return;
+  const { vworld } = getApiKeys();
+  const isLocal = /^(127\.0\.0\.1|localhost)$/.test(location.hostname);
+  const dom = (!isLocal && location.origin && /^https?:/.test(location.origin)) ? location.origin : 'https://heebonpark.github.io';
+
+  for (const [k, cfg] of Object.entries(VWORLD_WMS_CFG)) {
+    if (S.gisLayers[k] && vworld) {
+      if (!S.leafletWms[k]) {
+        S.leafletWms[k] = L.tileLayer.wms('https://api.vworld.kr/req/wms', {
+          layers: cfg.layers, styles: cfg.styles, format: 'image/png', transparent: true,
+          version: '1.3.0', key: vworld, domain: dom, opacity: cfg.opacity, maxZoom: 20, minZoom: cfg.minZoom, zIndex: 250,
+        }).addTo(S.leafletMap);
+      }
+    } else if (S.leafletWms[k]) {
+      S.leafletMap.removeLayer(S.leafletWms[k]);
+      delete S.leafletWms[k];
+    }
+  }
+
+  // Canvas KDE Density Heatmap
+  if (S.gisLayers.heat && active) {
+    const pts = [];
+    const idxs = S.lastSbizMatchedIdx.length ? S.lastSbizMatchedIdx : Array.from({ length: active.n }, (_, i) => i);
+    const step = Math.max(1, Math.floor(idxs.length / 4000));
+    for (let k = 0; k < idxs.length; k += step) {
+      const idx = idxs[k];
+      const la = active.lat[idx] / 1e6, lo = active.lon[idx] / 1e6;
+      if (la && lo) pts.push([la, lo, (active.strs[idx] || '').slice(6, 10) === '2026' ? 2 : 1]);
+    }
+    if (!S.leafletHeat) S.leafletHeat = createCanvasHeatLayer(pts).addTo(S.leafletMap);
+    else S.leafletHeat.setPoints(pts);
+  } else if (S.leafletHeat) {
+    S.leafletMap.removeLayer(S.leafletHeat);
+    S.leafletHeat = null;
+  }
+}
+
 function initSbizLeaflet(active) {
   const el = $('sbizMap');
   if (!el || typeof L === 'undefined') return;
   const sInfo = (S.core.sbizSummary.sidos || []).find((x) => x.slug === S.sbizActiveSlug);
-  const lat = sInfo?.lat || 37.498;
-  const lon = sInfo?.lon || 126.724;
-  S.leafletMap = L.map(el, { preferCanvas: true }).setView([lat, lon], active ? 12 : 11);
-  S.leafletTile = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-    maxZoom: 19, attribution: '&copy; OpenStreetMap',
-  }).addTo(S.leafletMap);
+  const lat = sInfo?.lat || 37.4925;
+  const lon = sInfo?.lon || 126.7239;
+  S.leafletWms = {};
+  S.leafletHeat = null;
+  S.leafletMap = L.map(el, { preferCanvas: true }).setView([lat, lon], active ? 13 : 12);
+  applyGisBaseMap();
   S.leafletLayer = L.layerGroup().addTo(S.leafletMap);
+  S.leafletCatchLayer = L.layerGroup().addTo(S.leafletMap);
+  applyGisOverlays(active);
+
+  // Interactive Click -> Instant Radius Catchment Analysis!
+  S.leafletMap.on('click', (e) => {
+    const curActive = S.sbizActiveSlug ? S.sbizCache.get(S.sbizActiveSlug) : null;
+    runRadiusCatchment(e.latlng.lat, e.latlng.lng, curActive);
+  });
+}
+
+async function runRadiusCatchment(lat, lon, active, label = '') {
+  if (!S.leafletMap || !S.leafletCatchLayer) return;
+  const rad = S.gisRadius;
+  S.leafletCatchLayer.clearLayers();
+  L.circle([lat, lon], { radius: rad, color: '#059669', fillColor: '#10b981', fillOpacity: 0.14, weight: 2, dashArray: '5 4' }).addTo(S.leafletCatchLayer);
+  L.circleMarker([lat, lon], { radius: 7, color: '#fff', fillColor: '#e11d48', fillOpacity: 1, weight: 2.5 }).addTo(S.leafletCatchLayer);
+
+  const stores = [];
+  const l1Map = new Map();
+  const bldSet = new Set();
+  let new2026 = 0;
+
+  if (active) {
+    // Fast bounding-box pre-filter before Haversine
+    const dLat = rad / 111000;
+    const dLon = rad / (111000 * Math.cos(lat * Math.PI / 180));
+    const minLa = (lat - dLat) * 1e6, maxLa = (lat + dLat) * 1e6;
+    const minLo = (lon - dLon) * 1e6, maxLo = (lon + dLon) * 1e6;
+    for (let i = 0; i < active.n; i++) {
+      const laI = active.lat[i], loI = active.lon[i];
+      if (laI < minLa || laI > maxLa || loI < minLo || loI > maxLo) continue;
+      if (haversineM(lat, lon, laI / 1e6, loI / 1e6) <= rad) {
+        const st = parseSbizStore(active, i);
+        stores.push(st);
+        if (st.isNew2026) new2026++;
+        if (st.bldId) bldSet.add(st.bldId);
+        l1Map.set(st.l1 || '기타', (l1Map.get(st.l1 || '기타') || 0) + 1);
+      }
+    }
+  }
+
+  let hhi = 0;
+  if (stores.length) {
+    for (const c of l1Map.values()) {
+      const sh = (c / stores.length) * 100;
+      hhi += sh * sh;
+    }
+    hhi = Math.round(hhi);
+  }
+  const topL1 = [...l1Map.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5);
+  const newRate = stores.length ? Math.round((new2026 / stores.length) * 1000) / 10 : 0;
+
+  S.catchment = {
+    lat, lon, radius: rad, label, stores,
+    stats: { cnt: stores.length, new2026, newRate, bldCnt: bldSet.size, hhi, topL1 },
+    vworld: null,
+  };
+  renderCatchmentHud();
+
+  try {
+    S.catchment.vworld = await queryVworldPoint(lon.toFixed(6), lat.toFixed(6));
+    renderCatchmentHud();
+  } catch {}
+}
+
+function renderCatchmentHud() {
+  const box = $('sbizCatchmentBox');
+  if (!box || !S.catchment) return;
+  const { lat, lon, radius, label, stores, stats, vworld } = S.catchment;
+  const maxBar = Math.max(1, ...(stats.topL1 || []).map(([, c]) => c));
+  const areaKm2 = (Math.PI * (radius / 1000) ** 2);
+  const density = areaKm2 > 0 ? Math.round(stats.cnt / areaKm2) : 0;
+
+  box.innerHTML = `
+    <div class="catchment-card">
+      <div class="card-head" style="margin-bottom:8px">
+        <div>
+          <h3 class="card-title">🎯 반경 ${radius >= 1000 ? `${radius / 1000}km` : `${radius}m`} 상권 정밀 진단 ${label ? `(${esc(label)})` : ''}</h3>
+          <p class="card-sub">
+            ${vworld ? `📍 <b>${esc(vworld.addr)}</b> · 용도지역 <b>${esc(vworld.zoning)}</b> · 공시지가 <b>${esc(vworld.jiga)}</b>${vworld.pyeongMan ? ` (평당 약 ${fmt(vworld.pyeongMan)}만원)` : ''}` : `📍 좌표 (${lat.toFixed(5)}, ${lon.toFixed(5)}) · 브이월드 필지·공시지가 조회 중…`}
+          </p>
+        </div>
+        <div style="display:flex;gap:5px;flex-wrap:wrap">
+          ${stores.length ? `<button id="btnCatchCsv" class="btn btn-sm btn-emerald" type="button">📥 반경 리드팩 CSV (${fmt(stores.length)})</button>` : ''}
+          <button id="btnCatchPipe" class="btn btn-sm btn-primary" type="button">💼 CRM 담기</button>
+        </div>
+      </div>
+
+      <div class="quant-strip" style="margin-bottom:8px">
+        <div class="quant-box"><div class="q-lbl">반경 내 상가 (밀도)</div><div class="q-val" style="color:var(--c-sbiz)">${fmt(stats.cnt)}개</div><div class="q-sub">${fmt(density)}개/㎢ · ${fmt(stats.bldCnt)}동</div></div>
+        <div class="quant-box"><div class="q-lbl">🆕 2026 신규개업</div><div class="q-val" style="color:var(--c-bid)">+${fmt(stats.new2026)}개</div><div class="q-sub">신규율 ${stats.newRate}%</div></div>
+        <div class="quant-box"><div class="q-lbl">📊 업종 HHI 집중도</div><div class="q-val">${fmt(stats.hhi)}</div><div class="q-sub">${stats.hhi < 1800 ? '다각화 상권' : stats.hhi < 2800 ? '적정 집중' : '특정업종 과밀'}</div></div>
+        <div class="quant-box"><div class="q-lbl">💰 추정 평당 공시지가</div><div class="q-val" style="color:var(--c-corp)">${vworld?.pyeongMan ? `${fmt(vworld.pyeongMan)}만` : '-'}</div><div class="q-sub">${esc(vworld?.zoning || '조회 중')}</div></div>
+      </div>
+
+      ${stats.topL1.length ? `
+        <div style="margin-top:6px">
+          ${stats.topL1.map(([nm, cnt]) => `
+            <div class="bar-row">
+              <span style="width:92px;font-weight:700">${esc(nm)}</span>
+              <div class="bar-track"><div class="bar-fill" style="width:${Math.round(cnt / maxBar * 100)}%"></div></div>
+              <span style="width:76px;text-align:right;font-weight:700">${fmt(cnt)}개 (${Math.round(cnt / stats.cnt * 100)}%)</span>
+            </div>`).join('')}
+        </div>
+      ` : '<div style="font-size:12px;color:var(--muted)">상단에서 해당 시도를 로드하면 반경 내 정확한 상가·신규개업·HHI 분석이 표시됩니다.</div>'}
+    </div>
+  `;
+
+  $('btnCatchCsv')?.addEventListener('click', () => {
+    downloadCsv(
+      `nexusone_catchment_${radius}m_${new Date().toISOString().slice(0, 10)}.csv`,
+      ['상호명', '지점명', '업종대분류', '업종소분류', '시군구', '행정동', '도로명주소', '건물명', '2026신규', '위도', '경도'],
+      stores.map((st) => [st.name, st.branch, st.l1, st.l3, st.sgg, st.dong, st.road || st.jibun, st.bld, st.isNew2026 ? 'Y' : 'N', st.lat, st.lon])
+    );
+    toast(`📥 반경 ${radius}m 상가 리드팩 ${fmt(stores.length)}건 CSV 추출 완료!`);
+  });
+  $('btnCatchPipe')?.addEventListener('click', () => {
+    addToPipeline({
+      id: `catch:${lat.toFixed(4)},${lon.toFixed(4)},${radius}`,
+      domain: 'sbiz',
+      title: `[반경 ${radius}m] ${vworld?.addr || label || `${lat.toFixed(4)},${lon.toFixed(4)}`}`,
+      sub: `상가 ${fmt(stats.cnt)}개 · 2026신규 +${stats.new2026} · HHI ${stats.hhi}`,
+      region: vworld?.addr || '',
+      valueMan: 0,
+    });
+  });
 }
 
 function plotLiveSbizMarkers(items) {
@@ -1448,11 +2252,13 @@ function updateSbizView(active) {
     if (q && !raw.toLowerCase().includes(q)) continue;
     matchedIdx.push(i);
   }
+  S.lastSbizMatchedIdx = matchedIdx;
 
-  // Plot up to 1,200 markers on Canvas Leaflet cleanly
+  // Plot up to opts.markerCap markers on Canvas Leaflet cleanly
+  const cap = S.opts.markerCap || 1500;
   if (S.leafletLayer) {
     S.leafletLayer.clearLayers();
-    const step = Math.max(1, Math.floor(matchedIdx.length / 1200));
+    const step = Math.max(1, Math.floor(matchedIdx.length / cap));
     const bounds = [];
     for (let k = 0; k < matchedIdx.length; k += step) {
       const st = parseSbizStore(active, matchedIdx[k]);
@@ -1467,14 +2273,14 @@ function updateSbizView(active) {
       }).bindPopup(`<b>${esc(st.name)} ${esc(st.branch)}</b>${st.isNew2026 ? ' <span style="color:#d97706">[2026신규]</span>' : ''}<br/><small>${esc(st.l1)} &gt; ${esc(st.l3)}</small><br/><small>${esc(st.road || st.jibun)} ${esc(st.bld)}</small>`)
         .addTo(S.leafletLayer);
     }
-    if (bounds.length > 0 && bounds.length < 1500 && (S.sbizSgg || S.sbizQ)) {
+    if (bounds.length > 0 && bounds.length < cap + 100 && (S.sbizSgg || S.sbizQ)) {
       S.leafletMap.fitBounds(bounds, { maxZoom: 15, padding: [24, 24] });
     }
   }
+  if (S.gisLayers.heat) applyGisOverlays(active);
 
   const card = $('sbizListCard');
   if (S.sbizView === 'buildings') {
-    // Aggregate by bldId
     const bMap = new Map();
     for (const idx of matchedIdx) {
       const bid = active.bldId[idx];
@@ -1505,7 +2311,7 @@ function updateSbizView(active) {
                   <td><span class="tag tag-sbiz">${fmt(b.cnt)}개소</span></td>
                   <td>${b.new26 ? `<span class="tag tag-bid">+${b.new26}</span>` : '-'}</td>
                   <td>
-                    <button class="btn btn-sm" data-fly="${b.lat},${b.lon}">📍 지도</button>
+                    <button class="btn btn-sm" data-fly="${b.lat},${b.lon}">📍 반경분석</button>
                     <button class="btn btn-sm" data-pipe-bld="${esc(b.bld)}|${esc(b.sgg)}|${b.cnt}">+ 담기</button>
                   </td>
                 </tr>`).join('')}
@@ -1518,6 +2324,7 @@ function updateSbizView(active) {
       btn.addEventListener('click', () => {
         const [la, lo] = btn.dataset.fly.split(',').map(Number);
         S.leafletMap?.setView([la, lo], 17);
+        runRadiusCatchment(la, lo, active);
         window.scrollTo({ top: 180, behavior: 'smooth' });
       });
     });
@@ -1539,7 +2346,7 @@ function updateSbizView(active) {
     <div class="card">
       <div class="card-head">
         <h3 class="card-title">📋 ${esc(active.name)} 상가 목록 <span class="tag tag-sbiz">${fmt(matchedIdx.length)}개 검색됨</span></h3>
-        <span style="font-size:12px;color:var(--muted)">지도에는 최대 1,200개 대표 마커가 고속 렌더링됩니다</span>
+        <span style="font-size:12px;color:var(--muted)">최대 ${fmt(cap)}개 고속 마커 · 지도 클릭 시 반경 ${S.gisRadius}m 정밀 분석</span>
       </div>
       <div class="table-wrap">
         <table class="data-table">
@@ -1571,6 +2378,7 @@ function updateSbizView(active) {
     tr.addEventListener('click', () => {
       const [la, lo] = tr.dataset.flyStore.split(',').map(Number);
       S.leafletMap?.setView([la, lo], 17);
+      runRadiusCatchment(la, lo, active);
       window.scrollTo({ top: 180, behavior: 'smooth' });
     });
   });
@@ -2117,7 +2925,7 @@ function wireOmniSearch() {
   document.addEventListener('click', (e) => { if (!e.target.closest('.omni-wrap')) drop.classList.add('hidden'); });
 }
 
-// ===== DRAWER =====
+// ===== DRAWER & PRO OPTIONS MODAL =====
 function openDrawer({ title, sub, body, foot, onMount }) {
   $('drawerHeadContent').innerHTML = `<h3 style="margin:0;font-size:16px;font-weight:800">${esc(title)}</h3><div style="font-size:12px;color:var(--muted);margin-top:2px">${esc(sub || '')}</div>`;
   $('drawerBody').innerHTML = body || '';
@@ -2126,6 +2934,154 @@ function openDrawer({ title, sub, body, foot, onMount }) {
   onMount?.();
 }
 function closeDrawer() { $('drawerBackdrop').classList.add('hidden'); }
+
+function openOptionsModal() {
+  let ov = {};
+  try { ov = JSON.parse(localStorage.getItem(OVERRIDE_KEYS) || '{}'); } catch {}
+  const o = S.opts;
+  $('optionsBody').innerHTML = `
+    <div class="opt-section">
+      <h4>🧠 기본 전략 모델 & 4축 가중치</h4>
+      <div class="chips" style="margin-bottom:10px">
+        ${Object.entries(STRATEGY_PRESETS).map(([k, p]) => `<button class="chip ${o.preset === k ? 'active' : ''}" data-opt-preset="${k}" type="button">${p.label}</button>`).join('')}
+      </div>
+      <div class="opt-grid">
+        <div class="opt-field"><label>🏢 기업 가중치</label><input id="optWCorp" class="input" type="number" min="0" max="100" value="${o.weights.corp}" /></div>
+        <div class="opt-field"><label>🎯 입찰 가중치</label><input id="optWBid" class="input" type="number" min="0" max="100" value="${o.weights.bid}" /></div>
+        <div class="opt-field"><label>🏪 상권 가중치</label><input id="optWSbiz" class="input" type="number" min="0" max="100" value="${o.weights.sbiz}" /></div>
+        <div class="opt-field"><label>🏠 부동산 가중치</label><input id="optWRe" class="input" type="number" min="0" max="100" value="${o.weights.re}" /></div>
+      </div>
+    </div>
+
+    <div class="opt-section">
+      <h4>🗺️ 정밀 GIS 지도 & 반경분석 옵션</h4>
+      <div class="opt-grid">
+        <div class="opt-field">
+          <label>기본 배경지도</label>
+          <select id="optBaseMap" class="select">
+            <option value="vbase" ${o.baseMap === 'vbase' ? 'selected' : ''}>🗺️ 브이월드 정밀 기본도</option>
+            <option value="vsat" ${o.baseMap === 'vsat' ? 'selected' : ''}>🛰️ 브이월드 항공위성</option>
+            <option value="vhyb" ${o.baseMap === 'vhyb' ? 'selected' : ''}>🛰️ 위성 + 도로명 하이브리드</option>
+            <option value="vwhite" ${o.baseMap === 'vwhite' ? 'selected' : ''}>⬜ 브이월드 백지도</option>
+            <option value="vmidnight" ${o.baseMap === 'vmidnight' ? 'selected' : ''}>🌙 브이월드 다크</option>
+            <option value="osm" ${o.baseMap === 'osm' ? 'selected' : ''}>🌐 OpenStreetMap</option>
+          </select>
+        </div>
+        <div class="opt-field">
+          <label>기본 클릭 반경분석 거리</label>
+          <select id="optRadius" class="select">
+            <option value="300" ${o.defaultRadius === 300 ? 'selected' : ''}>300m (초역세권)</option>
+            <option value="500" ${o.defaultRadius === 500 ? 'selected' : ''}>500m (도보 7분 표준)</option>
+            <option value="1000" ${o.defaultRadius === 1000 ? 'selected' : ''}>1km (생활권 상권)</option>
+            <option value="2000" ${o.defaultRadius === 2000 ? 'selected' : ''}>2km (광역 영업권)</option>
+          </select>
+        </div>
+        <div class="opt-field">
+          <label>지도 마커 밀도 한도</label>
+          <select id="optMarkerCap" class="select">
+            <option value="800" ${o.markerCap === 800 ? 'selected' : ''}>고속 (최대 800개)</option>
+            <option value="1500" ${o.markerCap === 1500 ? 'selected' : ''}>표준 (최대 1,500개)</option>
+            <option value="3000" ${o.markerCap === 3000 ? 'selected' : ''}>정밀 (최대 3,000개)</option>
+          </select>
+        </div>
+        <div class="opt-field" style="display:flex;flex-direction:column;justify-content:center;gap:5px;padding-top:12px">
+          <label style="margin:0;cursor:pointer;display:flex;align-items:center;gap:6px"><input id="optQuant" type="checkbox" ${o.showQuantBadges ? 'checked' : ''} /> 퀀트 지표(HHI·LQ·블루오션) 표시</label>
+          <label style="margin:0;cursor:pointer;display:flex;align-items:center;gap:6px"><input id="optHeat" type="checkbox" ${o.autoHeat ? 'checked' : ''} /> 상권 밀도 히트맵 자동 켜기</label>
+          <label style="margin:0;cursor:pointer;display:flex;align-items:center;gap:6px"><input id="optCad" type="checkbox" ${o.autoCadastral ? 'checked' : ''} /> 연속지적도 기본 켜기</label>
+          <label style="margin:0;cursor:pointer;display:flex;align-items:center;gap:6px"><input id="optZone" type="checkbox" ${o.autoZoning ? 'checked' : ''} /> 용도지역 기본 켜기</label>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt-section">
+      <h4>🔑 API 키 오버라이드 & AI 전략 엔진 (브라우저 로컬 전용)</h4>
+      <div style="display:grid;gap:8px">
+        <div class="opt-field">
+          <label>공공데이터포털 인증키 (비워두면 암호화 볼트 내장키 자동 사용)</label>
+          <input id="optKeyDataGo" class="input mono" type="password" value="${esc(ov.dataGo || '')}" placeholder="볼트 내장키 사용 중: ${esc(maskKey(S.core?.vaultKeys?.dataGo || ''))}" />
+        </div>
+        <div class="opt-field">
+          <label>브이월드 인증키 (비워두면 볼트 내장키 자동 사용)</label>
+          <input id="optKeyVworld" class="input mono" type="password" value="${esc(ov.vworld || '')}" placeholder="볼트 내장키 사용 중: ${esc(maskKey(S.core?.vaultKeys?.vworld || ''))}" />
+        </div>
+        <div class="opt-field">
+          <label>Gemini AI API 키 (선택 · 입력 시 [✨ 전략 진단]에서 AI 심층 코멘트 생성)</label>
+          <input id="optKeyGemini" class="input mono" type="password" value="${esc(o.geminiKey || '')}" placeholder="AIzaSy... (선택 사항)" />
+        </div>
+      </div>
+    </div>
+  `;
+
+  $('optionsFoot').innerHTML = `
+    <button id="btnOptSave" class="btn btn-primary btn-sm" type="button">💾 옵션 저장 및 즉시 적용</button>
+    <button id="btnOptExport" class="btn btn-sm" type="button">📤 설정 JSON 백업</button>
+    <button id="btnOptReset" class="btn btn-sm" type="button" style="margin-left:auto">↺ 기본값 복원</button>
+  `;
+
+  $('optionsBackdrop').classList.remove('hidden');
+
+  $('optionsBody').querySelectorAll('[data-opt-preset]').forEach((b) => {
+    b.addEventListener('click', () => {
+      const k = b.dataset.optPreset;
+      const w = STRATEGY_PRESETS[k].weights;
+      $('optWCorp').value = w.corp; $('optWBid').value = w.bid; $('optWSbiz').value = w.sbiz; $('optWRe').value = w.re;
+      $('optionsBody').querySelectorAll('[data-opt-preset]').forEach((x) => x.classList.toggle('active', x.dataset.optPreset === k));
+      S.opts.preset = k;
+    });
+  });
+
+  $('btnOptSave').addEventListener('click', () => {
+    S.opts.weights = {
+      corp: Math.max(0, Number($('optWCorp').value) || 0),
+      bid: Math.max(0, Number($('optWBid').value) || 0),
+      sbiz: Math.max(0, Number($('optWSbiz').value) || 0),
+      re: Math.max(0, Number($('optWRe').value) || 0),
+    };
+    S.opts.baseMap = $('optBaseMap').value;
+    S.opts.defaultRadius = Number($('optRadius').value) || 500;
+    S.opts.markerCap = Number($('optMarkerCap').value) || 1500;
+    S.opts.showQuantBadges = $('optQuant').checked;
+    S.opts.autoHeat = $('optHeat').checked;
+    S.opts.autoCadastral = $('optCad').checked;
+    S.opts.autoZoning = $('optZone').checked;
+    S.opts.geminiKey = $('optKeyGemini').value.trim();
+    saveOpts();
+
+    const newOv = {};
+    if ($('optKeyDataGo').value.trim()) newOv.dataGo = $('optKeyDataGo').value.trim();
+    if ($('optKeyVworld').value.trim()) newOv.vworld = $('optKeyVworld').value.trim();
+    if (Object.keys(newOv).length) localStorage.setItem(OVERRIDE_KEYS, JSON.stringify(newOv));
+    else localStorage.removeItem(OVERRIDE_KEYS);
+
+    S.gisBase = S.opts.baseMap;
+    S.gisRadius = S.opts.defaultRadius;
+    S.gisLayers.heat = S.opts.autoHeat;
+    S.gisLayers.cadastral = S.opts.autoCadastral;
+    S.gisLayers.zoning = S.opts.autoZoning;
+    recomputeFusionQuant();
+    closeOptionsModal();
+    toast('✓ 전문가 옵션이 저장 및 적용되었습니다!');
+    renderCurrentTab();
+  });
+
+  $('btnOptExport').addEventListener('click', () => {
+    const blob = new Blob([JSON.stringify({ opts: S.opts, pipelineCount: S.pipeline.length }, null, 2)], { type: 'application/json' });
+    const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `nexusone_options_${new Date().toISOString().slice(0, 10)}.json`; a.click();
+  });
+
+  $('btnOptReset').addEventListener('click', () => {
+    S.opts = { ...DEFAULT_OPTS, weights: { ...DEFAULT_OPTS.weights } };
+    saveOpts();
+    localStorage.removeItem(OVERRIDE_KEYS);
+    S.gisBase = S.opts.baseMap;
+    S.gisRadius = S.opts.defaultRadius;
+    recomputeFusionQuant();
+    closeOptionsModal();
+    toast('↺ 모든 전문가 옵션이 기본값으로 복원되었습니다.');
+    renderCurrentTab();
+  });
+}
+function closeOptionsModal() { $('optionsBackdrop').classList.add('hidden'); }
 
 // ===== THEME & INIT =====
 function applyTheme(theme) {
@@ -2139,6 +3095,9 @@ async function init() {
   loadPipeline();
 
   $('btnTheme').addEventListener('click', () => applyTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'));
+  $('btnOptions').addEventListener('click', openOptionsModal);
+  $('optionsClose').addEventListener('click', closeOptionsModal);
+  $('optionsBackdrop').addEventListener('click', (e) => { if (e.target === $('optionsBackdrop')) closeOptionsModal(); });
   $('brandHome').addEventListener('click', () => switchTab('overview'));
   $('btnGoPipe').addEventListener('click', () => switchTab('hub'));
   $('drawerClose').addEventListener('click', closeDrawer);

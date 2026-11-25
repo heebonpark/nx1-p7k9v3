@@ -2583,31 +2583,42 @@ function renderBidOppsBody() {
   });
 }
 
-async function fetchG2bNewestItems(baseUrl, bgnDt, endDt, perPage = 100) {
+async function fetchG2bNewestItems(baseUrl, todayBgnDt, yestBgnDt, endDt) {
   const extract = (j) => {
     const raw = j?.response?.body?.items;
-    return Array.isArray(raw) ? raw : (raw?.item ? (Array.isArray(raw.item) ? raw.item : [raw.item]) : []);
+    if (!raw) return [];
+    if (Array.isArray(raw)) return raw;
+    if (Array.isArray(raw.item)) return raw.item;
+    return raw.item ? [raw.item] : [];
   };
-  const u1 = `${baseUrl}&numOfRows=${perPage}&pageNo=1&type=json&inqryDiv=1&inqryBgnDt=${bgnDt}&inqryEndDt=${endDt}`;
-  const r1 = await fetch(u1);
-  if (!r1.ok) return [];
-  const j1 = await r1.json();
-  const total = Number(j1?.response?.body?.totalCount || 0);
-  let items = extract(j1);
-  // G2B API returns ASCENDING (oldest first) -> always fetch the LAST page too so today's newest notices are NEVER missed!
-  if (total > perPage) {
-    const lastPage = Math.ceil(total / perPage);
-    try {
-      const rLast = await fetch(`${baseUrl}&numOfRows=${perPage}&pageNo=${lastPage}&type=json&inqryDiv=1&inqryBgnDt=${bgnDt}&inqryEndDt=${endDt}`);
-      if (rLast.ok) {
-        const lastItems = extract(await rLast.json());
-        items = [...lastItems.reverse(), ...items.reverse()];
-      }
-    } catch {}
-  } else {
-    items = items.reverse();
-  }
-  return items;
+  const collectWindow = async (bgn, end, maxPages = 3) => {
+    const r1 = await fetch(`${baseUrl}&numOfRows=999&pageNo=1&type=json&inqryDiv=1&inqryBgnDt=${bgn}&inqryEndDt=${end}`);
+    if (!r1.ok) return [];
+    const j1 = await r1.json();
+    const total = Number(j1?.response?.body?.totalCount || 0);
+    let out = extract(j1);
+    if (total > 999) {
+      const pages = Math.min(maxPages, Math.ceil(total / 999));
+      const extras = await Promise.all(
+        Array.from({ length: pages - 1 }, (_, i) => i + 2).map(async (p) => {
+          try {
+            const rp = await fetch(`${baseUrl}&numOfRows=999&pageNo=${p}&type=json&inqryDiv=1&inqryBgnDt=${bgn}&inqryEndDt=${end}`);
+            return rp.ok ? extract(await rp.json()) : [];
+          } catch { return []; }
+        })
+      );
+      for (const arr of extras) out = out.concat(arr);
+    }
+    return out;
+  };
+  // G2B API sorts by bidNtceNo (NOT strictly bidNtceDt) -> fetch 100% of TODAY (00:00~now) with numOfRows=999 so ZERO KakaoTalk alerts can ever be missed on middle pages!
+  const [todayItems, yestItems] = await Promise.all([
+    collectWindow(todayBgnDt, endDt, 4),
+    collectWindow(yestBgnDt, todayBgnDt, 1),
+  ]);
+  const merged = [...todayItems, ...yestItems];
+  merged.sort((a, b) => String(b.bidNtceDt || b.rcptDt || '').localeCompare(String(a.bidNtceDt || a.rcptDt || '')));
+  return merged;
 }
 
 async function fetchLiveG2bAndPrespec({ silent = false } = {}) {
@@ -2615,12 +2626,13 @@ async function fetchLiveG2bAndPrespec({ silent = false } = {}) {
   if (!dataGoEnc) { if (!silent) toast('공공데이터포털 키가 없습니다.'); return; }
   if (S.bidSync.syncing) return;
   S.bidSync.syncing = true;
-  if (!silent) toast('🔄 카톡 알림봇 동일 소스(최근 36시간 최신 입찰·사전규격·청약홈) 동기화 중…');
+  if (!silent) toast('🔄 카톡 알림봇 동일 소스(오늘 00시~현재 전수 + 어제 최신 입찰·사전규격·청약홈) 동기화 중…');
 
   const now = new Date();
-  const bgn = new Date(now.getTime() - 36 * 3600000); // 최근 36시간 (오늘+어제 전체 커버 + 마지막 페이지 역순 수집)
-  const fmtDt = (d) => `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}${String(d.getHours()).padStart(2, '0')}${String(d.getMinutes()).padStart(2, '0')}`;
-  const bgnDt = fmtDt(bgn), endDt = fmtDt(now);
+  const yest = new Date(now.getTime() - 24 * 3600000);
+  const fmtYmd = (d) => `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
+  const fmtDt = (d) => `${fmtYmd(d)}${String(d.getHours()).padStart(2, '0')}${String(d.getMinutes()).padStart(2, '0')}`;
+  const todayBgnDt = `${fmtYmd(now)}0000`, yestBgnDt = `${fmtYmd(yest)}0000`, endDt = fmtDt(now);
 
   const g2bUrls = [
     ['bid', `https://apis.data.go.kr/1230000/ad/BidPublicInfoService02/getBidPblancListInfoServc02?serviceKey=${dataGoEnc}`],
@@ -2637,7 +2649,7 @@ async function fetchLiveG2bAndPrespec({ silent = false } = {}) {
   await Promise.all([
     ...g2bUrls.map(async ([st, baseUrl]) => {
       try {
-        const arr = await fetchG2bNewestItems(baseUrl, bgnDt, endDt, 100);
+        const arr = await fetchG2bNewestItems(baseUrl, todayBgnDt, yestBgnDt, endDt);
         for (const it of arr) {
           const isPre = st === 'prespec';
           const id = isPre ? `pre-${it.bfSpecRgstNo || it.prdctClsfcNoNm}` : `g2b-${it.bidNtceNo}-${it.bidNtceOrd || '00'}`;

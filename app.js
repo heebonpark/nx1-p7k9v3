@@ -177,8 +177,11 @@ const S = {
 
   // Corp filters
   corpQ: '', corpSd: '', corpType: '', corpTag: '', corpStatus: '', corpSort: 'rev', corpPage: 1,
-  // Bid filters
-  bidSub: 'opps', bidQ: '', bidStage: '', bidField: '', bidPage: 1,
+  // Bid filters & v8 Early-Detection Radar GIS Map state
+  bidSub: 'map', bidQ: '', bidStage: '', bidField: '', bidUrgency: '', bidBudgetMin: 0, bidSd: '', bidPage: 1,
+  bidMapMode: 'cluster', bidMapBase: 'vbase', bidWms: { cadastral: false, zoning: false },
+  bidLeafletMap: null, bidLeafletLayer: null, bidLeafletTile: null, bidLeafletHybrid: null, bidLeafletWms: {},
+  bidSync: { syncing: false, lastAt: '', added: 0, liveTotal: 0 },
   bldQ: '', bldSector: '', bldPage: 1,
   // Sbiz filters & v6 Split-View / YYYYMM state
   sbizQ: '', sbizSgg: '', sbizL1: '', sbizOnly2026: false, sbizView: 'stores', sbizPage: 1,
@@ -790,9 +793,98 @@ async function unlockAndBoot(key) {
   $('cntRe').textContent = fmt((reObj.listings?.length || 0) + (reObj.starts?.length || 0) + (reObj.complexes?.length || 0));
   $('brandMeta').textContent = `법인 ${fmt(core.stats.corpCount)} · 상가 ${fmt(core.stats.sbizCount)} · 입찰 ${fmt(S.opps.length)} · 청약 ${fmt(reObj.listings?.length || 0)}`;
 
+  // Apply URL deep link (?tab=bid|sbiz|corp|realestate|hub)
+  const urlTab = new URLSearchParams(location.search).get('tab');
+  if (urlTab && ['overview', 'corp', 'bid', 'sbiz', 'realestate', 'hub'].includes(urlTab)) {
+    S.tab = urlTab;
+    document.querySelectorAll('[data-tab]').forEach((el) => el.classList.toggle('active', el.dataset.tab === urlTab));
+  }
+
+  // Enrich all loaded opportunities with accurate 229-sigungu rid & WGS84 coords
+  S.opps = S.opps.map((o) => attachOppGeo(o));
+
   $('lockScreen').classList.add('hidden');
   $('appShell').classList.remove('hidden');
   renderCurrentTab();
+
+  // Auto background real-time sync (same live APIs as KakaoTalk Alert Bot!)
+  setTimeout(() => fetchLiveG2bAndPrespec({ silent: true }), 400);
+}
+
+// ===== OPP REGION MATCHER & WGS84 COORD MAPPER (229 SIGUNGU AFFINE) =====
+function regionCentroidLatLon(rid) {
+  const reg = S.map?.regions?.[rid];
+  if (!reg?.c) return [37.5665, 126.9780];
+  const [x, y] = reg.c;
+  return [
+    Math.round((-0.0058438 * y + 38.61497) * 1e5) / 1e5,
+    Math.round((0.0073628 * x + 124.59339) * 1e5) / 1e5,
+  ];
+}
+
+const OPP_SIDO_TO_SD = {
+  '서울특별시': '11', '서울': '11', '부산광역시': '21', '부산': '21', '대구광역시': '22', '대구': '22',
+  '인천광역시': '23', '인천': '23', '광주광역시': '24', '광주': '24', '대전광역시': '25', '대전': '25',
+  '울산광역시': '26', '울산': '26', '세종특별자치시': '29', '세종': '29', '경기도': '31', '경기': '31',
+  '강원특별자치도': '32', '강원': '32', '충청북도': '33', '충북': '33', '충청남도': '34', '충남': '34',
+  '전북특별자치도': '35', '전북': '35', '전라남도': '36', '전남': '36', '경상북도': '37', '경북': '37',
+  '경상남도': '38', '경남': '38', '제주특별자치도': '39', '제주': '39',
+};
+
+function matchOppRid(o) {
+  if (typeof o._fusionRid === 'number' && o._fusionRid >= 0 && S.fusionByRid.has(o._fusionRid)) return o._fusionRid;
+  const txt = `${o.region || ''} ${o.org || ''} ${o.title || ''}`;
+  let sd = '';
+  for (const [k, v] of Object.entries(OPP_SIDO_TO_SD)) {
+    if (txt.includes(k)) { sd = v; break; }
+  }
+  const regs = S.fusion?.regions || [];
+  if (sd === '29') {
+    const sej = regs.find((r) => r.sd === '29');
+    if (sej) return sej.rid;
+  }
+  if (sd) {
+    for (const r of regs) {
+      if (r.sd === sd && r.name && txt.includes(r.name)) return r.rid;
+    }
+    for (const r of regs) {
+      if (r.sd !== sd) continue;
+      const sh = r.name.replace(/시$|군$|구$/, '');
+      if (sh.length >= 2 && txt.includes(sh)) return r.rid;
+    }
+    const firstOfSd = regs.find((r) => r.sd === sd);
+    if (firstOfSd) return firstOfSd.rid;
+  }
+  // Fallback: unique sigungu name match anywhere in text
+  for (const r of regs) {
+    if (r.name && r.name.length >= 3 && txt.includes(r.name)) return r.rid;
+  }
+  return (typeof o.rid === 'number' && o.rid >= 0 && S.fusionByRid.has(o.rid)) ? o.rid : -1;
+}
+
+function attachOppGeo(o) {
+  const rid = matchOppRid(o);
+  const reg = S.fusionByRid.get(rid);
+  let lat = o.lat || 0, lon = o.lon || 0;
+  if ((!lat || !lon) && rid >= 0) {
+    const [la, lo] = regionCentroidLatLon(rid);
+    // Deterministic tiny scatter (~400m) so pins in same sigungu don't stack on 1 pixel
+    let h = 0;
+    const key = String(o.id || o.title || '');
+    for (let i = 0; i < key.length; i++) h = ((h << 5) - h + key.charCodeAt(i)) | 0;
+    const ang = (Math.abs(h) % 360) * Math.PI / 180;
+    const rad = 0.002 + ((Math.abs(h >> 8) % 100) / 100) * 0.012;
+    lat = +(la + Math.sin(ang) * rad).toFixed(5);
+    lon = +(lo + Math.cos(ang) * rad * 1.25).toFixed(5);
+  }
+  return {
+    ...o,
+    _fusionRid: rid,
+    _sd: reg?.sd || '',
+    _regionFull: reg?.fullName || o.region || '전국',
+    lat,
+    lon,
+  };
 }
 
 function classifyField(text) {
@@ -893,6 +985,11 @@ function renderCurrentTab() {
     S.leafletMap.remove();
     S.leafletMap = null;
     S.leafletLayer = null;
+  }
+  if (S.tab !== 'bid' && S.bidLeafletMap) {
+    S.bidLeafletMap.remove();
+    S.bidLeafletMap = null;
+    S.bidLeafletLayer = null;
   }
   if (S.tab === 'overview') renderOverview();
   else if (S.tab === 'corp') renderCorpTab();
@@ -1968,22 +2065,72 @@ function openCorpDrawer(idx) {
 }
 
 // =========================================================================
-// TAB 3: 🎯 입찰 · 사전규격 · 건축인허가 · 건설사(12,198사)
+// TAB 3: 🎯 입찰 · 사전규격 · 건축인허가 · 조기포착 레이더 지도 + 건설사(12,198사)
 // =========================================================================
+const OPP_STAGE_META = {
+  prespec: { label: '🔭 사전규격', color: '#7c3aed', tagCls: 'tag-corp', early: true },
+  permit:  { label: '🏗️ 건축인허가', color: '#e11d48', tagCls: 'tag-re', early: true },
+  newbuild:{ label: '🏠 신축분양', color: '#db2777', tagCls: 'tag-re', early: true },
+  complex: { label: '🏘️ K-apt 단지', color: '#059669', tagCls: 'tag-sbiz', early: false },
+  bid:     { label: '📢 입찰공고', color: '#d97706', tagCls: 'tag-bid', early: false },
+};
+
+function getFilteredOpps() {
+  const q = S.bidQ.trim().toLowerCase();
+  return S.opps.filter((o) => {
+    if (S.bidStage === 'early') {
+      if (!OPP_STAGE_META[o.stageType]?.early) return false;
+    } else if (S.bidStage && o.stageType !== S.bidStage) {
+      return false;
+    }
+    if (S.bidField && o.field !== S.bidField) return false;
+    if (S.bidSd && o._sd !== S.bidSd) return false;
+    if (S.bidBudgetMin > 0 && (Number(o.budgetMan) || 0) < S.bidBudgetMin) return false;
+    if (S.bidUrgency === 'd3' && !(o.dday !== null && o.dday >= 0 && o.dday <= 3)) return false;
+    if (S.bidUrgency === 'd7' && !(o.dday !== null && o.dday >= 0 && o.dday <= 7)) return false;
+    if (S.bidUrgency === 'live' && !o.isLive) return false;
+    if (q && !`${o.title} ${o.org} ${o.region} ${o._regionFull || ''} ${o.source} ${o.field}`.toLowerCase().includes(q)) return false;
+    return true;
+  }).sort((a, b) => (b.isLive ? 1 : 0) - (a.isLive ? 1 : 0) || b.icpScore - a.icpScore);
+}
+
 function renderBidTab() {
-  const isOpps = S.bidSub === 'opps';
+  if (S.bidSub !== 'map' && S.bidLeafletMap) {
+    S.bidLeafletMap.remove();
+    S.bidLeafletMap = null;
+    S.bidLeafletLayer = null;
+  }
+  const earlyCnt = S.opps.filter((o) => OPP_STAGE_META[o.stageType]?.early).length;
+  const liveCnt = S.opps.filter((o) => o.isLive).length;
+  const syncTxt = S.bidSync.syncing
+    ? '🔄 카톡 알림봇 동일 소스(나라장터 입찰·사전규격·청약홈) 실시간 동기화 중…'
+    : (S.bidSync.lastAt
+      ? `🟢 카톡 알림봇 동일 소스 실시간 동기화 완료 (${S.bidSync.lastAt} · 실시간 ${fmt(liveCnt)}건 반영 · 조기포착 ${fmt(earlyCnt)}건)`
+      : `📡 볼트 스냅샷 로드됨 (자동 실시간 동기화 대기 중 · 조기포착 ${fmt(earlyCnt)}건)`);
+
   $('mainStage').innerHTML = `
     <div class="card">
       <div class="card-head">
         <div>
-          <h2 class="card-title">🎯 공동주택 · 관공서 입찰 & 사전규격 PRO</h2>
-          <p class="card-sub">나라장터 입찰(02) · 사전규격(ao) · 국토부 건축인허가 · K-apt · 건설·시설관리 12,198사 통합</p>
+          <h2 class="card-title">🎯 공동주택 · 관공서 입찰 & 조기포착 레이더 PRO</h2>
+          <p class="card-sub">카톡 알림봇 동일 실시간 소스(나라장터 02 · 사전규격 ao · 청약홈) + 국토부 건축인허가 · K-apt · 건설사 12,198사</p>
         </div>
         <div class="chips">
-          <button class="chip ${isOpps ? 'active' : ''}" data-bid-sub="opps">📡 실시간 입찰·사전규격·인허가 (${fmt(S.opps.length)})</button>
-          <button class="chip ${!isOpps ? 'active' : ''}" data-bid-sub="builders">🏗️ 건설·시설관리 DB (${fmt(S.core.stats.builderCount)}사)</button>
+          <button class="chip ${S.bidSub === 'map' ? 'active' : ''}" data-bid-sub="map">🗺️ 조기포착·입찰 지도 (${fmt(S.opps.length)})</button>
+          <button class="chip ${S.bidSub === 'opps' ? 'active' : ''}" data-bid-sub="opps">📋 전체 리스트</button>
+          <button class="chip ${S.bidSub === 'builders' ? 'active' : ''}" data-bid-sub="builders">🏗️ 건설·시설사 (${fmt(S.core.stats.builderCount)}사)</button>
         </div>
       </div>
+
+      ${S.bidSub !== 'builders' ? `
+        <div class="bid-sync-bar">
+          <span>${syncTxt}</span>
+          <div style="display:flex;gap:6px;flex-wrap:wrap">
+            <button id="btnLiveG2b" class="btn btn-amber btn-sm" type="button" ${S.bidSync.syncing ? 'disabled' : ''}>🔄 지금 즉시 실시간 수집</button>
+            <button id="btnBidCsv" class="btn btn-emerald btn-sm" type="button">📥 조건결과 CSV</button>
+          </div>
+        </div>
+      ` : ''}
 
       <div id="bidBody"></div>
     </div>
@@ -1992,62 +2139,419 @@ function renderBidTab() {
   $('mainStage').querySelectorAll('[data-bid-sub]').forEach((b) => {
     b.addEventListener('click', () => { S.bidSub = b.dataset.bidSub; renderBidTab(); });
   });
+  $('btnLiveG2b')?.addEventListener('click', () => fetchLiveG2bAndPrespec({ silent: false }));
+  $('btnBidCsv')?.addEventListener('click', () => {
+    const list = getFilteredOpps();
+    downloadCsv(
+      `nexusone_bids_early_${new Date().toISOString().slice(0, 10)}.csv`,
+      ['단계', '출처', '공고/현장명', '발주처/기관', '지역', '분야', '예산(만원)', 'ICP점수', '공고일', '마감일', '실시간여부', 'URL'],
+      list.map((o) => [OPP_STAGE_META[o.stageType]?.label || o.stageType, o.source, o.title, o.org, o._regionFull || o.region, o.field, o.budgetMan || 0, o.icpScore, o.pubDate || '', o.closeDate || '', o.isLive ? 'LIVE' : 'VAULT', o.url || ''])
+    );
+    toast(`📥 조건 필터 결과 ${fmt(list.length)}건 CSV 다운로드 완료!`);
+  });
 
-  if (isOpps) renderBidOppsBody();
+  if (S.bidSub === 'map') renderBidMapWorkspace();
+  else if (S.bidSub === 'opps') renderBidOppsBody();
   else renderBidBuildersBody();
 }
 
-function renderBidOppsBody() {
-  const q = S.bidQ.trim().toLowerCase();
-  const list = S.opps.filter((o) => {
-    if (S.bidStage && o.stageType !== S.bidStage) return false;
-    if (S.bidField && o.field !== S.bidField) return false;
-    if (q && !`${o.title} ${o.org} ${o.region} ${o.source} ${o.field}`.toLowerCase().includes(q)) return false;
-    return true;
-  }).sort((a, b) => b.icpScore - a.icpScore);
+function renderBidFilterDeckHtml() {
+  const sidos = S.core.sido || [];
+  const cnts = {
+    all: S.opps.length,
+    early: S.opps.filter((o) => OPP_STAGE_META[o.stageType]?.early).length,
+    prespec: S.opps.filter((o) => o.stageType === 'prespec').length,
+    permit: S.opps.filter((o) => o.stageType === 'permit').length,
+    newbuild: S.opps.filter((o) => o.stageType === 'newbuild').length,
+    complex: S.opps.filter((o) => o.stageType === 'complex').length,
+    bid: S.opps.filter((o) => o.stageType === 'bid').length,
+    d3: S.opps.filter((o) => o.dday !== null && o.dday >= 0 && o.dday <= 3).length,
+    live: S.opps.filter((o) => o.isLive).length,
+  };
+  return `
+    <div class="gis-deck" style="margin-bottom:10px">
+      <div class="gis-row">
+        <span class="gis-label">🎯 조기포착·단계:</span>
+        ${[
+          ['', `전체 (${cnts.all})`],
+          ['early', `⚡ 조기포착 전체 (${cnts.early})`],
+          ['prespec', `🔭 사전규격 (${cnts.prespec})`],
+          ['permit', `🏗️ 건축인허가 (${cnts.permit})`],
+          ['newbuild', `🏠 신축분양 (${cnts.newbuild})`],
+          ['complex', `🏘️ K-apt (${cnts.complex})`],
+          ['bid', `📢 입찰공고 (${cnts.bid})`],
+        ].map(([k, lb]) => `<button class="toggle-pill ${S.bidStage === k ? 'on' : ''}" data-bid-st="${k}" type="button">${lb}</button>`).join('')}
+      </div>
+      <div class="gis-row">
+        <span class="gis-label">🚨 긴급·실시간:</span>
+        ${[
+          ['', '전체'],
+          ['d3', `🚨 D-3 긴급 (${cnts.d3})`],
+          ['d7', '⏰ D-7 이번주'],
+          ['live', `🟢 카톡동일 실시간 (${cnts.live})`],
+        ].map(([k, lb]) => `<button class="toggle-pill ${S.bidUrgency === k ? 'on-emerald' : ''}" data-bid-urg="${k}" type="button">${lb}</button>`).join('')}
+        <select id="fBidField" class="select" style="padding:5px 8px;font-size:12px">
+          <option value="">전체 분야</option>
+          ${['보안·CCTV', 'AI·스마트', '시설·경비·미화', '전기·통신·소방', '건축·리모델링', '승강기·설비'].map((f) => `<option value="${f}" ${S.bidField === f ? 'selected' : ''}>${f}</option>`).join('')}
+        </select>
+        <select id="fBidBudget" class="select" style="padding:5px 8px;font-size:12px">
+          <option value="0" ${S.bidBudgetMin === 0 ? 'selected' : ''}>전체 예산</option>
+          <option value="10000" ${S.bidBudgetMin === 10000 ? 'selected' : ''}>💰 1억 이상</option>
+          <option value="50000" ${S.bidBudgetMin === 50000 ? 'selected' : ''}>💎 5억 이상</option>
+          <option value="100000" ${S.bidBudgetMin === 100000 ? 'selected' : ''}>🏆 10억 이상</option>
+        </select>
+        <select id="fBidSd" class="select" style="padding:5px 8px;font-size:12px">
+          <option value="">전국 시도</option>
+          ${sidos.map((s) => `<option value="${s.sd}" ${S.bidSd === s.sd ? 'selected' : ''}>${esc(s.n)}</option>`).join('')}
+        </select>
+        <input id="fBidQ" class="input" style="flex:1;min-width:150px;padding:5px 9px;font-size:12px" value="${esc(S.bidQ)}" placeholder="공고명 · 발주처 · 지역 · CCTV 검색" />
+      </div>
+    </div>
+  `;
+}
 
+function wireBidFilterControls(onUpdate) {
+  let t = null;
+  $('fBidQ')?.addEventListener('input', (e) => { clearTimeout(t); t = setTimeout(() => { S.bidQ = e.target.value; S.bidPage = 1; onUpdate(); }, 180); });
+  $('fBidField')?.addEventListener('change', (e) => { S.bidField = e.target.value; S.bidPage = 1; onUpdate(); });
+  $('fBidBudget')?.addEventListener('change', (e) => { S.bidBudgetMin = Number(e.target.value) || 0; S.bidPage = 1; onUpdate(); });
+  $('fBidSd')?.addEventListener('change', (e) => { S.bidSd = e.target.value; S.bidPage = 1; onUpdate(); });
+  $('bidBody').querySelectorAll('[data-bid-st]').forEach((b) => {
+    b.addEventListener('click', () => {
+      S.bidStage = b.dataset.bidSt;
+      S.bidPage = 1;
+      $('bidBody').querySelectorAll('[data-bid-st]').forEach((x) => x.classList.toggle('on', x.dataset.bidSt === S.bidStage));
+      onUpdate();
+    });
+  });
+  $('bidBody').querySelectorAll('[data-bid-urg]').forEach((b) => {
+    b.addEventListener('click', () => {
+      S.bidUrgency = b.dataset.bidUrg;
+      S.bidPage = 1;
+      $('bidBody').querySelectorAll('[data-bid-urg]').forEach((x) => x.classList.toggle('on-emerald', x.dataset.bidUrg === S.bidUrgency));
+      onUpdate();
+    });
+  });
+}
+
+function renderBidMapWorkspace() {
+  $('bidBody').innerHTML = `
+    ${renderBidFilterDeckHtml()}
+
+    <div class="gis-deck" style="margin-bottom:10px;padding:7px 11px">
+      <div class="gis-row">
+        <span class="gis-label">🗺️ 레이더 지도:</span>
+        ${[
+          ['vbase', '브이월드 기본'],
+          ['vhyb', '🛰️ 위성+도로'],
+          ['vmidnight', '🌙 다크'],
+          ['osm', 'OSM'],
+        ].map(([k, lb]) => `<button class="toggle-pill ${S.bidMapBase === k ? 'on' : ''}" data-bm-base="${k}" type="button">${lb}</button>`).join('')}
+        <button class="toggle-pill ${S.bidWms.cadastral ? 'on-emerald' : ''}" data-bm-wms="cadastral" type="button">📐 연속지적도</button>
+        <button class="toggle-pill ${S.bidWms.zoning ? 'on-emerald' : ''}" data-bm-wms="zoning" type="button">🏙️ 용도지역</button>
+        <span class="gis-label" style="margin-left:6px">표시:</span>
+        <button class="toggle-pill ${S.bidMapMode === 'cluster' ? 'on' : ''}" data-bm-mode="cluster" type="button">🔵 시군구 집계</button>
+        <button class="toggle-pill ${S.bidMapMode === 'pins' ? 'on' : ''}" data-bm-mode="pins" type="button">📍 개별 공고핀</button>
+        <button id="btnBidMapFit" class="btn btn-sm" style="margin-left:auto" type="button">🎯 결과 맞춤</button>
+      </div>
+    </div>
+
+    <div class="bid-workspace">
+      <div>
+        <div id="bidLeafletBox" class="leaflet-box"></div>
+        <div class="marker-legend">
+          <span class="gis-label">범례:</span>
+          <span class="ml-item"><span class="ml-dot" style="background:#7c3aed"></span>🔭 사전규격(조기포착)</span>
+          <span class="ml-item"><span class="ml-dot" style="background:#e11d48"></span>🏗️ 건축인허가·신축분양</span>
+          <span class="ml-item"><span class="ml-dot" style="background:#059669"></span>🏘️ K-apt 단지</span>
+          <span class="ml-item"><span class="ml-dot" style="background:#d97706"></span>📢 입찰공고 (빨간테=D-3긴급)</span>
+          <span id="bidMapStat" style="margin-left:auto;color:var(--muted);font-weight:700"></span>
+        </div>
+      </div>
+
+      <div class="bid-side-list">
+        <div class="card-head" style="padding:10px 12px;margin:0;border-bottom:1px solid var(--border)">
+          <h3 class="card-title" style="font-size:14px">📡 조건 매칭 공고 <span id="bidMatchCnt" class="tag tag-bid">0건</span></h3>
+          <span style="font-size:11px;color:var(--muted)">클릭 시 지도 이동 · 상세보기</span>
+        </div>
+        <div id="bidSideScroll" class="bid-side-scroll"></div>
+      </div>
+    </div>
+  `;
+
+  initBidLeaflet();
+  wireBidFilterControls(updateBidMapAndList);
+
+  $('bidBody').querySelectorAll('[data-bm-base]').forEach((b) => {
+    b.addEventListener('click', () => {
+      S.bidMapBase = b.dataset.bmBase;
+      $('bidBody').querySelectorAll('[data-bm-base]').forEach((x) => x.classList.toggle('on', x.dataset.bmBase === S.bidMapBase));
+      applyBidBaseMap();
+    });
+  });
+  $('bidBody').querySelectorAll('[data-bm-wms]').forEach((b) => {
+    b.addEventListener('click', () => {
+      const k = b.dataset.bmWms;
+      S.bidWms[k] = !S.bidWms[k];
+      b.classList.toggle('on-emerald', S.bidWms[k]);
+      applyBidWms();
+    });
+  });
+  $('bidBody').querySelectorAll('[data-bm-mode]').forEach((b) => {
+    b.addEventListener('click', () => {
+      S.bidMapMode = b.dataset.bmMode;
+      $('bidBody').querySelectorAll('[data-bm-mode]').forEach((x) => x.classList.toggle('on', x.dataset.bmMode === S.bidMapMode));
+      updateBidMapAndList(false);
+    });
+  });
+  $('btnBidMapFit').addEventListener('click', () => updateBidMapAndList(true));
+
+  updateBidMapAndList(true);
+}
+
+function initBidLeaflet() {
+  const el = $('bidLeafletBox');
+  if (!el || typeof L === 'undefined') return;
+  if (S.bidLeafletMap) { S.bidLeafletMap.remove(); S.bidLeafletMap = null; }
+  S.bidLeafletWms = {};
+  S.bidLeafletMap = L.map(el, { preferCanvas: true }).setView([36.85, 127.4], 7);
+  applyBidBaseMap();
+  S.bidLeafletLayer = L.layerGroup().addTo(S.bidLeafletMap);
+  applyBidWms();
+}
+
+function applyBidBaseMap() {
+  if (!S.bidLeafletMap) return;
+  if (S.bidLeafletTile) { S.bidLeafletMap.removeLayer(S.bidLeafletTile); S.bidLeafletTile = null; }
+  if (S.bidLeafletHybrid) { S.bidLeafletMap.removeLayer(S.bidLeafletHybrid); S.bidLeafletHybrid = null; }
+  const { vworld } = getApiKeys();
+  const mode = S.bidMapBase;
+  if (mode === 'osm' || !vworld) {
+    S.bidLeafletTile = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '© OpenStreetMap' }).addTo(S.bidLeafletMap);
+    return;
+  }
+  const vw = (t, ext = 'png', maxN = 19) => L.tileLayer(`https://api.vworld.kr/req/wmts/1.0.0/${encodeURIComponent(vworld)}/${t}/{z}/{y}/{x}.${ext}`, { maxZoom: 20, maxNativeZoom: maxN, attribution: '© VWorld 국토교통부' });
+  if (mode === 'vhyb') {
+    S.bidLeafletTile = vw('Satellite', 'jpeg', 19).addTo(S.bidLeafletMap);
+    S.bidLeafletHybrid = vw('Hybrid', 'png', 19).setZIndex(260).addTo(S.bidLeafletMap);
+  } else if (mode === 'vmidnight') {
+    S.bidLeafletTile = vw('midnight', 'png', 18).addTo(S.bidLeafletMap);
+  } else {
+    S.bidLeafletTile = vw('Base', 'png', 19).addTo(S.bidLeafletMap);
+  }
+}
+
+function applyBidWms() {
+  if (!S.bidLeafletMap) return;
+  const { vworld } = getApiKeys();
+  const isLocal = /^(127\.0\.0\.1|localhost)$/.test(location.hostname);
+  const dom = (!isLocal && location.origin && /^https?:/.test(location.origin)) ? location.origin : 'https://heebonpark.github.io';
+  for (const k of ['cadastral', 'zoning']) {
+    const cfg = VWORLD_WMS_CFG[k];
+    if (S.bidWms[k] && vworld) {
+      if (!S.bidLeafletWms[k]) {
+        S.bidLeafletWms[k] = L.tileLayer.wms('https://api.vworld.kr/req/wms', {
+          layers: cfg.layers, styles: cfg.styles, format: 'image/png', transparent: true,
+          version: '1.3.0', key: vworld, domain: dom, opacity: cfg.opacity, maxZoom: 20, minZoom: cfg.minZoom, zIndex: 250,
+        }).addTo(S.bidLeafletMap);
+      }
+    } else if (S.bidLeafletWms[k]) {
+      S.bidLeafletMap.removeLayer(S.bidLeafletWms[k]);
+      delete S.bidLeafletWms[k];
+    }
+  }
+}
+
+function buildOppMapPopup(o) {
+  const sm = OPP_STAGE_META[o.stageType] || OPP_STAGE_META.bid;
+  return `
+    <div style="min-width:240px;max-width:300px;line-height:1.45;font-size:12px">
+      <div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:4px">
+        <span style="padding:1px 6px;border-radius:5px;background:${sm.color};color:#fff;font-size:10.5px;font-weight:800">${sm.label}</span>
+        <span style="padding:1px 6px;border-radius:5px;background:#ecfdf5;color:#047857;font-size:10.5px;font-weight:800">ICP ${o.icpScore}점</span>
+        ${o.isLive ? '<span style="padding:1px 6px;border-radius:5px;background:#dbeafe;color:#1d4ed8;font-size:10.5px;font-weight:800">🟢실시간</span>' : ''}
+        ${o.dday !== null && o.dday >= 0 && o.dday <= 3 ? `<span style="padding:1px 6px;border-radius:5px;background:#ffe4e6;color:#be123c;font-size:10.5px;font-weight:800">🚨D-${o.dday}</span>` : ''}
+      </div>
+      <div style="font-weight:800;font-size:13px;color:#0f172a;margin-bottom:4px">${esc(o.title)}</div>
+      <div style="font-size:11.5px;color:#475569">🏛️ ${esc(o.org || '-')}</div>
+      <div style="font-size:11.5px;color:#475569">📍 ${esc(o._regionFull || o.region || '전국')} · 💰 <b>${o.budgetMan > 0 ? fmtDec(o.budgetMan / 10000, 1) + '억' : '미기재'}</b></div>
+      <div style="font-size:11px;color:#64748b">📅 공고 ${esc(o.pubDate || '-')}${o.closeDate ? ` · 마감 ${esc(o.closeDate)}` : ''}</div>
+      <div style="display:flex;gap:5px;flex-wrap:wrap;margin-top:8px">
+        <button type="button" onclick="window._nxOpenOpp('${esc(o.id)}')" style="padding:4px 8px;border:none;border-radius:6px;background:#4f46e5;color:#fff;font-size:11px;font-weight:700;cursor:pointer">📄 상세·공략</button>
+        <button type="button" onclick="window._nxPipeOpp('${esc(o.id)}')" style="padding:4px 8px;border:1px solid #059669;border-radius:6px;background:#ecfdf5;color:#047857;font-size:11px;font-weight:700;cursor:pointer">💼 CRM</button>
+        ${o.url ? `<a href="${esc(o.url)}" target="_blank" rel="noopener" style="padding:4px 8px;border:1px solid #cbd5e1;border-radius:6px;background:#fff;color:#0f172a;font-size:11px;font-weight:700;text-decoration:none">🔗 원문</a>` : ''}
+      </div>
+    </div>
+  `;
+}
+
+function updateBidMapAndList(fitBounds = false) {
+  const list = getFilteredOpps();
+  const mapped = list.filter((o) => o.lat && o.lon);
+  const unmappedCnt = list.length - mapped.length;
+
+  const cntEl = $('bidMatchCnt');
+  if (cntEl) cntEl.textContent = `${fmt(list.length)}건`;
+  const statEl = $('bidMapStat');
+  if (statEl) statEl.textContent = `지도 표시 ${fmt(mapped.length)}건${unmappedCnt ? ` (전국/미지정 ${unmappedCnt}건)` : ''}`;
+
+  // Plot on Leaflet Map
+  if (S.bidLeafletMap && S.bidLeafletLayer) {
+    S.bidLeafletLayer.clearLayers();
+    const bounds = [];
+
+    if (S.bidMapMode === 'cluster') {
+      // Group by sigungu rid
+      const byRid = new Map();
+      for (const o of mapped) {
+        const rid = o._fusionRid >= 0 ? o._fusionRid : -1;
+        let g = byRid.get(rid);
+        if (!g) {
+          const [la, lo] = rid >= 0 ? regionCentroidLatLon(rid) : [o.lat, o.lon];
+          const reg = S.fusionByRid.get(rid);
+          g = { rid, name: reg?.fullName || o.region || '전국', lat: la, lon: lo, items: [], earlyCnt: 0, urgentCnt: 0, liveCnt: 0 };
+          byRid.set(rid, g);
+        }
+        g.items.push(o);
+        if (OPP_STAGE_META[o.stageType]?.early) g.earlyCnt++;
+        if (o.dday !== null && o.dday >= 0 && o.dday <= 3) g.urgentCnt++;
+        if (o.isLive) g.liveCnt++;
+      }
+
+      for (const g of byRid.values()) {
+        bounds.push([g.lat, g.lon]);
+        const cnt = g.items.length;
+        const size = cnt >= 40 ? 36 : cnt >= 15 ? 31 : cnt >= 5 ? 26 : 22;
+        const bg = g.earlyCnt > 0 ? '#7c3aed' : (g.items[0].stageType === 'complex' ? '#059669' : '#d97706');
+        const ringCls = g.urgentCnt > 0 ? 'urgent-ring' : (g.earlyCnt > 0 ? 'early-ring' : '');
+        const icon = L.divIcon({
+          className: '',
+          html: `<div class="nx-bid-pin ${ringCls}" style="width:${size}px;height:${size}px;background:${bg}">${cnt > 99 ? '99+' : cnt}</div>`,
+          iconSize: [size, size],
+          iconAnchor: [size / 2, size / 2],
+        });
+        const mk = L.marker([g.lat, g.lon], { icon });
+        mk.bindTooltip(`<b>${esc(g.name)}</b> · 총 ${cnt}건 (조기포착 ${g.earlyCnt}${g.urgentCnt ? ` · 🚨D-3 ${g.urgentCnt}` : ''})`, { direction: 'top', offset: [0, -size / 2] });
+        mk.bindPopup(() => {
+          const cPre = g.items.filter((x) => x.stageType === 'prespec').length;
+          const cPer = g.items.filter((x) => x.stageType === 'permit').length;
+          const cNb = g.items.filter((x) => x.stageType === 'newbuild').length;
+          const cKap = g.items.filter((x) => x.stageType === 'complex').length;
+          const cBid = g.items.filter((x) => x.stageType === 'bid').length;
+          return `<div style="min-width:265px;max-width:320px;font-size:12px">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+              <b style="font-size:13.5px">📍 ${esc(g.name)}</b>
+              <span style="padding:2px 7px;border-radius:999px;background:#7c3aed;color:#fff;font-size:11px;font-weight:800">${cnt}건</span>
+            </div>
+            <div style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:6px;font-size:10.5px;font-weight:700">
+              ${cPre ? `<span style="padding:1px 6px;border-radius:4px;background:#ede9fe;color:#6d28d9">🔭사전 ${cPre}</span>` : ''}
+              ${cPer ? `<span style="padding:1px 6px;border-radius:4px;background:#ffe4e6;color:#be123c">🏗️인허가 ${cPer}</span>` : ''}
+              ${cNb ? `<span style="padding:1px 6px;border-radius:4px;background:#fce7f3;color:#be185d">🏠신축 ${cNb}</span>` : ''}
+              ${cKap ? `<span style="padding:1px 6px;border-radius:4px;background:#d1fae5;color:#047857">🏘️K-apt ${cKap}</span>` : ''}
+              ${cBid ? `<span style="padding:1px 6px;border-radius:4px;background:#fef3c7;color:#b45309">📢입찰 ${cBid}</span>` : ''}
+            </div>
+            <div class="nx-pop-list">
+              ${g.items.slice(0, 25).map((it) => {
+                const sm = OPP_STAGE_META[it.stageType] || OPP_STAGE_META.bid;
+                return `<div class="nx-pop-row" style="cursor:pointer" onclick="window._nxOpenOpp('${esc(it.id)}')">
+                  <div style="min-width:0">
+                    <div style="font-weight:700;font-size:11.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(it.title)}</div>
+                    <div style="font-size:10.5px;color:#64748b"><span style="color:${sm.color};font-weight:700">${sm.label}</span> · ${esc(it.org || '-')} · ${it.budgetMan > 0 ? fmtDec(it.budgetMan / 10000, 1) + '억' : '미기재'}</div>
+                  </div>
+                </div>`;
+              }).join('')}
+            </div>
+            <button type="button" onclick="window._nxZoomBidPins(${g.lat},${g.lon},'${esc(g.name.split(' ').pop() || '')}')" style="width:100%;margin-top:6px;padding:5px 8px;border:none;border-radius:7px;background:#4f46e5;color:#fff;font-size:11.5px;font-weight:700;cursor:pointer">🔍 이 지역 개별 핀 확대 보기</button>
+          </div>`;
+        }, { maxWidth: 330 });
+        mk.addTo(S.bidLeafletLayer);
+      }
+    } else {
+      // Individual colored pins by stage
+      for (const o of mapped.slice(0, 800)) {
+        bounds.push([o.lat, o.lon]);
+        const sm = OPP_STAGE_META[o.stageType] || OPP_STAGE_META.bid;
+        const isUrgent = o.dday !== null && o.dday >= 0 && o.dday <= 3;
+        const mk = L.circleMarker([o.lat, o.lon], {
+          radius: sm.early || isUrgent ? 7 : 5.5,
+          color: isUrgent ? '#ef4444' : '#ffffff',
+          fillColor: sm.color,
+          fillOpacity: 0.92,
+          weight: isUrgent ? 2.6 : 1.6,
+        });
+        mk.bindTooltip(`${sm.label} ${esc(o.title)}`, { direction: 'top', offset: [0, -7] });
+        mk.bindPopup(() => buildOppMapPopup(o), { maxWidth: 320 });
+        mk.addTo(S.bidLeafletLayer);
+      }
+    }
+
+    if (fitBounds && bounds.length) {
+      S.bidLeafletMap.fitBounds(bounds, { maxZoom: 13, padding: [26, 26] });
+    }
+  }
+
+  // Right-hand synchronized list
+  const scroll = $('bidSideScroll');
+  if (!scroll) return;
+  scroll.innerHTML = list.slice(0, 80).map((o) => {
+    const sm = OPP_STAGE_META[o.stageType] || OPP_STAGE_META.bid;
+    return `
+      <div class="item-card" style="padding:10px 11px" data-map-opp="${esc(o.id)}">
+        <div class="item-card-main">
+          <div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:4px">
+            <span class="tag ${sm.tagCls}">${sm.label}</span>
+            <span class="tag tag-gray">${esc(o.field)}</span>
+            ${o.isLive ? '<span class="tag tag-sbiz">🟢실시간</span>' : ''}
+            ${o.dday !== null && o.dday >= 0 && o.dday <= 7 ? `<span class="tag tag-re">D-${o.dday}</span>` : ''}
+          </div>
+          <div style="font-weight:800;font-size:12.5px;margin-bottom:2px;line-height:1.35">${esc(o.title)}</div>
+          <div style="font-size:11px;color:var(--muted)">🏛️ ${esc(o.org || '-')} · 📍 ${esc(o._regionFull || o.region || '전국')}</div>
+        </div>
+        <div class="item-card-right" style="min-width:68px">
+          <span class="tag tag-sbiz">ICP ${o.icpScore}</span>
+          <div style="font-weight:800;font-size:12.5px;color:var(--c-bid)">${o.budgetMan > 0 ? `${fmtDec(o.budgetMan / 10000, 1)}억` : '-'}</div>
+        </div>
+      </div>`;
+  }).join('') || '<div style="text-align:center;padding:28px;color:var(--muted)">선택한 조건에 맞는 공고/조기포착 건이 없습니다.</div>';
+
+  scroll.querySelectorAll('[data-map-opp]').forEach((el) => {
+    el.addEventListener('click', () => {
+      const o = S.opps.find((x) => x.id === el.dataset.mapOpp);
+      if (!o) return;
+      if (o.lat && o.lon && S.bidLeafletMap) {
+        S.bidLeafletMap.setView([o.lat, o.lon], 13);
+      }
+      openOppDrawer(o);
+    });
+  });
+}
+
+function renderBidOppsBody() {
+  const list = getFilteredOpps();
   const perPage = 30;
   const maxPage = Math.max(1, Math.ceil(list.length / perPage));
   S.bidPage = Math.min(S.bidPage, maxPage);
   const pageItems = list.slice((S.bidPage - 1) * perPage, S.bidPage * perPage);
 
-  const stageLabel = (st) => ({
-    bid: '<span class="tag tag-bid">입찰공고</span>',
-    prespec: '<span class="tag tag-corp">🔭 사전규격</span>',
-    permit: '<span class="tag tag-re">🏗️ 건축인허가</span>',
-    complex: '<span class="tag tag-sbiz">🏘️ K-apt 단지</span>',
-  }[st] || '<span class="tag tag-gray">기회</span>');
-
   $('bidBody').innerHTML = `
-    <div class="toolbar">
-      <input id="fBidQ" class="input" style="flex:1;min-width:190px" value="${esc(S.bidQ)}" placeholder="공고명 · 발주처 · 지역 · CCTV/승강기/전기 키워드" />
-      <select id="fBidStage" class="select">
-        <option value="">전체 단계 (${fmt(S.opps.length)})</option>
-        <option value="bid" ${S.bidStage === 'bid' ? 'selected' : ''}>입찰공고</option>
-        <option value="prespec" ${S.bidStage === 'prespec' ? 'selected' : ''}>🔭 사전규격 (조기포착)</option>
-        <option value="permit" ${S.bidStage === 'permit' ? 'selected' : ''}>🏗️ 국토부 건축인허가</option>
-        <option value="complex" ${S.bidStage === 'complex' ? 'selected' : ''}>🏘️ K-apt 공동주택</option>
-      </select>
-      <select id="fBidField" class="select">
-        <option value="">전체 분야</option>
-        ${['보안·CCTV', 'AI·스마트', '시설·경비·미화', '전기·통신·소방', '건축·리모델링', '승강기·설비'].map((f) => `<option value="${f}" ${S.bidField === f ? 'selected' : ''}>${f}</option>`).join('')}
-      </select>
-      <button id="btnLiveG2b" class="btn btn-amber btn-sm" type="button">🔄 나라장터 입찰·사전규격 실시간 수집</button>
-    </div>
+    ${renderBidFilterDeckHtml()}
 
     <div class="item-list">
-      ${pageItems.map((o) => `
+      ${pageItems.map((o) => {
+        const sm = OPP_STAGE_META[o.stageType] || OPP_STAGE_META.bid;
+        return `
         <div class="item-card" data-opp-id="${esc(o.id)}">
           <div class="item-card-main">
             <div style="display:flex;flex-wrap:wrap;gap:5px;margin-bottom:5px">
-              ${stageLabel(o.stageType)}
+              <span class="tag ${sm.tagCls}">${sm.label}</span>
               <span class="tag tag-gray">${esc(o.field)}</span>
+              ${o.isLive ? '<span class="tag tag-sbiz">🟢 카톡동일 실시간</span>' : ''}
               ${o.dday !== null && o.dday >= 0 && o.dday <= 7 ? `<span class="tag tag-re">D-${o.dday} 긴급</span>` : ''}
             </div>
             <div class="item-card-title">${esc(o.title)}</div>
             <div class="item-card-meta">
               <span>🏛️ ${esc(o.org || '-')}</span>
-              <span>📍 ${esc(o.region || '전국')}</span>
+              <span>📍 ${esc(o._regionFull || o.region || '전국')}</span>
               <span>📅 공고 ${esc(o.pubDate || '-')} ${o.closeDate ? `· 마감 ${esc(o.closeDate)}` : ''}</span>
             </div>
           </div>
@@ -2055,8 +2559,8 @@ function renderBidOppsBody() {
             <span class="tag tag-sbiz">ICP ${o.icpScore}점</span>
             <div style="font-weight:800;font-size:14px;color:var(--c-bid)">${o.budgetMan > 0 ? `${fmtDec(o.budgetMan / 10000, 1)}억` : '예산 미기재'}</div>
           </div>
-        </div>
-      `).join('') || '<div style="text-align:center;padding:28px;color:var(--muted)">조건에 맞는 영업기회가 없습니다.</div>'}
+        </div>`;
+      }).join('') || '<div style="text-align:center;padding:28px;color:var(--muted)">조건에 맞는 영업기회가 없습니다.</div>'}
     </div>
 
     <div style="display:flex;justify-content:space-between;align-items:center;margin-top:12px">
@@ -2068,13 +2572,9 @@ function renderBidOppsBody() {
     </div>
   `;
 
-  let t = null;
-  $('fBidQ').addEventListener('input', (e) => { clearTimeout(t); t = setTimeout(() => { S.bidQ = e.target.value; S.bidPage = 1; renderBidOppsBody(); }, 200); });
-  $('fBidStage').addEventListener('change', (e) => { S.bidStage = e.target.value; S.bidPage = 1; renderBidOppsBody(); });
-  $('fBidField').addEventListener('change', (e) => { S.bidField = e.target.value; S.bidPage = 1; renderBidOppsBody(); });
+  wireBidFilterControls(renderBidOppsBody);
   $('bidPrev').addEventListener('click', () => { if (S.bidPage > 1) { S.bidPage--; renderBidOppsBody(); } });
   $('bidNext').addEventListener('click', () => { if (S.bidPage < maxPage) { S.bidPage++; renderBidOppsBody(); } });
-  $('btnLiveG2b').addEventListener('click', fetchLiveG2bAndPrespec);
   $('bidBody').querySelectorAll('[data-opp-id]').forEach((card) => {
     card.addEventListener('click', () => {
       const o = S.opps.find((x) => x.id === card.dataset.oppId);
@@ -2083,54 +2583,95 @@ function renderBidOppsBody() {
   });
 }
 
-async function fetchLiveG2bAndPrespec() {
+async function fetchLiveG2bAndPrespec({ silent = false } = {}) {
   const { dataGoEnc } = getApiKeys();
-  if (!dataGoEnc) return toast('공공데이터포털 키가 없습니다.');
-  toast('🔄 나라장터 입찰(02) + 사전규격(ao) 실시간 수집 중…');
+  if (!dataGoEnc) { if (!silent) toast('공공데이터포털 키가 없습니다.'); return; }
+  if (S.bidSync.syncing) return;
+  S.bidSync.syncing = true;
+  if (!silent) toast('🔄 카톡 알림봇 동일 소스(나라장터 입찰·사전규격·청약홈) 실시간 수집 중…');
+
   const now = new Date();
-  const bgn = new Date(now.getTime() - 3 * 86400000);
+  const bgn = new Date(now.getTime() - 4 * 86400000);
   const ymd = (d) => `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
   const bgnDt = ymd(bgn) + '0000', endDt = ymd(now) + '2359';
-  const urls = [
-    ['bid', `https://apis.data.go.kr/1230000/ad/BidPublicInfoService02/getBidPblancListInfoServc02?serviceKey=${dataGoEnc}&numOfRows=30&pageNo=1&type=json&inqryDiv=1&inqryBgnDt=${bgnDt}&inqryEndDt=${endDt}`],
-    ['bid', `https://apis.data.go.kr/1230000/ad/BidPublicInfoService02/getBidPblancListInfoCnstwk02?serviceKey=${dataGoEnc}&numOfRows=30&pageNo=1&type=json&inqryDiv=1&inqryBgnDt=${bgnDt}&inqryEndDt=${endDt}`],
-    ['prespec', `https://apis.data.go.kr/1230000/ao/HrcspSsstndrdInfoService/getPublicPrcureThngInfoServc?serviceKey=${dataGoEnc}&numOfRows=30&pageNo=1&type=json&inqryDiv=1&inqryBgnDt=${bgnDt}&inqryEndDt=${endDt}`],
-    ['prespec', `https://apis.data.go.kr/1230000/ao/HrcspSsstndrdInfoService/getPublicPrcureThngInfoCnstwk?serviceKey=${dataGoEnc}&numOfRows=30&pageNo=1&type=json&inqryDiv=1&inqryBgnDt=${bgnDt}&inqryEndDt=${endDt}`],
+
+  const g2bUrls = [
+    ['bid', `https://apis.data.go.kr/1230000/ad/BidPublicInfoService02/getBidPblancListInfoServc02?serviceKey=${dataGoEnc}&numOfRows=40&pageNo=1&type=json&inqryDiv=1&inqryBgnDt=${bgnDt}&inqryEndDt=${endDt}`],
+    ['bid', `https://apis.data.go.kr/1230000/ad/BidPublicInfoService02/getBidPblancListInfoCnstwk02?serviceKey=${dataGoEnc}&numOfRows=40&pageNo=1&type=json&inqryDiv=1&inqryBgnDt=${bgnDt}&inqryEndDt=${endDt}`],
+    ['bid', `https://apis.data.go.kr/1230000/ad/BidPublicInfoService02/getBidPblancListInfoThng02?serviceKey=${dataGoEnc}&numOfRows=30&pageNo=1&type=json&inqryDiv=1&inqryBgnDt=${bgnDt}&inqryEndDt=${endDt}`],
+    ['prespec', `https://apis.data.go.kr/1230000/ao/HrcspSsstndrdInfoService/getPublicPrcureThngInfoServc?serviceKey=${dataGoEnc}&numOfRows=40&pageNo=1&type=json&inqryDiv=1&inqryBgnDt=${bgnDt}&inqryEndDt=${endDt}`],
+    ['prespec', `https://apis.data.go.kr/1230000/ao/HrcspSsstndrdInfoService/getPublicPrcureThngInfoCnstwk?serviceKey=${dataGoEnc}&numOfRows=40&pageNo=1&type=json&inqryDiv=1&inqryBgnDt=${bgnDt}&inqryEndDt=${endDt}`],
+    ['prespec', `https://apis.data.go.kr/1230000/ao/HrcspSsstndrdInfoService/getPublicPrcureThngInfoThng?serviceKey=${dataGoEnc}&numOfRows=30&pageNo=1&type=json&inqryDiv=1&inqryBgnDt=${bgnDt}&inqryEndDt=${endDt}`],
   ];
+
   const map = new Map(S.opps.map((o) => [o.id, o]));
   let added = 0;
-  await Promise.all(urls.map(async ([st, u]) => {
-    try {
-      const r = await fetch(u);
-      const j = await r.json();
-      const raw = j?.response?.body?.items;
-      const arr = Array.isArray(raw) ? raw : (raw?.item ? (Array.isArray(raw.item) ? raw.item : [raw.item]) : []);
-      for (const it of arr) {
-        const isPre = st === 'prespec';
-        const id = isPre ? `pre-${it.bfSpecRgstNo || it.prdctClsfcNoNm}` : `g2b-${it.bidNtceNo}-${it.bidNtceOrd || '00'}`;
-        if (map.has(id)) continue;
-        const budgetWon = Number(isPre ? it.asignBdgtAmt : (it.presmptPrce || it.asignBdgtAmt || 0)) || 0;
-        const obj = enrichOpp({
-          id,
-          source: isPre ? '나라장터 사전규격(실시간)' : '나라장터 입찰(실시간)',
-          stageType: st,
-          title: isPre ? `[사전규격] ${it.prdctClsfcNoNm || it.bsnsDivNm || ''}` : (it.bidNtceNm || ''),
-          org: it.dminsttNm || it.orderInsttNm || it.ntceInsttNm || '',
-          region: it.dminsttOfclAddr || it.ntceInsttNm || '전국',
-          budgetMan: Math.round(budgetWon / 10000),
-          pubDate: String(it.bidNtceDt || it.rcptDt || '').slice(0, 10),
-          closeDate: String(it.bidClseDt || it.opninRgstClseDt || '').slice(0, 10),
-          method: it.bidMethdNm || (isPre ? '사전규격 의견수렴' : ''),
-          url: it.bidNtceDtlUrl || 'https://www.g2b.go.kr/',
-        });
-        map.set(id, obj);
-        added++;
-      }
-    } catch {}
-  }));
+
+  await Promise.all([
+    ...g2bUrls.map(async ([st, u]) => {
+      try {
+        const r = await fetch(u);
+        if (!r.ok) return;
+        const j = await r.json();
+        const raw = j?.response?.body?.items;
+        const arr = Array.isArray(raw) ? raw : (raw?.item ? (Array.isArray(raw.item) ? raw.item : [raw.item]) : []);
+        for (const it of arr) {
+          const isPre = st === 'prespec';
+          const id = isPre ? `pre-${it.bfSpecRgstNo || it.prdctClsfcNoNm}` : `g2b-${it.bidNtceNo}-${it.bidNtceOrd || '00'}`;
+          const budgetWon = Number(isPre ? it.asignBdgtAmt : (it.presmptPrce || it.asignBdgtAmt || 0)) || 0;
+          const obj = attachOppGeo(enrichOpp({
+            id,
+            isLive: true,
+            source: isPre ? '나라장터 사전규격(실시간)' : '나라장터 입찰(실시간)',
+            stageType: st,
+            title: isPre ? `[사전규격] ${it.prdctClsfcNoNm || it.bsnsDivNm || ''}` : (it.bidNtceNm || ''),
+            org: it.dminsttNm || it.orderInsttNm || it.ntceInsttNm || '',
+            region: it.dminsttOfclAddr || it.ntceInsttNm || '전국',
+            budgetMan: Math.round(budgetWon / 10000),
+            pubDate: String(it.bidNtceDt || it.rcptDt || '').slice(0, 10),
+            closeDate: String(it.bidClseDt || it.opninRgstClseDt || '').slice(0, 10),
+            method: it.bidMethdNm || (isPre ? '사전규격 의견수렴' : ''),
+            url: it.bidNtceDtlUrl || 'https://www.g2b.go.kr/',
+          }));
+          if (!map.has(id)) added++;
+          map.set(id, obj);
+        }
+      } catch {}
+    }),
+    // Also sync Applyhome 신축분양 (same early-detection source as KakaoTalk bot!)
+    (async () => {
+      try {
+        const r = await fetch(`https://api.odcloud.kr/api/ApplyhomeInfoDetailSvc/v1/getAPTLttotPblancDetail?page=1&perPage=30&serviceKey=${dataGoEnc}`);
+        if (!r.ok) return;
+        const j = await r.json();
+        for (const it of (j?.data || [])) {
+          const id = `newbuild-${it.HOUSE_MANAGE_NO || it.PBLANC_NO}`;
+          const obj = attachOppGeo(enrichOpp({
+            id,
+            isLive: true,
+            source: '청약홈 신축분양(실시간)',
+            stageType: 'newbuild',
+            title: `[신축분양] ${it.HOUSE_NM || ''} (${it.TOT_SUPLY_HSHLDCO || 0}세대 · 입주 ${it.MVN_PREARNGE_YM || '-'})`,
+            org: it.CNSTRCT_ENTRPS_NM || it.BSNS_MBY_NM || '시공사',
+            region: it.HSSPLY_ADRES || it.SUBSCRPT_AREA_CODE_NM || '전국',
+            budgetMan: 0,
+            pubDate: it.RCRIT_PBLANC_DE || '',
+            closeDate: it.RCEPT_ENDDE || '',
+            method: '신축 공동주택 선제 스펙인',
+            url: it.PBLANC_URL || 'https://www.applyhome.co.kr/',
+          }));
+          if (!map.has(id)) added++;
+          map.set(id, obj);
+        }
+      } catch {}
+    })(),
+  ]);
+
   S.opps = [...map.values()];
+  const hhmm = new Date().toTimeString().slice(0, 5);
+  S.bidSync = { syncing: false, lastAt: hhmm, added, liveTotal: S.opps.filter((o) => o.isLive).length };
   $('cntBid').textContent = fmt(S.opps.length);
-  toast(`✓ 실시간 수집 완료 (+${added}건 신규 병합, 총 ${fmt(S.opps.length)}건)`);
+  if (!silent) toast(`✓ 실시간 동기화 완료 (+${added}건 신규, 총 ${fmt(S.opps.length)}건)`);
   if (S.tab === 'bid') renderBidTab();
 }
 
@@ -4389,7 +4930,7 @@ async function init() {
     location.reload();
   });
 
-  // Wire popup action helpers for Leaflet markers
+  // Wire popup action helpers for Leaflet markers (Sbiz + Bid Radar)
   window._nxPipeStore = (id, title, sub, region) => {
     addToPipeline({ id: `sbiz:${id}`, domain: 'sbiz', title, sub, region, valueMan: 0 });
   };
@@ -4397,6 +4938,21 @@ async function init() {
     const curActive = S.sbizActiveSlug ? S.sbizCache.get(S.sbizActiveSlug) : null;
     S.leafletMap?.closePopup();
     runRadiusCatchment(lat, lon, curActive, label);
+  };
+  window._nxOpenOpp = (id) => {
+    const o = S.opps.find((x) => x.id === id);
+    if (o) openOppDrawer(o);
+  };
+  window._nxPipeOpp = (id) => {
+    const o = S.opps.find((x) => x.id === id);
+    if (o) addToPipeline({ id: `opp:${o.id}`, domain: 'bid', title: o.title, sub: `${o.org} · ${o.field}`, region: o._regionFull || o.region, valueMan: o.budgetMan });
+  };
+  window._nxZoomBidPins = (lat, lon, regionKeyword) => {
+    S.bidMapMode = 'pins';
+    if (regionKeyword) S.bidQ = regionKeyword;
+    S.bidLeafletMap?.closePopup();
+    renderBidMapWorkspace();
+    setTimeout(() => S.bidLeafletMap?.setView([lat, lon], 13), 80);
   };
 
   wireOmniSearch();

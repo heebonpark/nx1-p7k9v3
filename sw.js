@@ -1,4 +1,4 @@
-const CACHE = 'nexusone-pro-v7';
+const CACHE = 'nexusone-pro-v8';
 const SHELL = ['./', './index.html', './styles.css', './app.js', './manifest.json', './vendor/leaflet.css', './vendor/leaflet.min.js'];
 
 self.addEventListener('install', (e) => {

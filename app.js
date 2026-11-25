@@ -2583,38 +2583,61 @@ function renderBidOppsBody() {
   });
 }
 
+async function fetchG2bNewestItems(baseUrl, bgnDt, endDt, perPage = 100) {
+  const extract = (j) => {
+    const raw = j?.response?.body?.items;
+    return Array.isArray(raw) ? raw : (raw?.item ? (Array.isArray(raw.item) ? raw.item : [raw.item]) : []);
+  };
+  const u1 = `${baseUrl}&numOfRows=${perPage}&pageNo=1&type=json&inqryDiv=1&inqryBgnDt=${bgnDt}&inqryEndDt=${endDt}`;
+  const r1 = await fetch(u1);
+  if (!r1.ok) return [];
+  const j1 = await r1.json();
+  const total = Number(j1?.response?.body?.totalCount || 0);
+  let items = extract(j1);
+  // G2B API returns ASCENDING (oldest first) -> always fetch the LAST page too so today's newest notices are NEVER missed!
+  if (total > perPage) {
+    const lastPage = Math.ceil(total / perPage);
+    try {
+      const rLast = await fetch(`${baseUrl}&numOfRows=${perPage}&pageNo=${lastPage}&type=json&inqryDiv=1&inqryBgnDt=${bgnDt}&inqryEndDt=${endDt}`);
+      if (rLast.ok) {
+        const lastItems = extract(await rLast.json());
+        items = [...lastItems.reverse(), ...items.reverse()];
+      }
+    } catch {}
+  } else {
+    items = items.reverse();
+  }
+  return items;
+}
+
 async function fetchLiveG2bAndPrespec({ silent = false } = {}) {
   const { dataGoEnc } = getApiKeys();
   if (!dataGoEnc) { if (!silent) toast('공공데이터포털 키가 없습니다.'); return; }
   if (S.bidSync.syncing) return;
   S.bidSync.syncing = true;
-  if (!silent) toast('🔄 카톡 알림봇 동일 소스(나라장터 입찰·사전규격·청약홈) 실시간 수집 중…');
+  if (!silent) toast('🔄 카톡 알림봇 동일 소스(최근 36시간 최신 입찰·사전규격·청약홈) 동기화 중…');
 
   const now = new Date();
-  const bgn = new Date(now.getTime() - 4 * 86400000);
-  const ymd = (d) => `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
-  const bgnDt = ymd(bgn) + '0000', endDt = ymd(now) + '2359';
+  const bgn = new Date(now.getTime() - 36 * 3600000); // 최근 36시간 (오늘+어제 전체 커버 + 마지막 페이지 역순 수집)
+  const fmtDt = (d) => `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}${String(d.getHours()).padStart(2, '0')}${String(d.getMinutes()).padStart(2, '0')}`;
+  const bgnDt = fmtDt(bgn), endDt = fmtDt(now);
 
   const g2bUrls = [
-    ['bid', `https://apis.data.go.kr/1230000/ad/BidPublicInfoService02/getBidPblancListInfoServc02?serviceKey=${dataGoEnc}&numOfRows=40&pageNo=1&type=json&inqryDiv=1&inqryBgnDt=${bgnDt}&inqryEndDt=${endDt}`],
-    ['bid', `https://apis.data.go.kr/1230000/ad/BidPublicInfoService02/getBidPblancListInfoCnstwk02?serviceKey=${dataGoEnc}&numOfRows=40&pageNo=1&type=json&inqryDiv=1&inqryBgnDt=${bgnDt}&inqryEndDt=${endDt}`],
-    ['bid', `https://apis.data.go.kr/1230000/ad/BidPublicInfoService02/getBidPblancListInfoThng02?serviceKey=${dataGoEnc}&numOfRows=30&pageNo=1&type=json&inqryDiv=1&inqryBgnDt=${bgnDt}&inqryEndDt=${endDt}`],
-    ['prespec', `https://apis.data.go.kr/1230000/ao/HrcspSsstndrdInfoService/getPublicPrcureThngInfoServc?serviceKey=${dataGoEnc}&numOfRows=40&pageNo=1&type=json&inqryDiv=1&inqryBgnDt=${bgnDt}&inqryEndDt=${endDt}`],
-    ['prespec', `https://apis.data.go.kr/1230000/ao/HrcspSsstndrdInfoService/getPublicPrcureThngInfoCnstwk?serviceKey=${dataGoEnc}&numOfRows=40&pageNo=1&type=json&inqryDiv=1&inqryBgnDt=${bgnDt}&inqryEndDt=${endDt}`],
-    ['prespec', `https://apis.data.go.kr/1230000/ao/HrcspSsstndrdInfoService/getPublicPrcureThngInfoThng?serviceKey=${dataGoEnc}&numOfRows=30&pageNo=1&type=json&inqryDiv=1&inqryBgnDt=${bgnDt}&inqryEndDt=${endDt}`],
+    ['bid', `https://apis.data.go.kr/1230000/ad/BidPublicInfoService02/getBidPblancListInfoServc02?serviceKey=${dataGoEnc}`],
+    ['bid', `https://apis.data.go.kr/1230000/ad/BidPublicInfoService02/getBidPblancListInfoCnstwk02?serviceKey=${dataGoEnc}`],
+    ['bid', `https://apis.data.go.kr/1230000/ad/BidPublicInfoService02/getBidPblancListInfoThng02?serviceKey=${dataGoEnc}`],
+    ['prespec', `https://apis.data.go.kr/1230000/ao/HrcspSsstndrdInfoService/getPublicPrcureThngInfoServc?serviceKey=${dataGoEnc}`],
+    ['prespec', `https://apis.data.go.kr/1230000/ao/HrcspSsstndrdInfoService/getPublicPrcureThngInfoCnstwk?serviceKey=${dataGoEnc}`],
+    ['prespec', `https://apis.data.go.kr/1230000/ao/HrcspSsstndrdInfoService/getPublicPrcureThngInfoThng?serviceKey=${dataGoEnc}`],
   ];
 
   const map = new Map(S.opps.map((o) => [o.id, o]));
   let added = 0;
 
   await Promise.all([
-    ...g2bUrls.map(async ([st, u]) => {
+    ...g2bUrls.map(async ([st, baseUrl]) => {
       try {
-        const r = await fetch(u);
-        if (!r.ok) return;
-        const j = await r.json();
-        const raw = j?.response?.body?.items;
-        const arr = Array.isArray(raw) ? raw : (raw?.item ? (Array.isArray(raw.item) ? raw.item : [raw.item]) : []);
+        const arr = await fetchG2bNewestItems(baseUrl, bgnDt, endDt, 100);
         for (const it of arr) {
           const isPre = st === 'prespec';
           const id = isPre ? `pre-${it.bfSpecRgstNo || it.prdctClsfcNoNm}` : `g2b-${it.bidNtceNo}-${it.bidNtceOrd || '00'}`;

@@ -719,6 +719,7 @@ async function searchVworldPlace(query) {
   if (!item?.point) throw new Error('장소·주소를 찾을 수 없습니다.');
   return {
     title: item.title || item.address?.road || item.address?.parcel || query,
+    addr: item.address?.road || item.address?.parcel || '',
     lat: Number(item.point.y),
     lon: Number(item.point.x),
   };
@@ -3876,23 +3877,144 @@ function matchAwardBenchmarks(o, awards) {
   return { sameOrg: sameOrg.slice(0, 5), similar: similar.slice(0, 5), pool: pool.slice(0, 5), rates, avgRate, avgBidders, totalScanned: awards.length };
 }
 
+function resolveSidoSlugFromText(txt) {
+  const s = String(txt || '');
+  if (!s) return '';
+  const sidos = S.core?.sbizSummary?.sidos || [];
+  for (const x of sidos) {
+    if (s.includes(x.name) || (x.short && s.includes(x.short))) return x.slug;
+  }
+  for (const [k, sd] of Object.entries(OPP_SIDO_TO_SD)) {
+    if (s.includes(k)) {
+      const reg = (S.fusion?.regions || []).find((r) => r.sd === sd && r.sidoSlug);
+      if (reg?.sidoSlug) return reg.sidoSlug;
+    }
+  }
+  return '';
+}
+
+function computeSggMedianLatLon(active, exactSgg) {
+  if (!active || !active.n) return null;
+  const sggIdx = exactSgg ? (active.dicts?.sgg || []).indexOf(exactSgg) : -1;
+  const lats = [], lons = [];
+  const step = sggIdx >= 0 ? 1 : Math.max(1, Math.floor(active.n / 2000));
+  for (let i = 0; i < active.n; i += step) {
+    if (sggIdx >= 0 && active.cols.sgg[i] !== sggIdx) continue;
+    const la = active.lat[i] / 1e6, lo = active.lon[i] / 1e6;
+    if (la >= 33 && la <= 39 && lo >= 124 && lo <= 132) {
+      lats.push(la);
+      lons.push(lo);
+    }
+  }
+  if (!lats.length) return null;
+  lats.sort((a, b) => a - b);
+  lons.sort((a, b) => a - b);
+  const mid = Math.floor(lats.length / 2);
+  return [lats[mid], lons[mid]];
+}
+
 async function jumpOppTo1kmCatchment(o) {
   const reg = S.fusionByRid.get(o._fusionRid ?? o.rid);
-  const lat = o.lat || (reg ? regionCentroidLatLon(reg.rid)[0] : 37.5665);
-  const lon = o.lon || (reg ? regionCentroidLatLon(reg.rid)[1] : 126.9780);
+  const sidoMapName = reg ? (S.core?.sbizSummary?.sidos || []).find((x) => x.slug === reg.sidoSlug)?.name || '' : '';
+  const sidoShort = reg ? (S.core?.sbizSummary?.sidos || []).find((x) => x.slug === reg.sidoSlug)?.short || '' : '';
+  let sidoSlug = reg?.sidoSlug || resolveSidoSlugFromText(`${o._regionFull || ''} ${o.region || ''} ${o.org || ''}`);
+
+  // 1) Try exact VWorld Place/Address Geocoding for the bidding agency/site
+  const cleanOrg = String(o.org || '').replace(/\([^)]*\)/g, '').trim();
+  const isGenericOrg = !cleanOrg || /^(조달청|국방부|방위사업청|한국전력공사|한국토지주택공사|대한민국)$/.test(cleanOrg);
+  const queries = [];
+  if (!isGenericOrg) {
+    if (sidoShort && !cleanOrg.includes(sidoShort)) queries.push(`${sidoShort} ${cleanOrg}`);
+    queries.push(cleanOrg);
+  }
+  if (reg?.name) queries.push(`${sidoMapName || sidoShort} ${reg.name}`.trim());
+
+  toast(`🔍 ${cleanOrg || reg?.name || '입찰현장'} 정밀 좌표 및 상권 동기화 중…`);
+  let vwHit = null;
+  for (const q of queries) {
+    try {
+      const hit = await searchVworldPlace(q);
+      if (!hit || !(hit.lat >= 33 && hit.lat <= 39 && hit.lon >= 124 && hit.lon <= 132)) continue;
+      // If bid has a known sido, verify VWorld hit is in the SAME sido (prevent homonym mismatch!)
+      const hitSlug = resolveSidoSlugFromText(hit.addr || hit.title || '');
+      if (sidoSlug && hitSlug && hitSlug !== sidoSlug) continue;
+      vwHit = hit;
+      if (!sidoSlug && hitSlug) sidoSlug = hitSlug;
+      break;
+    } catch {}
+  }
+
+  if (!sidoSlug) {
+    toast('ℹ️ 전국·지역 미지정 공고입니다. 상권지도에서 원하는 시도·시군구를 직접 선택해 주세요.');
+    return;
+  }
+
+  // 2) Load the exact Sbiz sido vault FIRST, then match exact sigungu & render Sbiz tab cleanly
   closeDrawer();
   S.gisRadius = 1000;
   S.sbizView = 'map';
-  switchTab('sbiz');
-  if (reg?.sidoSlug && S.sbizActiveSlug !== reg.sidoSlug) {
-    try { await loadSbizSido(reg.sidoSlug); } catch {}
+  S.sbizQ = '';
+  S.sbizL1 = '';
+  S.sbizYear = '';
+  S.sbizMonth = '';
+  S.sbizPeriod = '';
+
+  let loaded = null;
+  try {
+    loaded = await loadSbizSido(sidoSlug);
+  } catch {
+    toast('상권 데이터를 불러오지 못했습니다.');
+    return;
   }
-  setTimeout(() => {
-    const active = S.sbizCache.get(S.sbizActiveSlug) || null;
-    if (S.leafletMap) S.leafletMap.setView([lat, lon], 15);
-    runRadiusCatchment(lat, lon, active, `${o.org || o.title} (입찰현장)`);
-    toast(`🗺️ ${o.org || '현장'} 반경 1km 주변 상권·필지·영업처 분석 완료!`);
-  }, 380);
+
+  const sggList = loaded?.dicts?.sgg || [];
+  let exactSgg = '';
+  if (reg?.name) {
+    exactSgg = sggList.find((g) => g === reg.name || g.endsWith(' ' + reg.name) || cleanSbizLabel(g) === reg.name) || '';
+  }
+  if (!exactSgg && vwHit?.addr) {
+    exactSgg = sggList.find((g) => {
+      const cl = cleanSbizLabel(g);
+      return cl && vwHit.addr.includes(cl);
+    }) || '';
+  }
+  S.sbizSgg = exactSgg;
+
+  // Switch to Sbiz tab with exact sido & sigungu already set
+  S.tab = 'sbiz';
+  document.querySelectorAll('[data-tab]').forEach((el) => {
+    el.classList.toggle('active', el.dataset.tab === 'sbiz');
+  });
+  window.scrollTo({ top: 0, behavior: 'instant' });
+  renderCurrentTab();
+
+  // 3) Choose exact coordinate: VWorld building coordinate (sanity-checked against sgg median) or exact sgg downtown median
+  const sggMed = computeSggMedianLatLon(loaded, exactSgg);
+  let lat = 0, lon = 0, coordTag = '';
+  if (vwHit && (!sggMed || haversineM(vwHit.lat, vwHit.lon, sggMed[0], sggMed[1]) <= 25000)) {
+    lat = vwHit.lat;
+    lon = vwHit.lon;
+    coordTag = '정밀좌표';
+  } else if (sggMed) {
+    [lat, lon] = sggMed;
+    coordTag = `${cleanSbizLabel(exactSgg) || reg?.name || loaded.name} 중심`;
+  } else if (reg) {
+    [lat, lon] = regionCentroidLatLon(reg.rid);
+    coordTag = `${reg.name} 기준`;
+  } else {
+    return;
+  }
+
+  const label = `${cleanOrg || cleanSbizLabel(exactSgg) || loaded.name} (입찰현장 · ${coordTag})`;
+  setTimeout(async () => {
+    if (S.leafletMap) {
+      S.leafletMap.setView([lat, lon], 15, { animate: false });
+      renderViewportSbizMarkers(loaded);
+    }
+    await runRadiusCatchment(lat, lon, loaded, label);
+    const cnt = S.catchment?.stats?.cnt || 0;
+    toast(`🗺️ ${cleanOrg || cleanSbizLabel(exactSgg)} 반경 1km 상권 (${fmt(cnt)}개 상가) 정밀 연동 완료!`);
+  }, 240);
 }
 
 function openBidReviewReport(o) {
@@ -4119,7 +4241,7 @@ function openOppDrawer(o) {
     foot: `
       <button id="dwOppPipe" class="btn btn-primary btn-sm">💼 파이프라인 담기</button>
       ${feat.bidA4 ? '<button id="dwOppReport" class="btn btn-sm">📑 A4 검토서</button><button id="dwOppIcs" class="btn btn-emerald btn-sm">📅 캘린더(.ics)</button>' : ''}
-      ${feat.bid1km && S.admin?.tabs?.sbiz !== false ? '<button id="dwOpp1km" class="btn btn-sm">🗺️ 반경 1km 영업처</button>' : ''}
+      ${feat.bid1km && S.admin?.tabs?.sbiz !== false && (reg || (o.region && !/^전국/.test(o.region))) ? `<button id="dwOpp1km" class="btn btn-sm">🗺️ ${esc(reg?.name || '현장')} 1km 상권</button>` : ''}
       ${o.url ? `<a class="btn btn-amber btn-sm" href="${esc(o.url)}" target="_blank" rel="noopener">🔗 원문</a>` : ''}
       ${reg && S.admin?.tabs?.overview !== false ? `<button id="dwOpp360" class="btn btn-sm">⚡ ${esc(reg.name)} 360°</button>` : ''}
     `,

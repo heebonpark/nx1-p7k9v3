@@ -462,8 +462,10 @@ const S = {
   corpQ: '', corpSd: '', corpType: '', corpTag: '', corpStatus: '', corpSort: 'rev', corpPage: 1,
   // Bid filters & v8~v15 Early-Detection Radar GIS Map + Practical Suite state
   bidSub: 'map', bidQ: '', bidStage: '', bidField: '', bidUrgency: '', bidBudgetMin: 0, bidSd: '', bidPage: 1,
-  bidHideCancelled: true, bidMyKwOnly: false,
+  bidHideCancelled: true, bidMyKwOnly: false, bidMyBizOnly: false,
   bidMyKeywords: (() => { try { return localStorage.getItem('nx1_bid_my_kw_v1') || 'CCTV,관제,보안,소방,승강기,시설,경비,미화,전기,통신,보험'; } catch { return 'CCTV,관제,보안,소방,승강기,시설,경비,미화,전기,통신,보험'; } })(),
+  myBiz: (() => { try { return JSON.parse(localStorage.getItem('nx1_mybiz_v1') || '{}') || {}; } catch { return {}; } })(),
+  qualProfile: (() => { try { return Object.assign({ credit: 'BBB', perfEok: 15, bonus: 1.5, cutoff: 95 }, JSON.parse(localStorage.getItem('nx1_qual_profile_v1') || '{}') || {}); } catch { return { credit: 'BBB', perfEok: 15, bonus: 1.5, cutoff: 95 }; } })(),
   bidMapMode: 'cluster', bidMapBase: 'vbase', bidWms: { cadastral: false, zoning: false },
   bidLeafletMap: null, bidLeafletLayer: null, bidLeafletTile: null, bidLeafletHybrid: null, bidLeafletWms: {},
   bidSync: { syncing: false, lastAt: '', added: 0, liveTotal: 0 },
@@ -2398,6 +2400,7 @@ function getFilteredOpps() {
   const todayIso = getTodayKstIso();
   const kwList = S.bidMyKwOnly ? getMyBidKwList() : null;
   const res = S.opps.filter((o) => {
+    if (S.bidMyBizOnly && !S.myBiz[o.id]) return false;
     if (S.bidHideCancelled && isCancelledOpp(o)) return false;
     if (kwList && !matchesMyBidKeywords(o, kwList)) return false;
     if (S.bidStage === 'early') {
@@ -2517,6 +2520,7 @@ function renderBidFilterDeckHtml() {
     live: activePool.filter((o) => o.isLive).length,
     cancelled: S.opps.filter((o) => isCancelledOpp(o)).length,
     myKw: activePool.filter((o) => matchesMyBidKeywords(o, kwList)).length,
+    myBiz: activePool.filter((o) => Boolean(S.myBiz[o.id])).length,
   };
   return `
     <div class="gis-deck" style="margin-bottom:10px">
@@ -2544,6 +2548,7 @@ function renderBidFilterDeckHtml() {
         ].map(([k, lb]) => `<button class="toggle-pill ${S.bidUrgency === k ? 'on-emerald' : ''}" data-bid-urg="${k}" type="button">${lb}</button>`).join('')}
         <button id="btnBidMyKw" class="toggle-pill ${S.bidMyKwOnly ? 'on' : ''}" type="button" title="관심 키워드: ${esc(S.bidMyKeywords)}">⭐ 내 키워드만 (${cnts.myKw})</button>
         <button id="btnBidEditKw" class="toggle-pill" type="button" title="관심 키워드 편집">⚙️ 키워드</button>
+        <button id="btnBidMyBiz" class="toggle-pill ${S.bidMyBizOnly ? 'on' : ''}" type="button" title="내서류함(투찰관리) 저장 공고만 보기">📁 내서류함 (${cnts.myBiz})</button>
         <button id="btnBidHideCancel" class="toggle-pill ${S.bidHideCancelled ? 'on-emerald' : ''}" type="button">🚫 취소공고 제외 (${cnts.cancelled})</button>
         <select id="fBidField" class="select" style="padding:5px 8px;font-size:12px">
           <option value="">전체 분야</option>
@@ -2601,6 +2606,13 @@ function wireBidFilterControls(onUpdate) {
     S.bidPage = 1;
     toast(S.bidHideCancelled ? '🚫 취소공고 자동 숨김 ON' : '👁️ 취소공고 포함 전체 표시');
     renderBidTab();
+  });
+  $('btnBidMyBiz')?.addEventListener('click', () => {
+    S.bidMyBizOnly = !S.bidMyBizOnly;
+    S.bidPage = 1;
+    $('btnBidMyBiz')?.classList.toggle('on', S.bidMyBizOnly);
+    toast(S.bidMyBizOnly ? `📁 내서류함 저장 공고만 표시 (${Object.keys(S.myBiz).length}건)` : '📁 내서류함 필터 해제');
+    onUpdate();
   });
   $('bidBody').querySelectorAll('[data-bid-urg]').forEach((b) => {
     b.addEventListener('click', () => {
@@ -3282,15 +3294,309 @@ function findBidPartnerBuilders(o, limit = 5) {
   return scored.slice(0, limit);
 }
 
+// ===== K-BID GRADE ENGINE (v19): G2B 기초금액·A값·순공사원가 · 복수예가 15개(1,365조합) · 적격심사 · 내서류함 =====
+async function fetchBidBsisAmountLive(bidNtceNo) {
+  const { dataGoEnc } = getApiKeys();
+  if (!dataGoEnc || !bidNtceNo) return null;
+  const cleanNo = String(bidNtceNo).split('-')[0].trim();
+  const ops = [
+    'getBidPblancListInfoCnstwkBsisAmount02',
+    'getBidPblancListInfoServcBsisAmount02',
+    'getBidPblancListInfoThngBsisAmount02',
+  ];
+  const results = await Promise.all(ops.map(async (op) => {
+    try {
+      const u = `https://apis.data.go.kr/1230000/ad/BidPublicInfoService02/${op}?serviceKey=${dataGoEnc}&inqryDiv=2&bidNtceNo=${encodeURIComponent(cleanNo)}&pageNo=1&numOfRows=5&type=json`;
+      const r = await fetch(u);
+      if (!r.ok) return null;
+      const j = await r.json();
+      const raw = j?.response?.body?.items;
+      const arr = Array.isArray(raw) ? raw : (raw?.item ? (Array.isArray(raw.item) ? raw.item : [raw.item]) : []);
+      return arr[0] || null;
+    } catch { return null; }
+  }));
+  const x = results.find(Boolean);
+  if (!x) return null;
+  const num = (v) => { const n = Number(String(v ?? '').replace(/[^0-9.-]/g, '')); return Number.isFinite(n) && n > 0 ? Math.round(n) : 0; };
+  const bssamt = num(x.bssamt);
+  const netCost = num(x.bssamtPurcnstcst || x.purcnstcst);
+  const aItems = [
+    ['안전보건', num(x.sftyMngcst)],
+    ['안전관리', num(x.sftyChckMngcst)],
+    ['품질관리', num(x.qltyMngcst)],
+    ['퇴직공제', num(x.rtrfundNon)],
+    ['건강보험', num(x.mrfnHealthInsrprm)],
+    ['국민연금', num(x.npnInsrprm)],
+    ['노인요양', num(x.odsnLngtrmrcprInsrprm)],
+  ].filter(([, v]) => v > 0);
+  const aVal = aItems.reduce((s, [, v]) => s + v, 0);
+  const rngRaw = Math.abs(parseFloat(String(x.rsrvtnPrceRngBgnRate || x.rsrvtnPrceRngEndRate || '').replace(/[^0-9.-]/g, '')));
+  const rngPct = rngRaw === 2 || rngRaw === 3 ? rngRaw : 3;
+  return {
+    bssamt,
+    netCost,
+    aVal,
+    aBreakdown: aItems.map(([k, v]) => `${k} ${fmt(Math.round(v / 10000))}만`).join(' · '),
+    rngPct,
+    openDt: x.bssamtOpenDt || '',
+  };
+}
+
+function calcOptimalBidWon(estPrice, lwltPct, aVal = 0, netCost = 0) {
+  const raw = aVal > 0
+    ? (estPrice - aVal) * (lwltPct / 100) + aVal
+    : estPrice * (lwltPct / 100);
+  const calcBid = Math.ceil(Math.max(0, raw) / 1000) * 1000;
+  const netFloor = netCost > 0 ? Math.ceil((netCost * 0.98) / 1000) * 1000 : 0;
+  const netWarn = netFloor > 0 && calcBid < netFloor;
+  return { calcBid, netFloor, netWarn, finalBid: netWarn ? netFloor : calcBid };
+}
+
+function generate15MultiPrices(rngPct = 3) {
+  // Realistic K-Bid / G2B 15-slot distribution across [-rngPct, +rngPct]
+  const slots = [];
+  const step = (rngPct * 2) / 15;
+  for (let i = 0; i < 15; i++) {
+    const low = -rngPct + i * step;
+    const jitter = (Math.random() * 0.65 + 0.175) * step;
+    slots.push(Number((low + jitter).toFixed(3)));
+  }
+  return slots;
+}
+
+function analyze1365Combinations(slots, baseWon, lwltPct, aVal, netCost) {
+  const rates = [];
+  const n = slots.length;
+  for (let a = 0; a < n - 3; a++) {
+    for (let b = a + 1; b < n - 2; b++) {
+      for (let c = b + 1; c < n - 1; c++) {
+        for (let d = c + 1; d < n; d++) {
+          rates.push((slots[a] + slots[b] + slots[c] + slots[d]) / 4);
+        }
+      }
+    }
+  }
+  rates.sort((x, y) => x - y);
+  const pick = (p) => rates[Math.min(rates.length - 1, Math.floor(rates.length * p))] || 0;
+  const toBid = (r) => calcOptimalBidWon(Math.round(baseWon * (1 + r / 100)), lwltPct, aVal, netCost).finalBid;
+  const rMin = rates[0] || 0, rMax = rates[rates.length - 1] || 0;
+  const bins = Array(7).fill(0);
+  const span = Math.max(0.001, rMax - rMin);
+  rates.forEach((r) => {
+    const bi = Math.min(6, Math.floor(((r - rMin) / span) * 7));
+    bins[bi]++;
+  });
+  const maxBin = Math.max(1, ...bins);
+  return {
+    count: rates.length,
+    rMin, rP10: pick(0.1), rP25: pick(0.25), rMed: pick(0.5), rP75: pick(0.75), rP90: pick(0.9), rMax,
+    bidP10: toBid(pick(0.1)), bidMed: toBid(pick(0.5)), bidP90: toBid(pick(0.9)),
+    bins, maxBin,
+  };
+}
+
+function saveQualProfile() {
+  try { localStorage.setItem('nx1_qual_profile_v1', JSON.stringify(S.qualProfile)); } catch {}
+}
+
+function evalQualificationScore(o) {
+  const qp = S.qualProfile || { credit: 'BBB', perfEok: 15, bonus: 1.5, cutoff: 95 };
+  const dt = o.detail || {};
+  const bsis = o._bsis || {};
+  const baseWon = bsis.bssamt || dt.asignWon || dt.presmptWon || (o.budgetMan > 0 ? o.budgetMan * 10000 : 0);
+  const creditMap = { AAA: 15.0, AA: 15.0, A: 14.5, BBB: 14.0, BB: 13.5, B: 12.5, CCC: 11.0 };
+  const creditScore = creditMap[qp.credit] ?? 14.0;
+  const perfWon = (Number(qp.perfEok) || 0) * 1e8;
+  const ratio = baseWon > 0 ? perfWon / baseWon : 1.0;
+  const perfScore = ratio >= 1.0 ? 15.0 : (ratio >= 0.7 ? 13.5 : (ratio >= 0.5 ? 12.0 : Math.max(6.0, Number((ratio * 15).toFixed(1)))));
+  const priceScore = 65.0; // 낙찰하한선 투찰 시 표준 가격점수 기준
+  const bonusScore = Math.min(3.0, Math.max(0, Number(qp.bonus) || 0));
+  const total = Number((creditScore + perfScore + priceScore + bonusScore).toFixed(1));
+  const cutoff = Number(qp.cutoff) || 95;
+  return { creditScore, perfScore, priceScore, bonusScore, total, cutoff, pass: total >= cutoff, ratio, baseWon };
+}
+
+function buildQualCheckHtml(o) {
+  const qp = S.qualProfile;
+  const q = evalQualificationScore(o);
+  return `
+    <div class="domain-box" style="margin-top:10px;border-color:${q.pass ? '#a7f3d0' : '#fecaca'};background:${q.pass ? 'rgba(16,185,129,.04)' : 'rgba(239,68,68,.04)'}">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:6px;margin-bottom:6px">
+        <h4 style="margin:0">✅ 적격심사 자사 점수 자동 판정 (케이비드·아이건설넷급)</h4>
+        <button id="dwToggleQualEdit" type="button" class="btn btn-sm" style="padding:2px 8px;font-size:11px">⚙️ 자사 스펙</button>
+      </div>
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:7px 10px;border-radius:8px;background:var(--bg);border:1px solid var(--border);margin-bottom:6px">
+        <div>
+          <div style="font-size:12px;font-weight:800;color:${q.pass ? '#059669' : '#dc2626'}">${q.pass ? `🟢 적격심사 통과 유력 (${q.total}점 / 기준 ${q.cutoff}점)` : `🟠 보완 필요 (${q.total}점 · ${(q.cutoff - q.total).toFixed(1)}점 부족)`}</div>
+          <div style="font-size:11px;color:var(--muted);margin-top:2px">신용 ${qp.credit}(${q.creditScore}) + 실적 ${qp.perfEok}억(${q.perfScore}, ${q.baseWon > 0 ? (q.ratio * 100).toFixed(0) + '%' : '충족'}) + 가격 ${q.priceScore} + 신인도 ${q.bonusScore}</div>
+        </div>
+        <span class="tag ${q.pass ? 'tag-sbiz' : 'tag-re'}">${q.pass ? 'PASS' : '공동도급권장'}</span>
+      </div>
+      ${!q.pass ? '<div style="font-size:11px;color:#b91c1c;margin-bottom:6px">💡 실적/신용 보완이 필요합니다. 아래 추천 지역 협력 건설사 TOP 5와 공동도급(컨소시엄)을 검토하세요.</div>' : ''}
+      <div id="dwQualForm" class="hidden" style="padding:8px;border-radius:8px;background:var(--bg);border:1px solid var(--border);display:grid;grid-template-columns:repeat(2,1fr);gap:6px;font-size:11px">
+        <label>신용평가등급
+          <select id="qpCredit" class="select" style="width:100%;margin-top:2px;padding:4px 6px;font-size:11.5px">
+            ${['AAA', 'AA', 'A', 'BBB', 'BB', 'B', 'CCC'].map((g) => `<option value="${g}" ${qp.credit === g ? 'selected' : ''}>${g}</option>`).join('')}
+          </select>
+        </label>
+        <label>최근 3~5년 실적 (억원)
+          <input id="qpPerf" class="input" type="number" step="0.5" min="0" value="${qp.perfEok}" style="width:100%;margin-top:2px;padding:4px 6px;font-size:11.5px" />
+        </label>
+        <label>신인도·인증 가점 (0~3)
+          <input id="qpBonus" class="input" type="number" step="0.5" min="0" max="3" value="${qp.bonus}" style="width:100%;margin-top:2px;padding:4px 6px;font-size:11.5px" />
+        </label>
+        <label>통과 커트라인 (점)
+          <input id="qpCutoff" class="input" type="number" step="1" min="70" max="100" value="${qp.cutoff}" style="width:100%;margin-top:2px;padding:4px 6px;font-size:11.5px" />
+        </label>
+        <button id="qpSaveBtn" type="button" class="btn btn-sm btn-primary" style="grid-column:span 2">💾 자사 적격심사 프로필 저장 · 즉시 재판정</button>
+      </div>
+    </div>
+  `;
+}
+
+function wireQualCheck(o) {
+  $('dwToggleQualEdit')?.addEventListener('click', () => {
+    const f = $('dwQualForm');
+    if (f) f.classList.toggle('hidden');
+  });
+  $('qpSaveBtn')?.addEventListener('click', () => {
+    S.qualProfile = {
+      credit: $('qpCredit')?.value || 'BBB',
+      perfEok: Math.max(0, Number($('qpPerf')?.value) || 0),
+      bonus: Math.min(3, Math.max(0, Number($('qpBonus')?.value) || 0)),
+      cutoff: Math.min(100, Math.max(70, Number($('qpCutoff')?.value) || 95)),
+    };
+    saveQualProfile();
+    toast('✅ 자사 적격심사 프로필 저장 완료!');
+    openOppDrawer(o);
+  });
+}
+
+function saveMyBizStore() {
+  try { localStorage.setItem('nx1_mybiz_v1', JSON.stringify(S.myBiz)); } catch {}
+}
+
+function buildMyBizHtml(o) {
+  const rec = S.myBiz[o.id] || null;
+  const statuses = ['검토중', '서류준비', '투찰완료', '개찰대기', '🏆낙찰', '유찰'];
+  const curSt = rec?.status || '검토중';
+  return `
+    <div class="domain-box" style="margin-top:10px;border-color:#fde68a;background:rgba(245,158,11,.04)">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:6px;margin-bottom:6px">
+        <h4 style="margin:0">📁 내서류함 (My Biz · 투찰 진행관리)</h4>
+        ${rec ? `<span class="tag tag-bid">${esc(rec.status)} · ${esc(rec.updatedAt || '')}</span>` : '<span style="font-size:11px;color:var(--muted)">미등록</span>'}
+      </div>
+      <div style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:7px" id="myBizStRow">
+        ${statuses.map((st) => `<button type="button" class="toggle-pill ${curSt === st && rec ? 'on' : ''}" data-mb-st="${st}" style="padding:3px 8px;font-size:11px">${st}</button>`).join('')}
+      </div>
+      <div style="display:flex;gap:6px;align-items:center;margin-bottom:6px">
+        <input id="myBizBidWon" class="input" type="number" step="1000" value="${rec?.myBidWon || ''}" placeholder="나의 확정 투찰가 (원)" style="flex:1;padding:5px 8px;font-size:12px" />
+        <button id="myBizPullSim" type="button" class="btn btn-sm" style="padding:5px 8px;font-size:11px;white-space:nowrap">🎯 시뮬가 가져오기</button>
+      </div>
+      <textarea id="myBizMemo" class="input" rows="2" placeholder="발주 담당자 통화내용, 현장답사, 협력사 지분, 투찰 메모…" style="width:100%;padding:6px 8px;font-size:11.5px;margin-bottom:6px;resize:vertical">${esc(rec?.memo || '')}</textarea>
+      <div style="display:flex;gap:6px">
+        <button id="myBizSaveBtn" type="button" class="btn btn-sm btn-primary" style="flex:1">💾 내서류함 저장</button>
+        ${rec ? '<button id="myBizDelBtn" type="button" class="btn btn-sm">🗑️ 삭제</button>' : ''}
+      </div>
+    </div>
+  `;
+}
+
+function wireMyBiz(o) {
+  let selSt = S.myBiz[o.id]?.status || '검토중';
+  $('myBizStRow')?.querySelectorAll('[data-mb-st]').forEach((b) => {
+    b.addEventListener('click', () => {
+      selSt = b.dataset.mbSt;
+      $('myBizStRow').querySelectorAll('[data-mb-st]').forEach((x) => x.classList.toggle('on', x.dataset.mbSt === selSt));
+    });
+  });
+  $('myBizPullSim')?.addEventListener('click', () => {
+    const cur = window._lastSimFinalBid || 0;
+    if (cur > 0 && $('myBizBidWon')) {
+      $('myBizBidWon').value = String(cur);
+      toast(`🎯 시뮬레이터 권장 투찰가 ${fmt(cur)}원 입력 완료`);
+    }
+  });
+  $('myBizSaveBtn')?.addEventListener('click', () => {
+    S.myBiz[o.id] = {
+      status: selSt,
+      myBidWon: Math.max(0, Number($('myBizBidWon')?.value) || 0),
+      memo: ($('myBizMemo')?.value || '').trim(),
+      updatedAt: getTodayKstIso(),
+    };
+    saveMyBizStore();
+    toast(`📁 내서류함 저장 완료 (${selSt})`);
+    if (S.tab === 'bid') renderBidTab();
+    openOppDrawer(o);
+  });
+  $('myBizDelBtn')?.addEventListener('click', () => {
+    delete S.myBiz[o.id];
+    saveMyBizStore();
+    toast('🗑️ 내서류함에서 제거되었습니다.');
+    if (S.tab === 'bid') renderBidTab();
+    openOppDrawer(o);
+  });
+}
+
+function buildAwardHistHtml(rates) {
+  if (!rates || rates.length < 2) return '';
+  const minR = Math.floor(Math.min(...rates) * 2) / 2;
+  const maxR = Math.ceil(Math.max(...rates) * 2) / 2;
+  const span = Math.max(0.5, maxR - minR);
+  const bCnt = Math.min(7, Math.max(3, Math.ceil(span / 0.5)));
+  const step = span / bCnt;
+  const bins = Array.from({ length: bCnt }, (_, i) => ({
+    lo: minR + i * step,
+    hi: minR + (i + 1) * step,
+    cnt: 0,
+  }));
+  rates.forEach((r) => {
+    const idx = Math.min(bCnt - 1, Math.max(0, Math.floor((r - minR) / step)));
+    bins[idx].cnt++;
+  });
+  const maxC = Math.max(1, ...bins.map((b) => b.cnt));
+  const modeBin = bins.reduce((best, b) => (b.cnt > best.cnt ? b : best), bins[0]);
+  const modeMid = Number(((modeBin.lo + modeBin.hi) / 2).toFixed(2));
+  return `
+    <div style="padding:8px 9px;border-radius:8px;background:var(--bg);border:1px solid var(--border);margin-bottom:8px">
+      <div style="display:flex;justify-content:space-between;align-items:center;font-size:11px;margin-bottom:5px">
+        <span style="font-weight:700;color:var(--text)">📈 발주처·유사 낙찰률 분포도</span>
+        <span style="color:#4f46e5;font-weight:800">최빈 집중: ${modeBin.lo.toFixed(1)}~${modeBin.hi.toFixed(1)}% (${modeBin.cnt}건)</span>
+      </div>
+      <div style="display:flex;align-items:flex-end;gap:4px;height:46px;padding-top:4px">
+        ${bins.map((b) => {
+          const h = Math.max(12, Math.round((b.cnt / maxC) * 100));
+          const isMode = b === modeBin;
+          return `<div style="flex:1;display:flex;flex-direction:column;align-items:center;height:100%;justify-content:flex-end" title="${b.lo.toFixed(1)}~${b.hi.toFixed(1)}%: ${b.cnt}건">
+            <div style="font-size:9.5px;color:${isMode ? '#4f46e5' : 'var(--muted)'};font-weight:${isMode ? 800 : 500}">${b.cnt || ''}</div>
+            <div style="width:100%;height:${h}%;border-radius:4px 4px 0 0;background:${isMode ? 'linear-gradient(180deg,#4f46e5,#818cf8)' : 'rgba(100,116,139,.28)'}"></div>
+          </div>`;
+        }).join('')}
+      </div>
+      <div style="display:flex;justify-content:space-between;font-size:9.5px;color:var(--muted);margin-top:2px">
+        <span>${minR.toFixed(1)}%</span>
+        <button id="dwApplyModeRate" type="button" data-mode="${modeMid}" style="border:none;background:none;color:#4f46e5;font-weight:800;font-size:10.5px;cursor:pointer;padding:0">⚡ 최빈 중앙(${modeMid}%) 적용</button>
+        <span>${maxR.toFixed(1)}%</span>
+      </div>
+    </div>`;
+}
+
 function buildBidPriceSimHtml(o) {
   const dt = o.detail || {};
-  const initBase = dt.asignWon || dt.presmptWon || (o.budgetMan > 0 ? o.budgetMan * 10000 : 0);
+  const bsis = o._bsis || {};
+  const initBase = bsis.bssamt || dt.asignWon || dt.presmptWon || (o.budgetMan > 0 ? o.budgetMan * 10000 : 0);
   if (!initBase && o.stageType !== 'bid') return '';
   const rateNum = parseFloat(String(dt.awardRate || '').replace('%', '')) || 87.745;
+  const bidNoHint = dt.bidNo || (String(o.id || '').startsWith('g2b-') ? String(o.id).slice(4) : '');
+  const initRng = bsis.rngPct || 3;
   return `
-    <div class="domain-box" style="margin-top:10px;border-color:#c7d2fe;background:linear-gradient(180deg,rgba(79,70,229,.04),transparent)">
-      <h4 style="margin:0 0 8px">🎯 투찰가 · 사정률 자동 시뮬레이터</h4>
-      <div style="display:grid;grid-template-columns:1fr 110px;gap:6px;margin-bottom:8px">
+    <div class="domain-box" style="margin-top:10px;border-color:#c7d2fe;background:linear-gradient(180deg,rgba(79,70,229,.05),transparent)">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:6px;margin-bottom:8px">
+        <h4 style="margin:0">🎯 K-Bid급 투찰가 · A값 · 복수예가 시뮬레이터</h4>
+        ${bidNoHint ? `<button id="simLoadBsisBtn" type="button" class="btn btn-sm btn-primary" style="padding:3px 8px;font-size:11px">${bsis.bssamt ? '🔄 기초금액 재조회' : '🔍 기초금액·A값 자동조회'}</button>` : ''}
+      </div>
+      ${bsis.bssamt ? `<div style="font-size:11px;padding:5px 8px;border-radius:6px;background:rgba(16,185,129,.1);color:#047857;margin-bottom:7px;font-weight:600">✅ 나라장터 실측 기초금액 ${fmt(bsis.bssamt)}원 · 예가폭 ±${bsis.rngPct}%${bsis.aVal > 0 ? ` · A값 ${fmt(bsis.aVal)}원 (${esc(bsis.aBreakdown)})` : ''}${bsis.netCost > 0 ? ` · 순공사원가 ${fmt(bsis.netCost)}원` : ''}</div>` : ''}
+      <div style="display:grid;grid-template-columns:1fr 105px;gap:6px;margin-bottom:6px">
         <label style="font-size:11px;color:var(--muted)">기초금액/배정예산 (원)
           <input id="simBaseWon" class="input" type="number" value="${initBase || 100000000}" step="100000" style="width:100%;margin-top:2px;padding:5px 7px;font-size:12px" />
         </label>
@@ -3298,57 +3604,177 @@ function buildBidPriceSimHtml(o) {
           <input id="simLwltRate" class="input" type="number" value="${rateNum}" step="0.005" min="10" max="100" style="width:100%;margin-top:2px;padding:5px 7px;font-size:12px" />
         </label>
       </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:8px">
+        <label style="font-size:11px;color:var(--muted)">A값 합계 (법정경비·안전·보험, 원)
+          <input id="simAValWon" class="input" type="number" value="${bsis.aVal || 0}" step="10000" min="0" style="width:100%;margin-top:2px;padding:5px 7px;font-size:12px" />
+        </label>
+        <label style="font-size:11px;color:var(--muted)">순공사원가 (98% 미달 검증, 원)
+          <input id="simNetCostWon" class="input" type="number" value="${bsis.netCost || 0}" step="100000" min="0" style="width:100%;margin-top:2px;padding:5px 7px;font-size:12px" />
+        </label>
+      </div>
       <div style="margin-bottom:8px">
         <div style="display:flex;justify-content:space-between;font-size:11.5px;margin-bottom:3px">
-          <span>예상 사정률</span><b id="simAssLbl" style="color:var(--c-corp)">0.0% (예정가격 100.0%)</b>
+          <span>예상 사정률</span><b id="simAssLbl" style="color:var(--c-corp)">0.00% (예정가격 100.00%)</b>
         </div>
-        <input id="simAssRange" type="range" min="-3" max="3" step="0.1" value="0" style="width:100%;accent-color:#4f46e5" />
+        <input id="simAssRange" type="range" min="-3" max="3" step="0.05" value="0" style="width:100%;accent-color:#4f46e5" />
       </div>
       <div id="simResultBox" style="padding:8px 10px;border-radius:8px;background:var(--bg);border:1px solid var(--border);margin-bottom:8px"></div>
-      <div id="simGridBox" style="display:grid;grid-template-columns:repeat(3,1fr);gap:5px;font-size:11px"></div>
+      <div id="simGridBox" style="display:grid;grid-template-columns:repeat(3,1fr);gap:5px;font-size:11px;margin-bottom:8px"></div>
+
+      <!-- K-Bid 15 Multi-Price & 1,365 Combinations Drawer -->
+      <div style="padding:8px 9px;border-radius:8px;background:var(--bg);border:1px solid var(--border)">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:6px">
+          <b style="font-size:11.5px;color:#4f46e5">🎲 복수예비가격 15개 추첨 · 1,365조합 분석</b>
+          <div style="display:flex;gap:4px">
+            <button type="button" class="toggle-pill ${initRng === 2 ? 'on' : ''}" data-sim-rng="2" style="padding:2px 7px;font-size:10.5px">±2% 국가</button>
+            <button type="button" class="toggle-pill ${initRng !== 2 ? 'on' : ''}" data-sim-rng="3" style="padding:2px 7px;font-size:10.5px">±3% 지방</button>
+            <button id="simAutoDraw4" type="button" class="btn btn-sm btn-primary" style="padding:2px 8px;font-size:10.5px">🎲 4개 추첨</button>
+            <button id="simRegen15" type="button" class="btn btn-sm" style="padding:2px 7px;font-size:10.5px">🔄 재생성</button>
+          </div>
+        </div>
+        <div id="sim15Grid" style="display:grid;grid-template-columns:repeat(5,1fr);gap:4px;margin-bottom:7px"></div>
+        <div id="sim1365Stats" style="font-size:11px;color:var(--muted)"></div>
+      </div>
     </div>
   `;
 }
 
-function wireBidPriceSim() {
+function wireBidPriceSim(o) {
   const baseEl = $('simBaseWon'), rateEl = $('simLwltRate'), rangeEl = $('simAssRange');
+  const aEl = $('simAValWon'), netEl = $('simNetCostWon');
   const lblEl = $('simAssLbl'), resEl = $('simResultBox'), gridEl = $('simGridBox');
+  const grid15El = $('sim15Grid'), stats1365El = $('sim1365Stats');
   if (!baseEl || !rateEl || !rangeEl || !resEl) return;
+
+  let rngPct = o?._bsis?.rngPct || 3;
+  let slots15 = generate15MultiPrices(rngPct);
+  let pickedIdx = new Set([4, 6, 8, 10]);
+
   const calc = () => {
     const base = Math.max(0, Number(baseEl.value) || 0);
     const lwlt = Math.max(1, Math.min(100, Number(rateEl.value) || 87.745));
+    const aVal = Math.max(0, Number(aEl?.value) || 0);
+    const netCost = Math.max(0, Number(netEl?.value) || 0);
     const ass = Number(rangeEl.value) || 0;
     const estPrice = Math.round(base * (1 + ass / 100));
-    const minBid = Math.ceil((estPrice * (lwlt / 100)) / 1000) * 1000;
-    lblEl.textContent = `${ass >= 0 ? '+' : ''}${ass.toFixed(1)}% (예정가격 ${(100 + ass).toFixed(1)}%)`;
+    const { calcBid, netFloor, netWarn, finalBid } = calcOptimalBidWon(estPrice, lwlt, aVal, netCost);
+    window._lastSimFinalBid = finalBid;
+    lblEl.textContent = `${ass >= 0 ? '+' : ''}${ass.toFixed(2)}% (예정가격 ${(100 + ass).toFixed(2)}%)`;
     resEl.innerHTML = `
       <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:4px">
-        <span style="color:var(--muted)">예상 예정가격</span><b>${fmt(estPrice)}원</b>
+        <span style="color:var(--muted)">예상 예정가격${aVal > 0 ? ' (A값 공식 적용)' : ''}</span><b>${fmt(estPrice)}원</b>
       </div>
       <div style="display:flex;justify-content:space-between;align-items:center;gap:6px">
-        <span style="font-size:12px;font-weight:700;color:#4f46e5">최적 투찰 하한가 (${lwlt}%)</span>
+        <span style="font-size:12px;font-weight:700;color:#4f46e5">${netWarn ? '안전 최저 투찰한도 (순공사 98%)' : `최적 투찰 하한가 (${lwlt}%)`}</span>
         <div style="display:flex;align-items:center;gap:6px">
-          <b style="font-size:14px;color:#059669">${fmt(minBid)}원</b>
+          <b style="font-size:14px;color:${netWarn ? '#dc2626' : '#059669'}">${fmt(finalBid)}원</b>
           <button id="simCopyBtn" type="button" class="btn btn-sm" style="padding:2px 7px;font-size:11px">복사</button>
         </div>
-      </div>`;
+      </div>
+      ${aVal > 0 ? `<div style="font-size:10.5px;color:var(--muted);margin-top:3px">산식: (${fmt(estPrice)} - A값 ${fmt(aVal)}) × ${lwlt}% + A값 = ${fmt(calcBid)}원</div>` : ''}
+      ${netWarn ? `<div style="margin-top:5px;padding:5px 8px;border-radius:6px;background:rgba(220,38,38,.1);color:#b91c1c;font-size:11px;font-weight:700">⚠️ 순공사원가 98% 미달 경고! 산출가(${fmt(calcBid)}원) &lt; 순공사 98%(${fmt(netFloor)}원) → ${fmt(netFloor)}원 이상 투찰 필수</div>` : (netFloor > 0 ? `<div style="margin-top:4px;font-size:10.5px;color:#059669">✅ 순공사원가 98% 기준(${fmt(netFloor)}원) 안전 통과</div>` : '')}
+    `;
     $('simCopyBtn')?.addEventListener('click', () => {
-      navigator.clipboard?.writeText(String(minBid));
-      toast(`📋 권장 투찰 하한가 ${fmt(minBid)}원 복사 완료`);
+      navigator.clipboard?.writeText(String(finalBid));
+      toast(`📋 권장 투찰가 ${fmt(finalBid)}원 복사 완료`);
     });
     const steps = [-2.0, -1.0, 0.0, 0.5, 1.0, 2.0];
     gridEl.innerHTML = steps.map((s) => {
-      const bid = Math.ceil((base * (1 + s / 100) * (lwlt / 100)) / 1000) * 1000;
-      const active = Math.abs(s - ass) < 0.05;
+      const bid = calcOptimalBidWon(Math.round(base * (1 + s / 100)), lwlt, aVal, netCost).finalBid;
+      const active = Math.abs(s - ass) < 0.06;
       return `<div style="padding:5px 6px;border-radius:6px;border:1px solid ${active ? '#4f46e5' : 'var(--border)'};background:${active ? 'rgba(79,70,229,.08)' : 'var(--bg)'};text-align:center">
         <div style="color:var(--muted);font-size:10px">${s >= 0 ? '+' : ''}${s.toFixed(1)}%</div>
         <div style="font-weight:800;font-size:11px">${fmtDec(bid / 1e8, 2)}억</div>
       </div>`;
     }).join('');
+
+    // Render 15 multi-prices & exact 1,365 combinations stats
+    if (grid15El && stats1365El) {
+      grid15El.innerHTML = slots15.map((v, idx) => {
+        const on = pickedIdx.has(idx);
+        return `<button type="button" data-slot15="${idx}" style="padding:4px 2px;border-radius:6px;border:1px solid ${on ? '#4f46e5' : 'var(--border)'};background:${on ? '#4f46e5' : 'var(--card)'};color:${on ? '#fff' : 'var(--text)'};font-size:10px;font-weight:${on ? 800 : 600};cursor:pointer;text-align:center">
+          <div>#${String(idx + 1).padStart(2, '0')}</div>
+          <div>${v >= 0 ? '+' : ''}${v.toFixed(2)}%</div>
+        </button>`;
+      }).join('');
+      grid15El.querySelectorAll('[data-slot15]').forEach((b) => {
+        b.addEventListener('click', () => {
+          const idx = Number(b.dataset.slot15);
+          if (pickedIdx.has(idx)) pickedIdx.delete(idx);
+          else {
+            if (pickedIdx.size >= 4) pickedIdx.delete([...pickedIdx][0]);
+            pickedIdx.add(idx);
+          }
+          if (pickedIdx.size === 4) {
+            const avg = [...pickedIdx].reduce((s, i) => s + slots15[i], 0) / 4;
+            rangeEl.value = avg.toFixed(2);
+          }
+          calc();
+        });
+      });
+      const st = analyze1365Combinations(slots15, base, lwlt, aVal, netCost);
+      stats1365El.innerHTML = `
+        <div style="display:flex;justify-content:space-between;margin-bottom:4px">
+          <span>선택 ${pickedIdx.size}/4개 · 전체 <b>${fmt(st.count)}조합</b> 분석</span>
+          <span style="color:#059669;font-weight:700">중앙 추천: ${fmt(st.bidMed)}원</span>
+        </div>
+        <div style="display:flex;align-items:flex-end;gap:3px;height:28px;margin-bottom:4px">
+          ${st.bins.map((cnt, bi) => {
+            const h = Math.max(15, Math.round((cnt / st.maxBin) * 100));
+            return `<div style="flex:1;height:${h}%;border-radius:3px 3px 0 0;background:${bi === 3 ? '#4f46e5' : 'rgba(79,70,229,.35)'}" title="구간 ${bi + 1}: ${cnt}조합"></div>`;
+          }).join('')}
+        </div>
+        <div style="display:flex;justify-content:space-between;font-size:10px">
+          <span>하위10%: ${fmtDec(st.bidP10 / 1e8, 2)}억 (${st.rP10 >= 0 ? '+' : ''}${st.rP10.toFixed(2)}%)</span>
+          <span>상위90%: ${fmtDec(st.bidP90 / 1e8, 2)}억 (${st.rP90 >= 0 ? '+' : ''}${st.rP90.toFixed(2)}%)</span>
+        </div>`;
+    }
   };
+
+  $('simAutoDraw4')?.addEventListener('click', () => {
+    const idxs = Array.from({ length: 15 }, (_, i) => i).sort(() => Math.random() - 0.5).slice(0, 4);
+    pickedIdx = new Set(idxs);
+    const avg = idxs.reduce((s, i) => s + slots15[i], 0) / 4;
+    rangeEl.value = avg.toFixed(2);
+    calc();
+    toast(`🎲 4개 예가 추첨 (#${idxs.map((i) => i + 1).sort((a, b) => a - b).join(', #')}) → 사정률 ${avg >= 0 ? '+' : ''}${avg.toFixed(2)}%`);
+  });
+  $('simRegen15')?.addEventListener('click', () => {
+    slots15 = generate15MultiPrices(rngPct);
+    const avg = [...pickedIdx].reduce((s, i) => s + slots15[i], 0) / Math.max(1, pickedIdx.size);
+    if (pickedIdx.size === 4) rangeEl.value = avg.toFixed(2);
+    calc();
+    toast(`🔄 ±${rngPct}% 복수예비가격 15개 재생성 완료`);
+  });
+  document.querySelectorAll('[data-sim-rng]').forEach((b) => {
+    b.addEventListener('click', () => {
+      rngPct = Number(b.dataset.simRng) || 3;
+      document.querySelectorAll('[data-sim-rng]').forEach((x) => x.classList.toggle('on', Number(x.dataset.simRng) === rngPct));
+      slots15 = generate15MultiPrices(rngPct);
+      calc();
+    });
+  });
+  $('simLoadBsisBtn')?.addEventListener('click', async (e) => {
+    const btn = e.currentTarget;
+    const bidNo = o?.detail?.bidNo || (String(o?.id || '').startsWith('g2b-') ? String(o.id).slice(4) : '');
+    if (!bidNo) return;
+    btn.disabled = true; btn.textContent = '조회 중…';
+    const bsis = await fetchBidBsisAmountLive(bidNo);
+    if (bsis && bsis.bssamt > 0) {
+      o._bsis = bsis;
+      toast(`✅ 기초금액 ${fmt(bsis.bssamt)}원${bsis.aVal > 0 ? ` · A값 ${fmt(bsis.aVal)}원` : ''} 자동 반영!`);
+      openOppDrawer(o);
+    } else {
+      btn.disabled = false; btn.textContent = '🔍 재시도';
+      toast('ℹ️ 나라장터 기초금액 미공개(또는 물품/사전규격) 공고입니다. 직접 입력해 계산하세요.');
+    }
+  });
+
   baseEl.addEventListener('input', calc);
   rateEl.addEventListener('input', calc);
   rangeEl.addEventListener('input', calc);
+  aEl?.addEventListener('input', calc);
+  netEl?.addEventListener('input', calc);
   calc();
 }
 
@@ -3442,12 +3868,12 @@ function matchAwardBenchmarks(o, awards) {
     const hay = `${a.title} ${a.org}`;
     return kws.some((k) => hay.includes(k));
   });
-  const pool = [...sameOrg.slice(0, 8), ...similar.slice(0, Math.max(0, 8 - sameOrg.length))];
+  const pool = [...sameOrg.slice(0, 12), ...similar.slice(0, Math.max(0, 12 - sameOrg.length))];
   const rates = pool.map((x) => x.rate).filter((v) => v !== null && v > 20 && v <= 105);
   const bids = pool.map((x) => x.bidders).filter((v) => v > 0);
   const avgRate = rates.length ? (rates.reduce((s, v) => s + v, 0) / rates.length) : null;
   const avgBidders = bids.length ? (bids.reduce((s, v) => s + v, 0) / bids.length) : null;
-  return { sameOrg: sameOrg.slice(0, 5), similar: similar.slice(0, 5), pool: pool.slice(0, 5), avgRate, avgBidders, totalScanned: awards.length };
+  return { sameOrg: sameOrg.slice(0, 5), similar: similar.slice(0, 5), pool: pool.slice(0, 5), rates, avgRate, avgBidders, totalScanned: awards.length };
 }
 
 async function jumpOppTo1kmCatchment(o) {
@@ -3471,15 +3897,20 @@ async function jumpOppTo1kmCatchment(o) {
 
 function openBidReviewReport(o) {
   const dt = o.detail || {};
+  const bsis = o._bsis || {};
   const files = o.attachments || [];
   const partners = findBidPartnerBuilders(o, 5);
   const bm = S.awardCache.loaded ? matchAwardBenchmarks(o, S.awardCache.list) : null;
-  const baseWon = dt.asignWon || dt.presmptWon || (o.budgetMan > 0 ? o.budgetMan * 10000 : 0);
-  const lwlt = parseFloat(String(dt.awardRate || '').replace('%', '')) || 87.745;
+  const qual = evalQualificationScore(o);
+  const myRec = S.myBiz[o.id] || null;
+  const baseWon = Number($('simBaseWon')?.value) || bsis.bssamt || dt.asignWon || dt.presmptWon || (o.budgetMan > 0 ? o.budgetMan * 10000 : 0);
+  const lwlt = Number($('simLwltRate')?.value) || parseFloat(String(dt.awardRate || '').replace('%', '')) || 87.745;
+  const aVal = Number($('simAValWon')?.value) || bsis.aVal || 0;
+  const netCost = Number($('simNetCostWon')?.value) || bsis.netCost || 0;
   const simRows = baseWon > 0 ? [-2.0, -1.0, 0.0, 0.5, 1.0, 2.0].map((s) => {
     const est = Math.round(baseWon * (1 + s / 100));
-    const bid = Math.ceil((est * (lwlt / 100)) / 1000) * 1000;
-    return `<tr><td>${s >= 0 ? '+' : ''}${s.toFixed(1)}%</td><td>${fmt(est)}원</td><td><b>${fmt(bid)}원</b></td><td>${fmtDec(bid / 1e8, 2)}억</td></tr>`;
+    const { finalBid, netWarn } = calcOptimalBidWon(est, lwlt, aVal, netCost);
+    return `<tr><td>${s >= 0 ? '+' : ''}${s.toFixed(1)}%</td><td>${fmt(est)}원</td><td><b>${fmt(finalBid)}원</b>${netWarn ? ' ⚠️98%' : ''}</td><td>${fmtDec(finalBid / 1e8, 2)}억</td></tr>`;
   }).join('') : '';
   const todayStr = getTodayKstIso();
   const existing = $('nxA4ReviewOverlay');
@@ -3523,11 +3954,12 @@ function openBidReviewReport(o) {
         </div>
       </div>
       <div class="kpis">
-        <div class="kpi"><div class="l">배정예산 / 추정가격</div><div class="v">${baseWon > 0 ? fmtDec(baseWon / 1e8, 2) + '억' : '미기재'}</div></div>
+        <div class="kpi"><div class="l">기초금액 / 배정예산</div><div class="v">${baseWon > 0 ? fmtDec(baseWon / 1e8, 2) + '억' : '미기재'}</div></div>
         <div class="kpi"><div class="l">입찰마감 (D-Day)</div><div class="v">${esc(o.closeDate || '-')}${o.dday !== null && o.dday >= 0 ? ` (D-${o.dday})` : ''}</div></div>
-        <div class="kpi"><div class="l">낙찰하한율 / ICP</div><div class="v">${esc(dt.awardRate || `${lwlt}%`)} · ${o.icpScore}점</div></div>
-        <div class="kpi"><div class="l">첨부서류 / 공고구분</div><div class="v">${files.length}건 · ${esc(dt.ntceKind || '등록공고')}</div></div>
+        <div class="kpi"><div class="l">적격심사 자사 판정</div><div class="v" style="color:${qual.pass ? '#059669' : '#dc2626'}">${qual.pass ? '통과유력' : '보완필요'} (${qual.total}점)</div></div>
+        <div class="kpi"><div class="l">${myRec?.myBidWon ? '나의 확정 투찰가' : '낙찰하한율 / 첨부'}</div><div class="v">${myRec?.myBidWon ? fmtDec(myRec.myBidWon / 1e8, 2) + '억' : `${lwlt}% · ${files.length}건`}</div></div>
       </div>
+      ${aVal > 0 || netCost > 0 || myRec?.memo ? `<div style="padding:6px 10px;border:1px solid #cbd5e1;border-radius:7px;background:#f8fafc;font-size:11px;margin-bottom:8px">${aVal > 0 ? `<b>A값 적용:</b> ${fmt(aVal)}원 &nbsp;` : ''}${netCost > 0 ? `<b>순공사원가 98%:</b> ${fmt(Math.ceil((netCost * 0.98) / 1000) * 1000)}원 &nbsp;` : ''}${myRec ? `<b>내서류함(${esc(myRec.status)}):</b> ${esc(myRec.memo || '저장됨')}` : ''}</div>` : ''}
       <h3>1. 입찰 공고 상세내역 및 일정</h3>
       <table>
         <tr><th>발주/수요기관</th><td>${esc(o.org || '-')}</td><th>공고번호/차수</th><td>${esc(dt.bidNo || o.id)}</td></tr>
@@ -3651,6 +4083,10 @@ function openOppDrawer(o) {
 
       ${feat.bidSim ? buildBidPriceSimHtml(o) : ''}
 
+      ${feat.bidSim ? buildQualCheckHtml(o) : ''}
+
+      ${buildMyBizHtml(o)}
+
       ${feat.bidAwards ? `
       <div class="domain-box" style="margin-top:10px">
         <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:6px">
@@ -3688,13 +4124,15 @@ function openOppDrawer(o) {
       ${reg && S.admin?.tabs?.overview !== false ? `<button id="dwOpp360" class="btn btn-sm">⚡ ${esc(reg.name)} 360°</button>` : ''}
     `,
     onMount: () => {
-      wireBidPriceSim();
+      wireBidPriceSim(o);
+      wireQualCheck(o);
+      wireMyBiz(o);
       const renderAwardBox = (awards) => {
         const box = $('dwAwardBox');
         if (!box) return;
         const bm = matchAwardBenchmarks(o, awards);
         if (!bm.pool.length) {
-          box.innerHTML = `<span>최근 14일 낙찰 ${fmt(bm.totalScanned)}건 중 동일 기관/유사 공고 이력이 없습니다.</span>`;
+          box.innerHTML = `<span>최근 8일 낙찰 ${fmt(bm.totalScanned)}건 중 동일 기관/유사 공고 이력이 없습니다.</span>`;
           return;
         }
         box.innerHTML = `
@@ -3703,6 +4141,7 @@ function openOppDrawer(o) {
             <div style="padding:6px;border-radius:7px;background:var(--bg);border:1px solid var(--border)"><div style="font-size:10.5px;color:var(--muted)">평균 경쟁률</div><b style="font-size:13.5px;color:#059669">${bm.avgBidders ? bm.avgBidders.toFixed(1) + '개사' : '-'}</b></div>
             <div style="padding:6px;border-radius:7px;background:var(--bg);border:1px solid var(--border)"><div style="font-size:10.5px;color:var(--muted)">동일기관/유사</div><b style="font-size:13.5px">${bm.sameOrg.length} / ${bm.similar.length}건</b></div>
           </div>
+          ${buildAwardHistHtml(bm.rates)}
           ${bm.avgRate ? `<button id="dwApplyAvgRate" type="button" class="btn btn-sm" style="width:100%;margin-bottom:8px">🎯 평균 낙찰률(${bm.avgRate.toFixed(2)}%)을 투찰 시뮬레이터에 반영</button>` : ''}
           <div style="display:flex;flex-direction:column;gap:5px">
             ${bm.pool.map((x) => `
@@ -3720,6 +4159,15 @@ function openOppDrawer(o) {
             rEl.value = bm.avgRate.toFixed(3);
             rEl.dispatchEvent(new Event('input'));
             toast(`🎯 과거 평균 낙찰률 ${bm.avgRate.toFixed(2)}% 시뮬레이터 반영 완료`);
+          }
+        });
+        $('dwApplyModeRate')?.addEventListener('click', (ev) => {
+          const rEl = $('simLwltRate');
+          const modeVal = parseFloat(ev.currentTarget.dataset.mode);
+          if (rEl && Number.isFinite(modeVal)) {
+            rEl.value = modeVal.toFixed(3);
+            rEl.dispatchEvent(new Event('input'));
+            toast(`⚡ 발주처 최빈 구간 중앙값 ${modeVal.toFixed(2)}% 시뮬레이터 반영 완료`);
           }
         });
       };

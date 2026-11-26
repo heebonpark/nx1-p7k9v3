@@ -2087,6 +2087,13 @@ function todayTimeTag(o, todayIso = getTodayKstIso()) {
   const hhmm = String(o?.pubDateTime || '').slice(11, 16);
   return `<span class="tag tag-bid">📅 오늘${hhmm ? ' ' + hhmm : ''}</span>`;
 }
+function oppDateStr(o) {
+  const pub = o?.pubDateTime || o?.pubDate || '-';
+  const cls = o?.closeDate
+    ? `${o.closeDate}${o.dday !== null && o.dday >= 0 ? ` (D-${o.dday})` : (o.dday !== null && o.dday < 0 ? ' (마감)' : '')}`
+    : '-';
+  return `📅 공고 ${pub} · ⏰ 마감 ${cls}`;
+}
 
 function getFilteredOpps() {
   const q = S.bidQ.trim().toLowerCase();
@@ -2424,7 +2431,7 @@ function buildOppMapPopup(o) {
       <div style="font-weight:800;font-size:13px;color:#0f172a;margin-bottom:4px">${esc(o.title)}</div>
       <div style="font-size:11.5px;color:#475569">🏛️ ${esc(o.org || '-')}</div>
       <div style="font-size:11.5px;color:#475569">📍 ${esc(o._regionFull || o.region || '전국')} · 💰 <b>${o.budgetMan > 0 ? fmtDec(o.budgetMan / 10000, 1) + '억' : '미기재'}</b></div>
-      <div style="font-size:11px;color:#64748b">📅 공고 ${esc(o.pubDate || '-')}${o.closeDate ? ` · 마감 ${esc(o.closeDate)}` : ''}</div>
+      <div style="font-size:11px;color:#1e293b;font-weight:700;margin-top:2px">${esc(oppDateStr(o))}</div>
       <div style="display:flex;gap:5px;flex-wrap:wrap;margin-top:8px">
         <button type="button" onclick="window._nxOpenOpp('${esc(o.id)}')" style="padding:4px 8px;border:none;border-radius:6px;background:#4f46e5;color:#fff;font-size:11px;font-weight:700;cursor:pointer">📄 상세·공략</button>
         <button type="button" onclick="window._nxPipeOpp('${esc(o.id)}')" style="padding:4px 8px;border:1px solid #059669;border-radius:6px;background:#ecfdf5;color:#047857;font-size:11px;font-weight:700;cursor:pointer">💼 CRM</button>
@@ -2506,6 +2513,7 @@ function updateBidMapAndList(fitBounds = false) {
                   <div style="min-width:0">
                     <div style="font-weight:700;font-size:11.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(it.title)}</div>
                     <div style="font-size:10.5px;color:#64748b"><span style="color:${sm.color};font-weight:700">${sm.label}</span> · ${esc(it.org || '-')} · ${it.budgetMan > 0 ? fmtDec(it.budgetMan / 10000, 1) + '억' : '미기재'}</div>
+                    <div style="font-size:10px;color:#334155;font-weight:600;margin-top:1px">${esc(oppDateStr(it))}</div>
                   </div>
                 </div>`;
               }).join('')}
@@ -2528,7 +2536,7 @@ function updateBidMapAndList(fitBounds = false) {
           fillOpacity: 0.92,
           weight: isUrgent ? 2.6 : 1.6,
         });
-        mk.bindTooltip(`${sm.label} ${esc(o.title)}`, { direction: 'top', offset: [0, -7] });
+        mk.bindTooltip(`<b>${sm.label} ${esc(o.title)}</b><br><span style="font-size:11px">${esc(oppDateStr(o))}</span>`, { direction: 'top', offset: [0, -7] });
         mk.bindPopup(() => buildOppMapPopup(o), { maxWidth: 320 });
         mk.addTo(S.bidLeafletLayer);
       }
@@ -2557,6 +2565,7 @@ function updateBidMapAndList(fitBounds = false) {
           </div>
           <div style="font-weight:800;font-size:12.5px;margin-bottom:2px;line-height:1.35">${esc(o.title)}</div>
           <div style="font-size:11px;color:var(--muted)">🏛️ ${esc(o.org || '-')} · 📍 ${esc(o._regionFull || o.region || '전국')}</div>
+          <div style="font-size:11px;color:var(--text);font-weight:600;margin-top:3px">${esc(oppDateStr(o))}</div>
         </div>
         <div class="item-card-right" style="min-width:68px">
           <span class="tag tag-sbiz">ICP ${o.icpScore}</span>
@@ -2604,7 +2613,7 @@ function renderBidOppsBody() {
             <div class="item-card-meta">
               <span>🏛️ ${esc(o.org || '-')}</span>
               <span>📍 ${esc(o._regionFull || o.region || '전국')}</span>
-              <span>📅 공고 ${esc(o.pubDateTime || o.pubDate || '-')} ${o.closeDate ? `· 마감 ${esc(o.closeDate)}` : ''}</span>
+              <span>${esc(oppDateStr(o))}</span>
             </div>
           </div>
           <div class="item-card-right">

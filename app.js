@@ -2075,9 +2075,23 @@ const OPP_STAGE_META = {
   bid:     { label: '📢 입찰공고', color: '#d97706', tagCls: 'tag-bid', early: false },
 };
 
+function getTodayKstIso() {
+  const d = new Date(Date.now() + 9 * 3600000);
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
+}
+function isTodayOpp(o, todayIso = getTodayKstIso()) {
+  return String(o?.pubDate || '').slice(0, 10) === todayIso;
+}
+function todayTimeTag(o, todayIso = getTodayKstIso()) {
+  if (!isTodayOpp(o, todayIso)) return '';
+  const hhmm = String(o?.pubDateTime || '').slice(11, 16);
+  return `<span class="tag tag-bid">📅 오늘${hhmm ? ' ' + hhmm : ''}</span>`;
+}
+
 function getFilteredOpps() {
   const q = S.bidQ.trim().toLowerCase();
-  return S.opps.filter((o) => {
+  const todayIso = getTodayKstIso();
+  const res = S.opps.filter((o) => {
     if (S.bidStage === 'early') {
       if (!OPP_STAGE_META[o.stageType]?.early) return false;
     } else if (S.bidStage && o.stageType !== S.bidStage) {
@@ -2086,12 +2100,18 @@ function getFilteredOpps() {
     if (S.bidField && o.field !== S.bidField) return false;
     if (S.bidSd && o._sd !== S.bidSd) return false;
     if (S.bidBudgetMin > 0 && (Number(o.budgetMan) || 0) < S.bidBudgetMin) return false;
+    if (S.bidUrgency === 'todayBid' && !(o.stageType === 'bid' && isTodayOpp(o, todayIso))) return false;
+    if (S.bidUrgency === 'today' && !isTodayOpp(o, todayIso)) return false;
     if (S.bidUrgency === 'd3' && !(o.dday !== null && o.dday >= 0 && o.dday <= 3)) return false;
     if (S.bidUrgency === 'd7' && !(o.dday !== null && o.dday >= 0 && o.dday <= 7)) return false;
     if (S.bidUrgency === 'live' && !o.isLive) return false;
     if (q && !`${o.title} ${o.org} ${o.region} ${o._regionFull || ''} ${o.source} ${o.field}`.toLowerCase().includes(q)) return false;
     return true;
-  }).sort((a, b) => (b.isLive ? 1 : 0) - (a.isLive ? 1 : 0) || b.icpScore - a.icpScore);
+  });
+  if (S.bidUrgency === 'todayBid' || S.bidUrgency === 'today') {
+    return res.sort((a, b) => String(b.pubDateTime || b.pubDate || '').localeCompare(String(a.pubDateTime || a.pubDate || '')) || b.icpScore - a.icpScore);
+  }
+  return res.sort((a, b) => (b.isLive ? 1 : 0) - (a.isLive ? 1 : 0) || b.icpScore - a.icpScore);
 }
 
 function renderBidTab() {
@@ -2100,12 +2120,14 @@ function renderBidTab() {
     S.bidLeafletMap = null;
     S.bidLeafletLayer = null;
   }
+  const todayIso = getTodayKstIso();
+  const todayBidCnt = S.opps.filter((o) => o.stageType === 'bid' && isTodayOpp(o, todayIso)).length;
   const earlyCnt = S.opps.filter((o) => OPP_STAGE_META[o.stageType]?.early).length;
   const liveCnt = S.opps.filter((o) => o.isLive).length;
   const syncTxt = S.bidSync.syncing
     ? '🔄 카톡 알림봇 동일 소스(나라장터 입찰·사전규격·청약홈) 실시간 동기화 중…'
     : (S.bidSync.lastAt
-      ? `🟢 카톡 알림봇 동일 소스 실시간 동기화 완료 (${S.bidSync.lastAt} · 실시간 ${fmt(liveCnt)}건 반영 · 조기포착 ${fmt(earlyCnt)}건)`
+      ? `🟢 카톡 알림봇 동일 소스 실시간 동기화 완료 (${S.bidSync.lastAt} · 당일 입찰 ${fmt(todayBidCnt)}건 · 실시간 ${fmt(liveCnt)}건 · 조기포착 ${fmt(earlyCnt)}건)`
       : `📡 볼트 스냅샷 로드됨 (자동 실시간 동기화 대기 중 · 조기포착 ${fmt(earlyCnt)}건)`);
 
   $('mainStage').innerHTML = `
@@ -2126,6 +2148,7 @@ function renderBidTab() {
         <div class="bid-sync-bar">
           <span>${syncTxt}</span>
           <div style="display:flex;gap:6px;flex-wrap:wrap">
+            <button id="btnTodayBidOnly" class="btn btn-sm ${S.bidUrgency === 'todayBid' ? 'btn-emerald' : 'btn-primary'}" type="button">📅 당일 입찰만 (${fmt(todayBidCnt)}건)${S.bidUrgency === 'todayBid' ? ' ✓' : ''}</button>
             <button id="btnLiveG2b" class="btn btn-amber btn-sm" type="button" ${S.bidSync.syncing ? 'disabled' : ''}>🔄 지금 즉시 실시간 수집</button>
             <button id="btnBidCsv" class="btn btn-emerald btn-sm" type="button">📥 조건결과 CSV</button>
           </div>
@@ -2138,6 +2161,18 @@ function renderBidTab() {
 
   $('mainStage').querySelectorAll('[data-bid-sub]').forEach((b) => {
     b.addEventListener('click', () => { S.bidSub = b.dataset.bidSub; renderBidTab(); });
+  });
+  $('btnTodayBidOnly')?.addEventListener('click', () => {
+    if (S.bidUrgency === 'todayBid') {
+      S.bidUrgency = '';
+      toast('📅 당일 입찰 필터 해제 (전체 기간 표시)');
+    } else {
+      S.bidStage = '';
+      S.bidUrgency = 'todayBid';
+      toast(`📅 오늘(${todayIso}) 등록 입찰공고만 표시합니다`);
+    }
+    S.bidPage = 1;
+    renderBidTab();
   });
   $('btnLiveG2b')?.addEventListener('click', () => fetchLiveG2bAndPrespec({ silent: false }));
   $('btnBidCsv')?.addEventListener('click', () => {
@@ -2157,6 +2192,7 @@ function renderBidTab() {
 
 function renderBidFilterDeckHtml() {
   const sidos = S.core.sido || [];
+  const todayIso = getTodayKstIso();
   const cnts = {
     all: S.opps.length,
     early: S.opps.filter((o) => OPP_STAGE_META[o.stageType]?.early).length,
@@ -2165,6 +2201,8 @@ function renderBidFilterDeckHtml() {
     newbuild: S.opps.filter((o) => o.stageType === 'newbuild').length,
     complex: S.opps.filter((o) => o.stageType === 'complex').length,
     bid: S.opps.filter((o) => o.stageType === 'bid').length,
+    todayBid: S.opps.filter((o) => o.stageType === 'bid' && isTodayOpp(o, todayIso)).length,
+    todayAll: S.opps.filter((o) => isTodayOpp(o, todayIso)).length,
     d3: S.opps.filter((o) => o.dday !== null && o.dday >= 0 && o.dday <= 3).length,
     live: S.opps.filter((o) => o.isLive).length,
   };
@@ -2183,9 +2221,11 @@ function renderBidFilterDeckHtml() {
         ].map(([k, lb]) => `<button class="toggle-pill ${S.bidStage === k ? 'on' : ''}" data-bid-st="${k}" type="button">${lb}</button>`).join('')}
       </div>
       <div class="gis-row">
-        <span class="gis-label">🚨 긴급·실시간:</span>
+        <span class="gis-label">🚨 당일·긴급·실시간:</span>
         ${[
           ['', '전체'],
+          ['todayBid', `📅 당일 입찰만 (${cnts.todayBid})`],
+          ['today', `🗓️ 당일 전체 (${cnts.todayAll})`],
           ['d3', `🚨 D-3 긴급 (${cnts.d3})`],
           ['d7', '⏰ D-7 이번주'],
           ['live', `🟢 카톡동일 실시간 (${cnts.live})`],
@@ -2227,8 +2267,17 @@ function wireBidFilterControls(onUpdate) {
   $('bidBody').querySelectorAll('[data-bid-urg]').forEach((b) => {
     b.addEventListener('click', () => {
       S.bidUrgency = b.dataset.bidUrg;
+      if (S.bidUrgency === 'todayBid' && S.bidStage && S.bidStage !== 'bid') {
+        S.bidStage = '';
+        $('bidBody').querySelectorAll('[data-bid-st]').forEach((x) => x.classList.toggle('on', x.dataset.bidSt === S.bidStage));
+      }
       S.bidPage = 1;
       $('bidBody').querySelectorAll('[data-bid-urg]').forEach((x) => x.classList.toggle('on-emerald', x.dataset.bidUrg === S.bidUrgency));
+      const topBtn = $('btnTodayBidOnly');
+      if (topBtn) {
+        topBtn.classList.toggle('btn-emerald', S.bidUrgency === 'todayBid');
+        topBtn.classList.toggle('btn-primary', S.bidUrgency !== 'todayBid');
+      }
       onUpdate();
     });
   });
@@ -2493,6 +2542,7 @@ function updateBidMapAndList(fitBounds = false) {
   // Right-hand synchronized list
   const scroll = $('bidSideScroll');
   if (!scroll) return;
+  const todayIso = getTodayKstIso();
   scroll.innerHTML = list.slice(0, 80).map((o) => {
     const sm = OPP_STAGE_META[o.stageType] || OPP_STAGE_META.bid;
     return `
@@ -2500,6 +2550,7 @@ function updateBidMapAndList(fitBounds = false) {
         <div class="item-card-main">
           <div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:4px">
             <span class="tag ${sm.tagCls}">${sm.label}</span>
+            ${todayTimeTag(o, todayIso)}
             <span class="tag tag-gray">${esc(o.field)}</span>
             ${o.isLive ? '<span class="tag tag-sbiz">🟢실시간</span>' : ''}
             ${o.dday !== null && o.dday >= 0 && o.dday <= 7 ? `<span class="tag tag-re">D-${o.dday}</span>` : ''}
@@ -2544,6 +2595,7 @@ function renderBidOppsBody() {
           <div class="item-card-main">
             <div style="display:flex;flex-wrap:wrap;gap:5px;margin-bottom:5px">
               <span class="tag ${sm.tagCls}">${sm.label}</span>
+              ${todayTimeTag(o)}
               <span class="tag tag-gray">${esc(o.field)}</span>
               ${o.isLive ? '<span class="tag tag-sbiz">🟢 카톡동일 실시간</span>' : ''}
               ${o.dday !== null && o.dday >= 0 && o.dday <= 7 ? `<span class="tag tag-re">D-${o.dday} 긴급</span>` : ''}
@@ -2552,7 +2604,7 @@ function renderBidOppsBody() {
             <div class="item-card-meta">
               <span>🏛️ ${esc(o.org || '-')}</span>
               <span>📍 ${esc(o._regionFull || o.region || '전국')}</span>
-              <span>📅 공고 ${esc(o.pubDate || '-')} ${o.closeDate ? `· 마감 ${esc(o.closeDate)}` : ''}</span>
+              <span>📅 공고 ${esc(o.pubDateTime || o.pubDate || '-')} ${o.closeDate ? `· 마감 ${esc(o.closeDate)}` : ''}</span>
             </div>
           </div>
           <div class="item-card-right">
@@ -2667,6 +2719,7 @@ async function fetchLiveG2bAndPrespec({ silent = false } = {}) {
             region: it.dminsttOfclAddr || it.ntceInsttNm || '전국',
             budgetMan: Math.round(budgetWon / 10000),
             pubDate: String(it.bidNtceDt || it.rcptDt || '').slice(0, 10),
+            pubDateTime: String(it.bidNtceDt || it.rcptDt || '').slice(0, 16),
             closeDate: String(it.bidClseDt || it.opninRgstClseDt || '').slice(0, 10),
             method: it.bidMethdNm || (isPre ? '사전규격 의견수렴' : ''),
             url: it.bidNtceDtlUrl || 'https://www.g2b.go.kr/',

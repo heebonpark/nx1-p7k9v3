@@ -414,9 +414,110 @@ function verifyRemoteResetToken(token, expectedLicId) {
   }
 }
 
-// ===== SELLER CRM REGISTRY (DELIVERED CUSTOMERS · SELLERS · REVOCATION · TOP 10 OPTIONS) =====
+// ===== SELLER CRM REGISTRY (DELIVERED CUSTOMERS · PAYMENT · TAX INVOICE · SELLERS · TOP 10 OPTIONS) =====
 const SALES_CHANNELS = ['크몽', '본사직판', '유튜브/쇼츠', '지인소개', '블로그/검색', '파트너/대리점', '전시회/세미나', '기타'];
 const FACILITY_TYPES = ['건설·안전시설', '전기·통신·소방', '보안·CCTV·출입통제', '공동주택·시설관리', '법인영업/RM', '프랜차이즈·상권', '부동산·분양', '기타'];
+const PAY_STATUSES = ['입금완료', '미수(대기)', '부분입금', '환불·취소'];
+const PAY_METHODS = ['계좌이체', '크몽정산', '법인카드', '현금영수증', '후불/어음'];
+const TAX_STATUSES = ['발급완료', '미발급', '발급요청', '해당없음(크몽/카드)'];
+
+function defaultTaxConfig() {
+  return {
+    provider: 'popbill', // popbill | barobill | smartbill | bolta | hometax_csv
+    supplierBizNo: '',
+    supplierName: '넥서스원',
+    supplierCeo: '',
+    supplierAddr: '',
+    supplierBizType: '정보통신업',
+    supplierBizClass: '소프트웨어 개발 및 공급업',
+    supplierEmail: '',
+    proxyEndpoint: '',
+    apiToken: '',
+  };
+}
+
+function calcTaxAmounts(priceMan, vatMode = 'sep') {
+  const baseWon = Math.max(0, Math.round((Number(priceMan) || 0) * 10000));
+  if (vatMode === 'inc') {
+    const supply = Math.round(baseWon / 1.1);
+    const vat = baseWon - supply;
+    return { supply, vat, total: baseWon };
+  }
+  const vat = Math.round(baseWon * 0.1);
+  return { supply: baseWon, vat, total: baseWon + vat };
+}
+
+function buildTaxApiPayload(sale, taxCfg) {
+  const tc = { ...defaultTaxConfig(), ...(taxCfg || {}) };
+  const amt = calcTaxAmounts(sale.priceMan, sale.vatMode || 'sep');
+  const writeDate = String(sale.taxDate || sale.saleDate || sale.issuedAt || new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 10)).replace(/-/g, '');
+  const purposeType = sale.payStatus === '입금완료' ? '영수' : '청구';
+  return {
+    provider: tc.provider,
+    mgtKey: `${sale.licId}-${writeDate}`,
+    writeDate,
+    issueType: '정발행',
+    taxType: '과세',
+    purposeType,
+    invoicer: {
+      corpNum: String(tc.supplierBizNo || '').replace(/\D/g, ''),
+      corpName: tc.supplierName || '넥서스원',
+      ceoName: tc.supplierCeo || '',
+      addr: tc.supplierAddr || '',
+      bizType: tc.supplierBizType || '정보통신업',
+      bizClass: tc.supplierBizClass || '소프트웨어 개발 및 공급업',
+      email: tc.supplierEmail || '',
+    },
+    invoicee: {
+      corpNum: String(sale.bizNo || '').replace(/\D/g, ''),
+      corpName: sale.companyName || '',
+      ceoName: sale.contactName || '',
+      addr: sale.address || '',
+      email: sale.taxEmail || sale.email || '',
+    },
+    supplyCostTotal: amt.supply,
+    taxTotal: amt.vat,
+    totalAmount: amt.total,
+    detailList: [
+      {
+        serialNum: 1,
+        purchaseDT: writeDate,
+        itemName: `${sale.brandTitle || '넥서스원'} ${sale.brandBadge || 'PRO'} (${String(sale.pkg || 'deluxe').toUpperCase()} 라이선스)`,
+        spec: sale.licId,
+        qty: 1,
+        unitCost: amt.supply,
+        supplyCost: amt.supply,
+        tax: amt.vat,
+      },
+    ],
+  };
+}
+
+function downloadHometaxBatchCsv(salesList, taxCfg) {
+  const tc = { ...defaultTaxConfig(), ...(taxCfg || {}) };
+  const hd = [
+    '전자세금계산서종류(01일반)', '작성일자(YYYYMMDD)', '공급자등록번호(-제외)', '공급자상호', '공급자성명',
+    '공급자사업장주소', '공급자업태', '공급자종목', '공급자이메일',
+    '공급받는자등록번호(-제외)', '공급받는자상호', '공급받는자성명', '공급받는자주소', '공급받는자이메일',
+    '공급가액합계', '세액합계', '총합계', '품목명', '규격(라이선스)', '수량', '단가', '공급가액', '세액', '영수/청구구분', '비고',
+  ].join(',') + '\n';
+  const rows = salesList.map((s) => {
+    const p = buildTaxApiPayload(s, tc);
+    const d = p.detailList[0];
+    return [
+      '01', p.writeDate, p.invoicer.corpNum, p.invoicer.corpName, p.invoicer.ceoName,
+      p.invoicer.addr, p.invoicer.bizType, p.invoicer.bizClass, p.invoicer.email,
+      p.invoicee.corpNum, p.invoicee.corpName, p.invoicee.ceoName, p.invoicee.addr, p.invoicee.email,
+      p.supplyCostTotal, p.taxTotal, p.totalAmount, d.itemName, d.spec, d.qty, d.unitCost, d.supplyCost, d.tax,
+      p.purposeType === '영수' ? '01(영수)' : '02(청구)', s.memo || '',
+    ].map((v) => `"${String(v ?? '').replace(/"/g, '""')}"`).join(',');
+  }).join('\n');
+  const blob = new Blob(['\uFEFF' + hd + rows], { type: 'text/csv;charset=utf-8' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `hometax_batch_tax_invoice_${new Date().toISOString().slice(0, 10)}.csv`;
+  a.click();
+}
 
 function defaultSellerRegistry() {
   const sampleCfg = createClientSampleConfig();
@@ -434,11 +535,22 @@ function defaultSellerRegistry() {
         email: 'bid@hanbitsafety.co.kr',
         address: '경기도 수원시 영통구 광교중앙로 145',
         bizType: '건설·안전시설',
+        bizNo: '124-86-54321',
         brandTitle: sampleCfg.brandTitle,
         brandBadge: sampleCfg.brandBadge,
         brandSub: sampleCfg.brandSub,
         pkg: sampleCfg.pkg,
         priceMan: 59,
+        vatMode: 'sep',
+        payStatus: '입금완료',
+        payDate: '2026-11-26',
+        payMethod: '계좌이체',
+        paidMan: 64.9,
+        depositor: '㈜한빛안전건설 (기업은행)',
+        taxStatus: '발급완료',
+        taxDate: '2026-11-26',
+        ntsConfirmNo: '20261126-41000000-00001024',
+        taxEmail: 'tax@hanbitsafety.co.kr',
         sellerCode: 'SLR-001',
         sellerName: '본사 직판 (마스터)',
         saleDate: '2026-11-26',
@@ -455,6 +567,7 @@ function defaultSellerRegistry() {
     ],
     revoked: [],
     expertOpts: defaultExpertOpts(),
+    taxConfig: defaultTaxConfig(),
     masterPinHash: MASTER_DEFAULT_PIN_HASH,
   };
 }
@@ -471,8 +584,19 @@ function loadSellerRegistry() {
           email: isSample ? 'bid@hanbitsafety.co.kr' : '',
           address: isSample ? '경기도 수원시 영통구 광교중앙로 145' : '',
           bizType: isSample ? '건설·안전시설' : '',
+          bizNo: isSample ? '124-86-54321' : '',
           channel: isSample ? '크몽' : '본사직판',
           saleDate: x.saleDate || x.issuedAt || '',
+          vatMode: 'sep',
+          payStatus: isSample ? '입금완료' : '미수(대기)',
+          payDate: isSample ? '2026-11-26' : '',
+          payMethod: isSample ? '계좌이체' : '계좌이체',
+          paidMan: isSample ? 64.9 : 0,
+          depositor: isSample ? '㈜한빛안전건설 (기업은행)' : '',
+          taxStatus: isSample ? '발급완료' : '미발급',
+          taxDate: isSample ? '2026-11-26' : '',
+          ntsConfirmNo: isSample ? '20261126-41000000-00001024' : '',
+          taxEmail: isSample ? 'tax@hanbitsafety.co.kr' : (x.email || ''),
           ...x,
         };
       });
@@ -481,6 +605,7 @@ function loadSellerRegistry() {
         sales: normalizedSales,
         revoked: Array.isArray(raw.revoked) ? raw.revoked : [],
         expertOpts: { ...defaultExpertOpts(), ...(raw.expertOpts || {}) },
+        taxConfig: { ...defaultTaxConfig(), ...(raw.taxConfig || {}) },
         masterPinHash: raw.masterPinHash || MASTER_DEFAULT_PIN_HASH,
       };
     }
@@ -1163,7 +1288,7 @@ function openCustomerEditModal(licId) {
           <input id="edPrice" class="input" type="number" min="0" value="${Number(s.priceMan) || 0}" style="width:100%;margin-top:2px;font-size:12px" />
         </label>
       </div>
-      <div style="display:grid;grid-template-columns:150px 1fr;gap:8px">
+      <div style="display:grid;grid-template-columns:150px 1fr;gap:8px;margin-bottom:10px">
         <label style="font-size:11px;color:var(--muted)">만료일 (비우면 영구)
           <input id="edExpiry" class="input" type="date" value="${esc(s.expiryDate || '')}" style="width:100%;margin-top:2px;font-size:12px" />
         </label>
@@ -1172,11 +1297,83 @@ function openCustomerEditModal(licId) {
         </label>
       </div>
     </div>
+
+    <div class="domain-box" style="margin-bottom:10px;border-color:rgba(16,185,129,.35);background:rgba(16,185,129,.04)">
+      <h4 style="margin:0 0 8px">💳 판매대금 입금정보 (공급가 · 부가세 · 입금 추적)</h4>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:8px;margin-bottom:8px">
+        <label style="font-size:11px;color:var(--muted)">입금 상태
+          <select id="edPayStatus" class="select" style="width:100%;margin-top:2px;font-size:12px">
+            ${PAY_STATUSES.map((p) => `<option value="${esc(p)}" ${(s.payStatus || '미수(대기)') === p ? 'selected' : ''}>${esc(p)}</option>`).join('')}
+          </select>
+        </label>
+        <label style="font-size:11px;color:var(--muted)">입금일자
+          <input id="edPayDate" class="input" type="date" value="${esc(s.payDate || '')}" style="width:100%;margin-top:2px;font-size:12px" />
+        </label>
+        <label style="font-size:11px;color:var(--muted)">결제 / 입금수단
+          <select id="edPayMethod" class="select" style="width:100%;margin-top:2px;font-size:12px">
+            ${PAY_METHODS.map((m) => `<option value="${esc(m)}" ${(s.payMethod || '계좌이체') === m ? 'selected' : ''}>${esc(m)}</option>`).join('')}
+          </select>
+        </label>
+        <label style="font-size:11px;color:var(--muted)">부가세 구분
+          <select id="edVatMode" class="select" style="width:100%;margin-top:2px;font-size:12px">
+            <option value="sep" ${(s.vatMode || 'sep') === 'sep' ? 'selected' : ''}>부가세 별도 (+10%)</option>
+            <option value="inc" ${s.vatMode === 'inc' ? 'selected' : ''}>부가세 포함</option>
+          </select>
+        </label>
+      </div>
+      <div style="display:grid;grid-template-columns:140px 1fr;gap:8px;align-items:end">
+        <label style="font-size:11px;color:var(--muted)">실입금액(만원)
+          <input id="edPaidMan" class="input" type="number" step="0.1" min="0" value="${Number(s.paidMan) || 0}" style="width:100%;margin-top:2px;font-size:12px" />
+        </label>
+        <label style="font-size:11px;color:var(--muted)">입금자명 / 입금계좌 메모
+          <input id="edDepositor" class="input" value="${esc(s.depositor || '')}" placeholder="예: ㈜한빛안전건설 (기업은행 법인계좌)" style="width:100%;margin-top:2px;font-size:12px" />
+        </label>
+      </div>
+      <div id="edTaxCalcPreview" style="margin-top:6px;font-size:11.5px;color:#047857;font-weight:700"></div>
+    </div>
+
+    <div class="domain-box" style="border-color:rgba(79,70,229,.35);background:rgba(79,70,229,.04)">
+      <h4 style="margin:0 0 8px">🧾 전자세금계산서 발급정보 (국세청 홈택스 · API 연동)</h4>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:8px">
+        <label style="font-size:11px;color:var(--muted)">공급받는자 사업자등록번호
+          <input id="edBizNo" class="input mono" value="${esc(s.bizNo || '')}" placeholder="000-00-00000" style="width:100%;margin-top:2px;font-size:12px" />
+        </label>
+        <label style="font-size:11px;color:var(--muted)">세금계산서 발급여부
+          <select id="edTaxStatus" class="select" style="width:100%;margin-top:2px;font-size:12px">
+            ${TAX_STATUSES.map((t) => `<option value="${esc(t)}" ${(s.taxStatus || '미발급') === t ? 'selected' : ''}>${esc(t)}</option>`).join('')}
+          </select>
+        </label>
+        <label style="font-size:11px;color:var(--muted)">작성 / 발급일자
+          <input id="edTaxDate" class="input" type="date" value="${esc(s.taxDate || '')}" style="width:100%;margin-top:2px;font-size:12px" />
+        </label>
+      </div>
+      <div style="display:grid;grid-template-columns:1.2fr 1fr;gap:8px">
+        <label style="font-size:11px;color:var(--muted)">국세청 승인번호 (24자리)
+          <input id="edNtsNo" class="input mono" value="${esc(s.ntsConfirmNo || '')}" placeholder="예: 20261126-41000000-00001024" style="width:100%;margin-top:2px;font-size:12px" />
+        </label>
+        <label style="font-size:11px;color:var(--muted)">세금계산서 수신 이메일
+          <input id="edTaxEmail" class="input" type="email" value="${esc(s.taxEmail || s.email || '')}" placeholder="tax@company.co.kr" style="width:100%;margin-top:2px;font-size:12px" />
+        </label>
+      </div>
+    </div>
   `;
   $('adminFoot').innerHTML = `
-    <button id="btnEdSave" class="btn btn-primary btn-sm" type="button">✅ 고객 정보 저장</button>
+    <button id="btnEdSave" class="btn btn-primary btn-sm" type="button">✅ 고객 · 입금 · 세금계산서 저장</button>
+    <button id="btnEdHometaxCsv" class="btn btn-emerald btn-sm" type="button">📥 이 건 홈택스 CSV</button>
     <button id="btnEdCancel" class="btn btn-sm" type="button" style="margin-left:auto">← 목록으로</button>
   `;
+  const refreshTaxPreview = () => {
+    const a = calcTaxAmounts($('edPrice')?.value, $('edVatMode')?.value || 'sep');
+    const el = $('edTaxCalcPreview');
+    if (el) el.textContent = `💰 공급가액 ${fmt(a.supply)}원 + 부가세(10%) ${fmt(a.vat)}원 = 합계 ${fmt(a.total)}원 (${fmtDec(a.total / 10000, 1)}만원)`;
+  };
+  refreshTaxPreview();
+  $('edPrice')?.addEventListener('input', refreshTaxPreview);
+  $('edVatMode')?.addEventListener('change', refreshTaxPreview);
+  $('btnEdHometaxCsv')?.addEventListener('click', () => {
+    downloadHometaxBatchCsv([s], reg.taxConfig);
+    toast('📥 국세청 홈택스 일괄발급용 CSV 다운로드 완료');
+  });
   $('btnEdCancel')?.addEventListener('click', () => openAdminSalesModal('status'));
   $('btnEdSave')?.addEventListener('click', () => {
     s.companyName = $('edCompName')?.value.trim() || s.companyName;
@@ -1193,6 +1390,17 @@ function openCustomerEditModal(licId) {
     s.priceMan = Math.max(0, Number($('edPrice')?.value) || 0);
     s.expiryDate = $('edExpiry')?.value || '';
     s.memo = $('edMemo')?.value.trim() || '';
+    s.payStatus = $('edPayStatus')?.value || '미수(대기)';
+    s.payDate = $('edPayDate')?.value || '';
+    s.payMethod = $('edPayMethod')?.value || '계좌이체';
+    s.vatMode = $('edVatMode')?.value || 'sep';
+    s.paidMan = Math.max(0, Number($('edPaidMan')?.value) || 0);
+    s.depositor = $('edDepositor')?.value.trim() || '';
+    s.bizNo = $('edBizNo')?.value.trim() || '';
+    s.taxStatus = $('edTaxStatus')?.value || '미발급';
+    s.taxDate = $('edTaxDate')?.value || '';
+    s.ntsConfirmNo = $('edNtsNo')?.value.trim() || '';
+    s.taxEmail = $('edTaxEmail')?.value.trim() || s.email || '';
     if (s.cfg) {
       s.cfg.companyName = s.companyName;
       s.cfg.sellerCode = s.sellerCode;
@@ -1201,8 +1409,8 @@ function openCustomerEditModal(licId) {
       s.signedUrl = `${location.origin}${location.pathname}?lic=${encodeSignedLicense(s.cfg, reg.expertOpts)}`;
     }
     saveSellerRegistry(reg);
-    appendAudit('CUSTOMER_UPDATED', s.licId, `${s.companyName} (${s.contactName || '-'} · ${s.phone || '-'} · ${s.channel})`);
-    toast(`✅ ${s.companyName} 납품 고객 정보가 저장되었습니다!`);
+    appendAudit('CUSTOMER_UPDATED', s.licId, `${s.companyName} (입금:${s.payStatus} · 세금:${s.taxStatus} · ${s.channel})`);
+    toast(`✅ ${s.companyName} 고객 · 입금 · 세금계산서 정보가 저장되었습니다!`);
     openAdminSalesModal('status');
   });
 }
@@ -1221,12 +1429,14 @@ function openAdminSalesModal(tabKey = null) {
   $('adminModalTitle').textContent = '🛡️ 넥서스원 PRO · 판매자 마스터 통합 콘솔';
   $('adminModalSub').textContent = '마스터 기본 모드 보호 · 판매링크 발급 · 판매자/현황 CRM · 원격 비밀번호 초기화 · 전문가 기법 TOP 10';
 
+  const pendingTaxCnt = reg.sales.filter((x) => x.taxStatus === '미발급' || x.taxStatus === '발급요청').length;
   const tabBarHtml = `
     <div class="nx-adm-tabs">
       <button type="button" class="nx-adm-tab ${activeTab === 'issue' ? 'active' : ''}" data-adm-nav="issue">🚀 판매링크 발급</button>
-      <button type="button" class="nx-adm-tab ${activeTab === 'status' ? 'active' : ''}" data-adm-nav="status">📊 납품고객·판매현황 (${reg.sales.length})</button>
+      <button type="button" class="nx-adm-tab ${activeTab === 'status' ? 'active' : ''}" data-adm-nav="status">📊 납품고객·입금·세금 (${reg.sales.length})</button>
+      <button type="button" class="nx-adm-tab ${activeTab === 'tax' ? 'active' : ''}" data-adm-nav="tax">🧾 세금계산서·국세청API${pendingTaxCnt ? ` (${pendingTaxCnt})` : ''}</button>
       <button type="button" class="nx-adm-tab ${activeTab === 'sellers' ? 'active' : ''}" data-adm-nav="sellers">🧑‍💼 판매자 관리 (${reg.sellers.length})</button>
-      <button type="button" class="nx-adm-tab ${activeTab === 'expert' ? 'active' : ''}" data-adm-nav="expert">💎 전문가 기법 TOP 10 · 옵션</button>
+      <button type="button" class="nx-adm-tab ${activeTab === 'expert' ? 'active' : ''}" data-adm-nav="expert">💎 TOP 10 옵션</button>
       <button type="button" class="nx-adm-tab ${activeTab === 'audit' ? 'active' : ''}" data-adm-nav="audit">📜 감사 로그</button>
     </div>`;
 
@@ -1242,8 +1452,18 @@ function openAdminSalesModal(tabKey = null) {
       email: '',
       address: '',
       bizType: '건설·안전시설',
+      bizNo: '',
       saleDate: todayKst,
       channel: '크몽',
+      vatMode: 'sep',
+      payStatus: '입금완료',
+      payDate: todayKst,
+      payMethod: '계좌이체',
+      paidMan: 64.9,
+      depositor: '',
+      taxStatus: '미발급',
+      taxDate: '',
+      ntsConfirmNo: '',
       brandTitle: '',
       brandBadge: 'PRO',
       brandSub: '',
@@ -1353,12 +1573,41 @@ function openAdminSalesModal(tabKey = null) {
             <input id="dExpiry" class="input" type="date" value="${esc(draft.expiryDate || '')}" style="width:100%;margin-top:2px;padding:5px 7px;font-size:12px" />
           </label>
         </div>
-        <div style="display:grid;grid-template-columns:1.2fr 1fr;gap:6px">
+        <div style="display:grid;grid-template-columns:1.2fr 1fr;gap:6px;margin-bottom:6px">
           <label style="font-size:11px;color:var(--muted)">상단 서브타이틀
             <input id="dBrandSub" class="input" value="${esc(draft.brandSub || '')}" placeholder="예: ㈜대한안전건설 전용 · 실시간 입찰·기업 분석" style="width:100%;margin-top:2px;padding:6px 8px;font-size:12px" />
           </label>
           <label style="font-size:11px;color:var(--muted)">비고 (세금계산서 · 설치 · 특이사항)
             <input id="dMemo" class="input" value="${esc(draft.memo || '')}" placeholder="예: 크몽 주문 #12345 / 세금계산서 발행" style="width:100%;margin-top:2px;padding:6px 8px;font-size:12px" />
+          </label>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 110px 120px 105px 110px 115px;gap:6px;padding-top:6px;border-top:1px dashed var(--border)">
+          <label style="font-size:11px;color:var(--muted)">고객 사업자번호
+            <input id="dBizNo" class="input mono" value="${esc(draft.bizNo || '')}" placeholder="000-00-00000" style="width:100%;margin-top:2px;padding:5px 7px;font-size:11.5px" />
+          </label>
+          <label style="font-size:11px;color:var(--muted)">입금상태
+            <select id="dPayStatus" class="select" style="width:100%;margin-top:2px;padding:5px 6px;font-size:11.5px">
+              ${PAY_STATUSES.map((p) => `<option value="${esc(p)}" ${(draft.payStatus || '입금완료') === p ? 'selected' : ''}>${esc(p)}</option>`).join('')}
+            </select>
+          </label>
+          <label style="font-size:11px;color:var(--muted)">입금일자
+            <input id="dPayDate" class="input" type="date" value="${esc(draft.payDate || '')}" style="width:100%;margin-top:2px;padding:4px 6px;font-size:11.5px" />
+          </label>
+          <label style="font-size:11px;color:var(--muted)">입금수단
+            <select id="dPayMethod" class="select" style="width:100%;margin-top:2px;padding:5px 6px;font-size:11.5px">
+              ${PAY_METHODS.map((m) => `<option value="${esc(m)}" ${(draft.payMethod || '계좌이체') === m ? 'selected' : ''}>${esc(m)}</option>`).join('')}
+            </select>
+          </label>
+          <label style="font-size:11px;color:var(--muted)">부가세 구분
+            <select id="dVatMode" class="select" style="width:100%;margin-top:2px;padding:5px 6px;font-size:11.5px">
+              <option value="sep" ${(draft.vatMode || 'sep') === 'sep' ? 'selected' : ''}>부가세 별도</option>
+              <option value="inc" ${draft.vatMode === 'inc' ? 'selected' : ''}>부가세 포함</option>
+            </select>
+          </label>
+          <label style="font-size:11px;color:var(--muted)">세금계산서
+            <select id="dTaxStatus" class="select" style="width:100%;margin-top:2px;padding:5px 6px;font-size:11.5px">
+              ${TAX_STATUSES.map((t) => `<option value="${esc(t)}" ${(draft.taxStatus || '미발급') === t ? 'selected' : ''}>${esc(t)}</option>`).join('')}
+            </select>
           </label>
         </div>
       </div>
@@ -1428,6 +1677,14 @@ function openAdminSalesModal(tabKey = null) {
       draft.priceMan = Math.max(0, Number($('dPrice')?.value) || 0);
       draft.expiryDate = $('dExpiry')?.value || '';
       draft.memo = $('dMemo')?.value.trim() || '';
+      draft.bizNo = $('dBizNo')?.value.trim() || '';
+      draft.payStatus = $('dPayStatus')?.value || '입금완료';
+      draft.payDate = $('dPayDate')?.value || '';
+      draft.payMethod = $('dPayMethod')?.value || '계좌이체';
+      draft.vatMode = $('dVatMode')?.value || 'sep';
+      draft.taxStatus = $('dTaxStatus')?.value || '미발급';
+      const calcA = calcTaxAmounts(draft.priceMan, draft.vatMode);
+      draft.paidMan = draft.payStatus === '입금완료' ? Number((calcA.total / 10000).toFixed(1)) : 0;
       $('adminBody').querySelectorAll('[data-adm-tab]').forEach((el) => { draft.tabs[el.dataset.admTab] = el.checked; });
       $('adminBody').querySelectorAll('[data-adm-feat]').forEach((el) => { draft.features[el.dataset.admFeat] = el.checked; });
       const showSec = Boolean($('admAppLinksMaster')?.checked);
@@ -1487,11 +1744,22 @@ function openAdminSalesModal(tabKey = null) {
         email: draft.email,
         address: draft.address,
         bizType: draft.bizType,
+        bizNo: draft.bizNo || '',
         brandTitle: draft.brandTitle,
         brandBadge: draft.brandBadge,
         brandSub: draft.brandSub,
         pkg: draft.pkg,
         priceMan: draft.priceMan,
+        vatMode: draft.vatMode || 'sep',
+        payStatus: draft.payStatus || '입금완료',
+        payDate: draft.payDate || '',
+        payMethod: draft.payMethod || '계좌이체',
+        paidMan: draft.paidMan || 0,
+        depositor: draft.depositor || '',
+        taxStatus: draft.taxStatus || '미발급',
+        taxDate: draft.taxStatus === '발급완료' ? (draft.saleDate || todayKst) : '',
+        ntsConfirmNo: '',
+        taxEmail: draft.email || '',
         sellerCode: draft.sellerCode,
         sellerName: draft.sellerName,
         saleDate: draft.saleDate || todayKst,
@@ -1532,29 +1800,42 @@ function openAdminSalesModal(tabKey = null) {
     });
   }
 
-  // ---------- TAB 2: SALES STATUS CRM & PASSWORD RESET ----------
+  // ---------- TAB 2: SALES STATUS CRM, PAYMENT, TAX INVOICE & PASSWORD RESET ----------
   else if (activeTab === 'status') {
     const todayIso = new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 10);
     const totalSales = reg.sales.length;
     const totalRevMan = reg.sales.reduce((s, x) => s + (Number(x.priceMan) || 0), 0);
-    const activeCnt = reg.sales.filter((x) => x.status !== 'revoked' && (!x.expiryDate || x.expiryDate >= todayIso)).length;
-    const issueCnt = totalSales - activeCnt;
+    const paidSumMan = reg.sales.reduce((s, x) => {
+      if (x.payStatus === '입금완료') return s + (Number(x.paidMan) || Number((calcTaxAmounts(x.priceMan, x.vatMode).total / 10000).toFixed(1)));
+      if (x.payStatus === '부분입금') return s + (Number(x.paidMan) || 0);
+      return s;
+    }, 0);
+    const unpaidCnt = reg.sales.filter((x) => x.payStatus === '미수(대기)' || x.payStatus === '부분입금').length;
+    const unpaidTaxCnt = reg.sales.filter((x) => x.taxStatus === '미발급' || x.taxStatus === '발급요청').length;
 
     $('adminBody').innerHTML = `${tabBarHtml}
       <div class="nx-adm-kpi4">
-        <div class="nx-adm-kpi"><div class="l">총 판매 라이선스</div><div class="v">${fmt(totalSales)}건</div><div class="s">등록 고객사</div></div>
-        <div class="nx-adm-kpi"><div class="l">누적 판매 매출</div><div class="v" style="color:var(--c-corp)">${fmt(totalRevMan)}만원</div><div class="s">단순 합계 기준</div></div>
-        <div class="nx-adm-kpi"><div class="l">정상 활성 라이선스</div><div class="v" style="color:#059669">${fmt(activeCnt)}건</div><div class="s">실시간 이용 가능</div></div>
-        <div class="nx-adm-kpi"><div class="l">정지 · 만료</div><div class="v" style="color:#e11d48">${fmt(issueCnt)}건</div><div class="s">Kill-Switch / 만료</div></div>
+        <div class="nx-adm-kpi"><div class="l">총 납품 고객 / 공급가</div><div class="v">${fmt(totalSales)}건 · ${fmt(totalRevMan)}만</div><div class="s">등록 라이선스 기준</div></div>
+        <div class="nx-adm-kpi"><div class="l">💰 실입금 완료액</div><div class="v" style="color:#059669">${fmtDec(paidSumMan, 1)}만원</div><div class="s">부가세 포함 입금합계</div></div>
+        <div class="nx-adm-kpi"><div class="l">⏳ 미수 · 부분입금</div><div class="v" style="color:#d97706">${fmt(unpaidCnt)}건</div><div class="s">입금 확인 대기</div></div>
+        <div class="nx-adm-kpi"><div class="l">🧾 세금계산서 미발급</div><div class="v" style="color:${unpaidTaxCnt ? '#e11d48' : '#059669'}">${fmt(unpaidTaxCnt)}건</div><div class="s">국세청 발급 대상</div></div>
       </div>
 
       <div style="display:flex;gap:6px;margin-bottom:8px;flex-wrap:wrap">
-        <input id="crmQ" class="input" placeholder="고객사 · 고객명 · 연락처 · 이메일 · 주소 · 판매경로 · 비고 검색…" style="flex:1;min-width:200px;padding:6px 10px;font-size:12px" />
-        <select id="crmChannelFilter" class="select" style="font-size:12px;padding:6px 9px">
+        <input id="crmQ" class="input" placeholder="고객사 · 고객명 · 연락처 · 사업자번호 · 주소 · 승인번호 · 비고 검색…" style="flex:1;min-width:190px;padding:6px 10px;font-size:12px" />
+        <select id="crmChannelFilter" class="select" style="font-size:11.5px;padding:6px 8px">
           <option value="">전체 판매경로</option>
           ${SALES_CHANNELS.map((c) => `<option value="${esc(c)}">${esc(c)}</option>`).join('')}
         </select>
-        <select id="crmStatusFilter" class="select" style="font-size:12px;padding:6px 9px">
+        <select id="crmPayFilter" class="select" style="font-size:11.5px;padding:6px 8px">
+          <option value="">전체 입금상태</option>
+          ${PAY_STATUSES.map((p) => `<option value="${esc(p)}">${esc(p)}</option>`).join('')}
+        </select>
+        <select id="crmTaxFilter" class="select" style="font-size:11.5px;padding:6px 8px">
+          <option value="">전체 세금계산서</option>
+          ${TAX_STATUSES.map((t) => `<option value="${esc(t)}">${esc(t)}</option>`).join('')}
+        </select>
+        <select id="crmStatusFilter" class="select" style="font-size:11.5px;padding:6px 8px">
           <option value="">전체 상태</option>
           <option value="active">정상 활성</option>
           <option value="revoked">정지됨</option>
@@ -1562,15 +1843,15 @@ function openAdminSalesModal(tabKey = null) {
         </select>
       </div>
 
-      <div class="table-wrap" style="max-height:370px;overflow-y:auto">
+      <div class="table-wrap" style="max-height:365px;overflow-y:auto">
         <table class="data-table" style="font-size:11.5px">
           <thead>
             <tr>
               <th>고객사 / 고객명 / 업종</th>
-              <th>연락처 / 이메일 / 시설주소</th>
-              <th>라이선스 · 등급 · 금액</th>
-              <th>판매일자 · 판매경로 · 판매자</th>
-              <th>상태 · 비번 · 비고</th>
+              <th>연락처 / 이메일 / 주소</th>
+              <th>판매일자 · 경로 · 금액</th>
+              <th>💳 입금정보</th>
+              <th>🧾 세금계산서</th>
               <th>관리 액션</th>
             </tr>
           </thead>
@@ -1578,13 +1859,14 @@ function openAdminSalesModal(tabKey = null) {
         </table>
       </div>
       <div style="font-size:11px;color:var(--muted);margin-top:8px">
-        💡 <b>✏️ 수정</b>으로 고객명·연락처·주소·이메일·판매일자·판매경로·비고를 언제든 관리할 수 있고, <b>🔑 비번초기화</b>로 구매자 비번을 즉시 <code>admin</code> 리셋 및 1회용 원격 초기화 링크(유효 ${eo.resetHours || 72}시간)를 복사합니다.
+        💡 <b>✏️ 수정</b>에서 고객·입금·세금계산서 정보를 편집하고, 상단 <b>🧾 세금계산서·국세청API</b> 탭에서 홈택스 일괄발급 CSV 다운로드 및 API 연동을 관리하세요.
       </div>
     `;
 
     $('adminFoot').innerHTML = `
-      <button id="btnCrmCsv" class="btn btn-emerald btn-sm" type="button">📥 납품고객 CSV (전체컬럼)</button>
-      <button id="btnCrmBackup" class="btn btn-sm" type="button">📤 CRM JSON 백업</button>
+      <button id="btnCrmCsv" class="btn btn-emerald btn-sm" type="button">📥 고객·입금·세금 CSV (26컬럼)</button>
+      <button id="btnCrmHometax" class="btn btn-amber btn-sm" type="button">🧾 미발급 홈택스 CSV</button>
+      <button id="btnCrmBackup" class="btn btn-sm" type="button">📤 JSON 백업</button>
       <button id="btnCrmRestore" class="btn btn-sm" type="button">📂 JSON 복원</button>
       <input id="crmRestoreFile" type="file" accept=".json" style="display:none" />
       <button id="btnCrmNew" class="btn btn-primary btn-sm" type="button" style="margin-left:auto">➕ 신규 납품 고객 등록</button>
@@ -1593,13 +1875,17 @@ function openAdminSalesModal(tabKey = null) {
     const drawRows = () => {
       const q = ($('crmQ')?.value || '').trim().toLowerCase();
       const cf = $('crmChannelFilter')?.value || '';
+      const pf = $('crmPayFilter')?.value || '';
+      const tf = $('crmTaxFilter')?.value || '';
       const sf = $('crmStatusFilter')?.value || '';
       const filtered = reg.sales.filter((x) => {
         const isExp = Boolean(x.expiryDate && x.expiryDate < todayIso);
         const effSt = x.status === 'revoked' ? 'revoked' : (isExp ? 'expired' : 'active');
         if (sf && effSt !== sf) return false;
         if (cf && (x.channel || '') !== cf) return false;
-        const hay = `${x.companyName} ${x.contactName || ''} ${x.phone || ''} ${x.email || ''} ${x.address || ''} ${x.bizType || ''} ${x.channel || ''} ${x.brandTitle} ${x.licId} ${x.sellerName} ${x.saleDate || x.issuedAt || ''} ${x.memo || ''}`.toLowerCase();
+        if (pf && (x.payStatus || '미수(대기)') !== pf) return false;
+        if (tf && (x.taxStatus || '미발급') !== tf) return false;
+        const hay = `${x.companyName} ${x.contactName || ''} ${x.phone || ''} ${x.email || ''} ${x.address || ''} ${x.bizType || ''} ${x.bizNo || ''} ${x.channel || ''} ${x.payStatus || ''} ${x.depositor || ''} ${x.taxStatus || ''} ${x.ntsConfirmNo || ''} ${x.brandTitle} ${x.licId} ${x.sellerName} ${x.saleDate || x.issuedAt || ''} ${x.memo || ''}`.toLowerCase();
         if (q && !hay.includes(q)) return false;
         return true;
       });
@@ -1611,41 +1897,53 @@ function openAdminSalesModal(tabKey = null) {
         const stBadge = isRev
           ? '<span class="nx-lic-badge nx-lic-revoked">🚫 정지</span>'
           : (isExp ? '<span class="nx-lic-badge nx-lic-expired">⏳ 만료</span>' : '<span class="nx-lic-badge nx-lic-active">✓ 정상</span>');
+        const payBadge = x.payStatus === '입금완료'
+          ? '<span class="nx-lic-badge nx-lic-active">✓ 입금완료</span>'
+          : (x.payStatus === '부분입금' ? '<span class="nx-lic-badge nx-lic-expired">◐ 부분입금</span>'
+            : (x.payStatus === '환불·취소' ? '<span class="nx-lic-badge nx-lic-revoked">✕ 환불</span>'
+              : '<span class="nx-lic-badge nx-lic-expired">⏳ 미수</span>'));
+        const taxBadge = x.taxStatus === '발급완료'
+          ? '<span class="nx-lic-badge nx-lic-active">🧾 발급완료</span>'
+          : (x.taxStatus === '해당없음(크몽/카드)' ? '<span class="tag tag-gray" style="font-size:10px">해당없음</span>'
+            : `<span class="nx-lic-badge nx-lic-revoked">⚠️ ${esc(x.taxStatus || '미발급')}</span>`);
+        const amt = calcTaxAmounts(x.priceMan, x.vatMode || 'sep');
         const bLocal = loadBuyerState(x.licId);
-        const pwTag = bLocal.mustChangePw ? '<span style="color:#d97706;font-size:10.5px">초기(admin)</span>' : '<span style="color:#059669;font-size:10.5px">변경완료</span>';
+        const pwTag = bLocal.mustChangePw ? '<span style="color:#d97706;font-size:10px">초기(admin)</span>' : '<span style="color:#059669;font-size:10px">비번변경됨</span>';
         return `
           <tr>
             <td>
-              <b>${esc(x.companyName)}</b>
-              <div style="font-size:11px;color:var(--text-2)">👤 ${esc(x.contactName || '담당자 미입력')}${x.bizType ? ` · <span style="color:var(--c-corp)">${esc(x.bizType)}</span>` : ''}</div>
-              <div style="font-size:10.5px;color:var(--muted)">${esc(x.brandTitle)} ${esc(x.brandBadge || '')}</div>
+              <b>${esc(x.companyName)}</b> ${stBadge}
+              <div style="font-size:11px;color:var(--text-2)">👤 ${esc(x.contactName || '미입력')}${x.bizType ? ` · <span style="color:var(--c-corp)">${esc(x.bizType)}</span>` : ''}</div>
+              <div style="font-size:10px;color:var(--muted)"><code>${esc(x.licId)}</code> · ${pwTag}</div>
             </td>
-            <td style="min-width:170px">
+            <td style="min-width:165px">
               <div>${x.phone ? `<a href="tel:${esc(x.phone)}" style="color:var(--text);font-weight:700;text-decoration:none">📞 ${esc(x.phone)}</a>` : '<span style="color:var(--muted)">연락처 미입력</span>'}</div>
               <div style="font-size:10.5px">${x.email ? `<a href="mailto:${esc(x.email)}" style="color:var(--c-corp);text-decoration:none">✉️ ${esc(x.email)}</a>` : '<span style="color:var(--muted)">이메일 미입력</span>'}</div>
-              <div style="font-size:10.5px;color:var(--muted);max-width:210px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(x.address || '')}">📍 ${esc(x.address || '주소 미입력')}</div>
+              <div style="font-size:10px;color:var(--muted);max-width:190px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(x.address || '')}">📍 ${esc(x.address || '주소 미입력')}</div>
             </td>
             <td>
-              <code>${esc(x.licId)}</code>
-              <div style="font-size:10.5px;color:var(--c-corp);font-weight:700">${esc((x.pkg || '').toUpperCase())} · ${fmt(x.priceMan || 0)}만원</div>
+              <b>${esc(x.saleDate || x.issuedAt || '-')}</b> <span class="tag tag-gray" style="padding:1px 5px;font-size:10px">${esc(x.channel || '본사직판')}</span>
+              <div style="font-size:11px;font-weight:800;color:var(--c-corp)">${esc((x.pkg || '').toUpperCase())} · 합계 ${fmtDec(amt.total / 10000, 1)}만</div>
+              <div style="font-size:10px;color:var(--muted)">공급 ${fmt(amt.supply)} + 세액 ${fmt(amt.vat)}</div>
             </td>
             <td>
-              <b>${esc(x.saleDate || x.issuedAt || '-')}</b>
-              <div style="font-size:10.5px"><span class="tag tag-gray" style="padding:1px 6px;font-size:10px">${esc(x.channel || '본사직판')}</span></div>
-              <div style="font-size:10.5px;color:var(--muted)">${esc(x.sellerName || '-')} · ${esc(x.expiryDate || '영구')}</div>
-            </td>
-            <td style="max-width:150px">
-              ${stBadge} ${pwTag}${x.resetCount ? `<span style="font-size:10px;color:var(--muted)"> · 리셋${x.resetCount}</span>` : ''}
-              <div style="font-size:10.5px;color:var(--muted);margin-top:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(x.memo || '')}">${esc(x.memo || '-')}</div>
+              ${payBadge}
+              <div style="font-size:10.5px;margin-top:2px">${esc(x.payDate || '미입금')} · ${esc(x.payMethod || '계좌이체')}</div>
+              <div style="font-size:10px;color:var(--muted);max-width:130px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(x.depositor || '')}">${esc(x.depositor || (x.paidMan ? `실입금 ${x.paidMan}만` : '-'))}</div>
             </td>
             <td>
-              <div style="display:flex;gap:4px;flex-wrap:wrap">
-                <button type="button" class="btn btn-primary btn-sm" data-crm-edit="${esc(x.licId)}" title="고객명·연락처·주소·이메일·판매경로·비고 수정">✏️ 수정</button>
+              ${taxBadge}
+              <div style="font-size:10px;margin-top:2px;color:var(--muted)">사업자: <code>${esc(x.bizNo || '미입력')}</code></div>
+              <div style="font-size:10px;color:var(--muted);max-width:135px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(x.ntsConfirmNo || '')}">${x.ntsConfirmNo ? `승인 ${esc(x.ntsConfirmNo)}` : (x.taxDate ? `발급 ${esc(x.taxDate)}` : esc(x.memo || '-'))}</div>
+            </td>
+            <td>
+              <div style="display:flex;gap:3px;flex-wrap:wrap">
+                <button type="button" class="btn btn-primary btn-sm" data-crm-edit="${esc(x.licId)}" title="고객·입금·세금계산서 수정">✏️ 수정</button>
                 <button type="button" class="btn btn-sm" data-crm-copy="${esc(x.licId)}" title="판매링크 복사">🔗</button>
-                <button type="button" class="btn btn-amber btn-sm" data-crm-reset="${esc(x.licId)}" title="구매자 비밀번호 admin 초기화 + 원격 리셋링크 복사">🔑 비번초기화</button>
-                <button type="button" class="btn btn-sm" data-crm-prev="${esc(x.licId)}" title="새 탭에서 구매자 화면 미리보기">👁️</button>
-                <button type="button" class="btn btn-sm" data-crm-kit="${esc(x.licId)}" title="납품 안내 키트">📦</button>
-                <button type="button" class="btn btn-sm" data-crm-rev="${esc(x.licId)}" title="${isRev ? '라이선스 복구' : '라이선스 정지'}">${isRev ? '▶️ 복구' : '⏸️ 정지'}</button>
+                <button type="button" class="btn btn-amber btn-sm" data-crm-reset="${esc(x.licId)}" title="구매자 비밀번호 admin 초기화">🔑 비번</button>
+                <button type="button" class="btn btn-sm" data-crm-prev="${esc(x.licId)}" title="구매자 미리보기">👁️</button>
+                <button type="button" class="btn btn-sm" data-crm-kit="${esc(x.licId)}" title="납품 키트">📦</button>
+                <button type="button" class="btn btn-sm" data-crm-rev="${esc(x.licId)}" title="${isRev ? '복구' : '정지'}">${isRev ? '▶️' : '⏸️'}</button>
                 <button type="button" class="btn btn-sm" data-crm-del="${esc(x.licId)}" title="삭제">🗑️</button>
               </div>
             </td>
@@ -1668,13 +1966,11 @@ function openAdminSalesModal(tabKey = null) {
       tb.querySelectorAll('[data-crm-reset]').forEach((b) => b.addEventListener('click', () => {
         const s = reg.sales.find((x) => x.licId === b.dataset.crmReset);
         if (!s) return;
-        // 1) Local tenant instant reset to 'admin'
         const bSt = loadBuyerState(s.licId);
         bSt.pwHash = BUYER_DEFAULT_PW_HASH;
         bSt.mustChangePw = true;
         bSt.pwChangedAt = '';
         saveBuyerState(s.licId, bSt);
-        // 2) Generate signed 1-time remote reset URL
         const rstTok = buildRemoteResetToken(s.licId, eo.resetHours || 72);
         const rstUrl = `${s.signedUrl}${s.signedUrl.includes('?') ? '&' : '?'}rst=${rstTok}`;
         s.resetCount = (s.resetCount || 0) + 1;
@@ -1710,23 +2006,36 @@ function openAdminSalesModal(tabKey = null) {
     drawRows();
     $('crmQ')?.addEventListener('input', drawRows);
     $('crmChannelFilter')?.addEventListener('change', drawRows);
+    $('crmPayFilter')?.addEventListener('change', drawRows);
+    $('crmTaxFilter')?.addEventListener('change', drawRows);
     $('crmStatusFilter')?.addEventListener('change', drawRows);
     $('btnCrmNew')?.addEventListener('click', () => openAdminSalesModal('issue'));
+    $('btnCrmHometax')?.addEventListener('click', () => {
+      const targets = reg.sales.filter((x) => x.taxStatus === '미발급' || x.taxStatus === '발급요청');
+      if (!targets.length) { toast('ℹ️ 미발급·발급요청 상태의 세금계산서 대상이 없습니다.'); return; }
+      downloadHometaxBatchCsv(targets, reg.taxConfig);
+      toast(`🧾 미발급 ${targets.length}건 홈택스 일괄발급 CSV 다운로드 완료!`);
+    });
     $('btnCrmCsv')?.addEventListener('click', () => {
-      const hd = '라이선스ID,고객사(시설명),고객명(담당자),연락처,이메일,주소,시설업종,브랜드,패키지,판매금액(만원),판매일자,판매경로,담당판매자,만료일,상태,비번초기화횟수,비고,판매링크\n';
-      const rows = reg.sales.map((x) => [
-        x.licId, x.companyName, x.contactName || '', x.phone || '', x.email || '', x.address || '', x.bizType || '',
-        x.brandTitle, x.pkg, x.priceMan, x.saleDate || x.issuedAt || '', x.channel || '본사직판',
-        x.sellerName, x.expiryDate || '영구', x.status, x.resetCount || 0, x.memo || '', x.signedUrl,
-      ].map((v) => `"${String(v ?? '').replace(/"/g, '""')}"`).join(',')).join('\n');
+      const hd = '라이선스ID,고객사(시설명),고객명(담당자),연락처,이메일,주소,시설업종,사업자등록번호,브랜드,패키지,공급가액(원),부가세(원),합계금액(원),입금상태,입금일자,입금수단,실입금액(만원),입금자계좌,세금계산서발급여부,발급일자,국세청승인번호,판매일자,판매경로,담당판매자,비고,판매링크\n';
+      const rows = reg.sales.map((x) => {
+        const a = calcTaxAmounts(x.priceMan, x.vatMode || 'sep');
+        return [
+          x.licId, x.companyName, x.contactName || '', x.phone || '', x.email || '', x.address || '', x.bizType || '', x.bizNo || '',
+          x.brandTitle, x.pkg, a.supply, a.vat, a.total,
+          x.payStatus || '미수(대기)', x.payDate || '', x.payMethod || '', x.paidMan || 0, x.depositor || '',
+          x.taxStatus || '미발급', x.taxDate || '', x.ntsConfirmNo || '',
+          x.saleDate || x.issuedAt || '', x.channel || '본사직판', x.sellerName, x.memo || '', x.signedUrl,
+        ].map((v) => `"${String(v ?? '').replace(/"/g, '""')}"`).join(',');
+      }).join('\n');
       const blob = new Blob(['\uFEFF' + hd + rows], { type: 'text/csv;charset=utf-8' });
-      const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `nexusone_delivered_customers_${new Date().toISOString().slice(0, 10)}.csv`; a.click();
-      toast('📥 납품 고객 리스트 CSV (18개 전체컬럼) 다운로드 완료');
+      const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `nexusone_delivered_accounting_${new Date().toISOString().slice(0, 10)}.csv`; a.click();
+      toast('📥 고객·입금·세금계산서 CSV (26개 전체컬럼) 다운로드 완료');
     });
     $('btnCrmBackup')?.addEventListener('click', () => {
       const blob = new Blob([JSON.stringify(reg, null, 2)], { type: 'application/json' });
       const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `nexusone_crm_backup_${new Date().toISOString().slice(0, 10)}.json`; a.click();
-      toast('📤 납품 고객·판매자 CRM JSON 백업 완료');
+      toast('📤 납품 고객·입금·세금 CRM JSON 백업 완료');
     });
     $('btnCrmRestore')?.addEventListener('click', () => $('crmRestoreFile')?.click());
     $('crmRestoreFile')?.addEventListener('change', (e) => {
@@ -1747,6 +2056,224 @@ function openAdminSalesModal(tabKey = null) {
       };
       reader.readAsText(file);
     });
+  }
+
+  // ---------- TAB 6 (NEW): TAX INVOICE & NTS API INTEGRATION CENTER ----------
+  else if (activeTab === 'tax') {
+    const tc = { ...defaultTaxConfig(), ...(reg.taxConfig || {}) };
+    const pendingList = reg.sales.filter((x) => x.taxStatus === '미발급' || x.taxStatus === '발급요청');
+    const workerSnippet = `// Cloudflare Worker 프록시 예시 (팝빌 Popbill / 바로빌 Barobill 중계 -> 국세청 자동전송)
+export default {
+  async fetch(req, env) {
+    if (req.method === 'OPTIONS') return new Response(null, { headers: { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'Content-Type, Authorization' } });
+    if (req.headers.get('Authorization') !== 'Bearer ' + env.NX1_API_TOKEN) return new Response('Unauthorized', { status: 401 });
+    const p = await req.json();
+    // 1) 중계사(Popbill/Barobill/Bolta) 공식 REST API로 전자서명·발행 요청 (공동인증서는 ASP에 1회 등록)
+    // 2) 국세청 승인번호(ntsConfirmNum)를 수신하여 아래 JSON으로 반환:
+    const res = await fetch(env.ASP_ISSUE_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + env.ASP_SECRET_KEY },
+      body: JSON.stringify(p),
+    });
+    const data = await res.json();
+    return new Response(JSON.stringify({ ok: res.ok, ntsConfirmNo: data.ntsConfirmNum || data.issuanceKey || '', raw: data }), {
+      headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
+    });
+  }
+};`;
+
+    $('adminBody').innerHTML = `${tabBarHtml}
+      <div class="domain-box" style="margin-bottom:10px;border-color:rgba(79,70,229,.35);background:rgba(79,70,229,.04)">
+        <h4 style="margin:0 0 8px">1. 공급자(판매자) 사업자정보 & 국세청 중계 API 설정</h4>
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:6px;margin-bottom:6px">
+          <label style="font-size:11px;color:var(--muted)">공급자 사업자번호
+            <input id="txSupBiz" class="input mono" value="${esc(tc.supplierBizNo)}" placeholder="000-00-00000" style="width:100%;margin-top:2px;font-size:12px" />
+          </label>
+          <label style="font-size:11px;color:var(--muted)">공급자 상호
+            <input id="txSupName" class="input" value="${esc(tc.supplierName)}" placeholder="예: 넥서스원" style="width:100%;margin-top:2px;font-size:12px" />
+          </label>
+          <label style="font-size:11px;color:var(--muted)">대표자 성명
+            <input id="txSupCeo" class="input" value="${esc(tc.supplierCeo)}" placeholder="예: 박희본" style="width:100%;margin-top:2px;font-size:12px" />
+          </label>
+          <label style="font-size:11px;color:var(--muted)">공급자 이메일
+            <input id="txSupEmail" class="input" value="${esc(tc.supplierEmail)}" placeholder="tax@nexusone.kr" style="width:100%;margin-top:2px;font-size:12px" />
+          </label>
+        </div>
+        <div style="display:grid;grid-template-columns:1.5fr 1fr 1fr;gap:6px;margin-bottom:6px">
+          <label style="font-size:11px;color:var(--muted)">공급자 사업장 주소
+            <input id="txSupAddr" class="input" value="${esc(tc.supplierAddr)}" placeholder="사업자등록증 소재지" style="width:100%;margin-top:2px;font-size:12px" />
+          </label>
+          <label style="font-size:11px;color:var(--muted)">업태
+            <input id="txSupType" class="input" value="${esc(tc.supplierBizType)}" style="width:100%;margin-top:2px;font-size:12px" />
+          </label>
+          <label style="font-size:11px;color:var(--muted)">종목
+            <input id="txSupClass" class="input" value="${esc(tc.supplierBizClass)}" style="width:100%;margin-top:2px;font-size:12px" />
+          </label>
+        </div>
+        <div style="display:grid;grid-template-columns:180px 1.4fr 1fr auto;gap:6px;align-items:end">
+          <label style="font-size:11px;color:var(--muted)">발급 연동 방식
+            <select id="txProvider" class="select" style="width:100%;margin-top:2px;font-size:12px">
+              <option value="popbill" ${tc.provider === 'popbill' ? 'selected' : ''}>팝빌 (Popbill · 추천)</option>
+              <option value="barobill" ${tc.provider === 'barobill' ? 'selected' : ''}>바로빌 (Barobill)</option>
+              <option value="bolta" ${tc.provider === 'bolta' ? 'selected' : ''}>볼타 (Bolta REST)</option>
+              <option value="smartbill" ${tc.provider === 'smartbill' ? 'selected' : ''}>스마트빌 (SmartBill)</option>
+              <option value="hometax_csv" ${tc.provider === 'hometax_csv' ? 'selected' : ''}>홈택스 엑셀 일괄발급(무료)</option>
+            </select>
+          </label>
+          <label style="font-size:11px;color:var(--muted)">API 프록시 Endpoint (Cloudflare Worker / 사내서버)
+            <input id="txEndpoint" class="input mono" value="${esc(tc.proxyEndpoint)}" placeholder="https://tax-proxy.your-domain.workers.dev/issue" style="width:100%;margin-top:2px;font-size:11.5px" />
+          </label>
+          <label style="font-size:11px;color:var(--muted)">프록시 인증 토큰 (로컬 전용)
+            <input id="txToken" class="input mono" type="password" value="${esc(tc.apiToken)}" placeholder="Bearer Token" style="width:100%;margin-top:2px;font-size:11.5px" />
+          </label>
+          <button id="btnSaveTaxCfg" class="btn btn-primary btn-sm" type="button" style="height:34px">저장</button>
+        </div>
+      </div>
+
+      <div class="domain-box" style="margin-bottom:10px">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap">
+          <h4 style="margin:0">2. 세금계산서 발급 대기열 (미발급·발급요청 ${pendingList.length}건)</h4>
+          <button id="btnTaxBatchCsv" class="btn btn-emerald btn-sm" type="button">📥 미발급 전체 홈택스 일괄발급 CSV</button>
+        </div>
+        <div class="table-wrap" style="max-height:175px;overflow-y:auto">
+          <table class="data-table" style="font-size:11.5px">
+            <thead><tr><th>고객사 / 사업자번호</th><th>공급가 / 부가세 / 합계</th><th>입금상태 / 수신이메일</th><th>발급 액션</th></tr></thead>
+            <tbody>
+              ${pendingList.map((x) => {
+                const a = calcTaxAmounts(x.priceMan, x.vatMode || 'sep');
+                return `
+                  <tr>
+                    <td><b>${esc(x.companyName)}</b><div style="font-size:10.5px;color:var(--muted)"><code>${esc(x.bizNo || '사업자번호 미입력')}</code> · ${esc(x.licId)}</div></td>
+                    <td><b>${fmt(a.total)}원</b><div style="font-size:10px;color:var(--muted)">공급 ${fmt(a.supply)} + 세액 ${fmt(a.vat)}</div></td>
+                    <td>${esc(x.payStatus || '미수')}<div style="font-size:10.5px;color:var(--c-corp)">${esc(x.taxEmail || x.email || '이메일 미입력')}</div></td>
+                    <td>
+                      <div style="display:flex;gap:4px;flex-wrap:wrap">
+                        <button type="button" class="btn btn-primary btn-sm" data-tx-api="${esc(x.licId)}">🚀 API 발행</button>
+                        <button type="button" class="btn btn-sm" data-tx-json="${esc(x.licId)}">📋 JSON</button>
+                        <button type="button" class="btn btn-emerald btn-sm" data-tx-done="${esc(x.licId)}">✅ 수기발급 완료</button>
+                      </div>
+                    </td>
+                  </tr>`;
+              }).join('') || '<tr><td colspan="4" style="text-align:center;padding:16px;color:#059669;font-weight:700">✓ 현재 미발급 세금계산서가 없습니다. 모든 발행이 완료되었습니다!</td></tr>'}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="domain-box">
+        <h4 style="margin:0 0 8px">3. 📚 국세청 전자세금계산서 API 연동 실전 가이드 (중계사업자 표준 구조)</h4>
+        <div style="font-size:11.5px;line-height:1.55;color:var(--text-2);margin-bottom:8px">
+          <b>⚠️ 핵심 원칙</b>: 국세청 홈택스 자체는 일반 사업자에게 <b>직접 발행 Open API를 제공하지 않습니다.</b> 실무에서는 국세청 지정 전자세금계산서 중계사업자(ASP)의 공식 API를 호출하면 중계사가 공동인증서 전자서명 후 <b>국세청으로 즉시 자동 전송</b>하는 표준 구조를 사용합니다.<br>
+          <b>💡 즉시 0원 대안</b>: 월 발행건수가 적을 때는 위 <b>[📥 홈택스 일괄발급 CSV]</b>를 내려받아 홈택스 <code>조회/발급 → 전자세금계산서 → 일괄발급</code>에 업로드하면 <b>수수료 0원</b>으로 발행 가능합니다.
+        </div>
+        <div class="table-wrap" style="margin-bottom:8px">
+          <table class="data-table" style="font-size:11px">
+            <thead><tr><th>중계 API 사업자</th><th>예상 건당 단가</th><th>인증서 · 특징</th><th>추천 대상</th></tr></thead>
+            <tbody>
+              <tr><td><b>팝빌 (Popbill)</b></td><td>약 100~200원/건</td><td>국내 점유율 1위 · 공동인증서 1회 등록 · Node/Python SDK 완비</td><td><b>가장 표준 · 안정성 최우선</b></td></tr>
+              <tr><td><b>볼타 (Bolta)</b></td><td>월정액/건당 선택</td><td>모던 REST JSON API · 공동인증서 클라우드 자동관리 · 개발 최단</td><td><b>빠른 SaaS/Worker 연동 추천</b></td></tr>
+              <tr><td><b>바로빌 (Barobill)</b></td><td>약 100~180원/건</td><td>세금계산서+현금영수증+계좌조회 통합 · 테스트 샌드박스 무료</td><td>계좌 입금 자동매칭까지 확장 시</td></tr>
+              <tr><td><b>홈택스 일괄발급</b></td><td><b>0원 (무료)</b></td><td>본 앱 CSV 출력 → 홈택스 엑셀 일괄업로드 (API 개발 불필요)</td><td>월 30건 미만 초기 판매 단계</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div style="font-size:11.5px;line-height:1.55;margin-bottom:6px">
+          <b>🛠️ 5단계 API 연동 절차</b>: ① 중계사(팝빌/볼타/바로빌) 사업자 가입 및 테스트키 발급 → ② 전자세금계산서용 공동인증서 1회 등록 → ③ 아래 Cloudflare Worker 프록시(무료 플랜 일 10만회) 배포 및 Secret 환경변수(<code>ASP_SECRET_KEY</code>, <code>NX1_API_TOKEN</code>) 등록 → ④ 위 <code>API 프록시 Endpoint</code>에 Worker URL 입력 후 저장 → ⑤ 대기열에서 <b>[🚀 API 발행]</b> 클릭 시 국세청 자동전송 + 승인번호 자동 기록!
+        </div>
+        <pre id="txWorkerCode" style="margin:0;padding:8px 10px;border-radius:8px;background:var(--surface-2);border:1px solid var(--border);font-size:10.5px;overflow-x:auto;max-height:135px">${esc(workerSnippet)}</pre>
+      </div>
+    `;
+
+    $('adminFoot').innerHTML = `
+      <button id="btnCopyWorkerCode" class="btn btn-emerald btn-sm" type="button">📋 Cloudflare Worker 프록시 코드 복사</button>
+      <a class="btn btn-sm" href="https://www.hometax.go.kr" target="_blank" rel="noopener">🏛️ 국세청 홈택스 열기 ↗</a>
+      <button id="btnTaxBack" class="btn btn-primary btn-sm" type="button" style="margin-left:auto">← 납품고객·입금 목록으로</button>
+    `;
+
+    $('btnTaxBack')?.addEventListener('click', () => openAdminSalesModal('status'));
+    $('btnCopyWorkerCode')?.addEventListener('click', () => {
+      navigator.clipboard?.writeText(workerSnippet);
+      toast('📋 Cloudflare Worker 국세청 API 프록시 코드가 복사되었습니다!');
+    });
+    $('btnTaxBatchCsv')?.addEventListener('click', () => {
+      const targets = pendingList.length ? pendingList : reg.sales;
+      downloadHometaxBatchCsv(targets, reg.taxConfig);
+      toast(`📥 홈택스 일괄발급 CSV (${targets.length}건) 다운로드 완료!`);
+    });
+    $('btnSaveTaxCfg')?.addEventListener('click', () => {
+      reg.taxConfig = {
+        provider: $('txProvider')?.value || 'popbill',
+        supplierBizNo: $('txSupBiz')?.value.trim() || '',
+        supplierName: $('txSupName')?.value.trim() || '넥서스원',
+        supplierCeo: $('txSupCeo')?.value.trim() || '',
+        supplierAddr: $('txSupAddr')?.value.trim() || '',
+        supplierBizType: $('txSupType')?.value.trim() || '정보통신업',
+        supplierBizClass: $('txSupClass')?.value.trim() || '소프트웨어 개발 및 공급업',
+        supplierEmail: $('txSupEmail')?.value.trim() || '',
+        proxyEndpoint: $('txEndpoint')?.value.trim() || '',
+        apiToken: $('txToken')?.value.trim() || '',
+      };
+      saveSellerRegistry(reg);
+      appendAudit('TAX_CFG_SAVED', 'MASTER', `공급자:${reg.taxConfig.supplierName} · 연동:${reg.taxConfig.provider}`);
+      toast('✅ 공급자 정보 및 국세청 API 연동 설정이 저장되었습니다!');
+    });
+
+    $('adminBody').querySelectorAll('[data-tx-json]').forEach((b) => b.addEventListener('click', () => {
+      const s = reg.sales.find((x) => x.licId === b.dataset.txJson);
+      if (!s) return;
+      const payload = buildTaxApiPayload(s, reg.taxConfig);
+      navigator.clipboard?.writeText(JSON.stringify(payload, null, 2));
+      toast(`📋 ${s.companyName} 전자세금계산서 API 요청 JSON이 복사되었습니다!`);
+    }));
+
+    $('adminBody').querySelectorAll('[data-tx-done]').forEach((b) => b.addEventListener('click', () => {
+      const s = reg.sales.find((x) => x.licId === b.dataset.txDone);
+      if (!s) return;
+      const todayIso = new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 10);
+      s.taxStatus = '발급완료';
+      s.taxDate = s.taxDate || todayIso;
+      if (!s.ntsConfirmNo) s.ntsConfirmNo = `${todayIso.replace(/-/g, '')}-HOMETAX-MANUAL`;
+      saveSellerRegistry(reg);
+      appendAudit('TAX_INVOICE_MANUAL_DONE', s.licId, `${s.companyName} 홈택스 수기발급 완료 처리`);
+      openAdminSalesModal('tax');
+      toast(`✅ ${s.companyName} 세금계산서 발급완료 처리되었습니다!`);
+    }));
+
+    $('adminBody').querySelectorAll('[data-tx-api]').forEach((b) => b.addEventListener('click', async () => {
+      const s = reg.sales.find((x) => x.licId === b.dataset.txApi);
+      if (!s) return;
+      const curTc = reg.taxConfig || defaultTaxConfig();
+      const payload = buildTaxApiPayload(s, curTc);
+      if (!curTc.proxyEndpoint) {
+        navigator.clipboard?.writeText(JSON.stringify(payload, null, 2));
+        toast('ℹ️ API 프록시 Endpoint 미설정 상태입니다. 표준 API 요청 JSON을 복사했으니 위 가이드대로 프록시를 연결하거나 [홈택스 CSV]로 즉시 발행하세요.');
+        return;
+      }
+      b.disabled = true; b.textContent = '전송 중…';
+      try {
+        const res = await fetch(curTc.proxyEndpoint, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(curTc.apiToken ? { Authorization: `Bearer ${curTc.apiToken}` } : {}),
+          },
+          body: JSON.stringify(payload),
+        });
+        const j = await res.json().catch(() => ({}));
+        if (!res.ok || j.ok === false) throw new Error(j.message || `HTTP ${res.status}`);
+        const todayIso = new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 10);
+        s.taxStatus = '발급완료';
+        s.taxDate = todayIso;
+        s.ntsConfirmNo = j.ntsConfirmNo || j.ntsConfirmNum || `${todayIso.replace(/-/g, '')}-API-OK`;
+        saveSellerRegistry(reg);
+        appendAudit('TAX_INVOICE_API_ISSUED', s.licId, `${s.companyName} 국세청 API 발행 완료 (승인번호: ${s.ntsConfirmNo})`);
+        openAdminSalesModal('tax');
+        toast(`🧾 ${s.companyName} 국세청 전자세금계산서 API 발행 완료!`);
+      } catch (err) {
+        b.disabled = false; b.textContent = '🚀 API 발행';
+        toast(`⚠️ API 발행 실패: ${err.message}`);
+      }
+    }));
   }
 
   // ---------- TAB 3: SELLER / RESELLER MANAGEMENT ----------

@@ -414,7 +414,10 @@ function verifyRemoteResetToken(token, expectedLicId) {
   }
 }
 
-// ===== SELLER CRM REGISTRY (SALES · SELLERS · REVOCATION · TOP 10 OPTIONS) =====
+// ===== SELLER CRM REGISTRY (DELIVERED CUSTOMERS · SELLERS · REVOCATION · TOP 10 OPTIONS) =====
+const SALES_CHANNELS = ['크몽', '본사직판', '유튜브/쇼츠', '지인소개', '블로그/검색', '파트너/대리점', '전시회/세미나', '기타'];
+const FACILITY_TYPES = ['건설·안전시설', '전기·통신·소방', '보안·CCTV·출입통제', '공동주택·시설관리', '법인영업/RM', '프랜차이즈·상권', '부동산·분양', '기타'];
+
 function defaultSellerRegistry() {
   const sampleCfg = createClientSampleConfig();
   return {
@@ -426,6 +429,11 @@ function defaultSellerRegistry() {
       {
         licId: sampleCfg.licId,
         companyName: sampleCfg.companyName,
+        contactName: '김한빛 부장',
+        phone: '010-4821-7700',
+        email: 'bid@hanbitsafety.co.kr',
+        address: '경기도 수원시 영통구 광교중앙로 145',
+        bizType: '건설·안전시설',
         brandTitle: sampleCfg.brandTitle,
         brandBadge: sampleCfg.brandBadge,
         brandSub: sampleCfg.brandSub,
@@ -433,12 +441,14 @@ function defaultSellerRegistry() {
         priceMan: 59,
         sellerCode: 'SLR-001',
         sellerName: '본사 직판 (마스터)',
+        saleDate: '2026-11-26',
         issuedAt: '2026-11-26',
+        channel: '크몽',
         expiryDate: '',
         status: 'active', // active | revoked
         resetCount: 0,
         lastResetAt: '',
-        memo: '실제 판매 납품 샘플 · DELUXE 화이트라벨',
+        memo: '실제 판매 납품 샘플 · DELUXE 화이트라벨 · 세금계산서 발행 완료',
         cfg: sampleCfg,
         signedUrl: `${location.origin}${location.pathname}?lic=${encodeSignedLicense(sampleCfg, defaultExpertOpts())}`,
       },
@@ -453,9 +463,22 @@ function loadSellerRegistry() {
   try {
     const raw = JSON.parse(localStorage.getItem(MASTER_REG_KEY) || 'null');
     if (raw && Array.isArray(raw.sales)) {
+      const normalizedSales = raw.sales.map((x) => {
+        const isSample = x.licId === 'HB-2026-DLX-001';
+        return {
+          contactName: isSample ? '김한빛 부장' : '',
+          phone: isSample ? '010-4821-7700' : '',
+          email: isSample ? 'bid@hanbitsafety.co.kr' : '',
+          address: isSample ? '경기도 수원시 영통구 광교중앙로 145' : '',
+          bizType: isSample ? '건설·안전시설' : '',
+          channel: isSample ? '크몽' : '본사직판',
+          saleDate: x.saleDate || x.issuedAt || '',
+          ...x,
+        };
+      });
       return {
         sellers: Array.isArray(raw.sellers) && raw.sellers.length ? raw.sellers : defaultSellerRegistry().sellers,
-        sales: raw.sales,
+        sales: normalizedSales,
         revoked: Array.isArray(raw.revoked) ? raw.revoked : [],
         expertOpts: { ...defaultExpertOpts(), ...(raw.expertOpts || {}) },
         masterPinHash: raw.masterPinHash || MASTER_DEFAULT_PIN_HASH,
@@ -1053,35 +1076,135 @@ function openDeliveryKitModal(sale) {
   const pkgInfo = SALES_PACKAGES[sale.pkg] || SALES_PACKAGES.deluxe;
   const tabNames = { overview: '통합 360°', corp: '기업분석(12만)', bid: '입찰·사전규격', sbiz: '상권지도(275만)', realestate: '청약·착공', hub: 'API·CRM' };
   const activeTabs = Object.entries(sale.cfg?.tabs || {}).filter(([, v]) => v).map(([k]) => tabNames[k] || k).join(' · ');
-  const kakaoTxt = `[${sale.brandTitle} ${sale.brandBadge || 'PRO'} 납품 완료 안내]\n• 고객사: ${sale.companyName}\n• 라이선스: ${sale.licId} (${pkgInfo.label})\n• 사용기간: ${sale.expiryDate || '영구 소장'}\n• 전용 접속 링크:\n${sale.signedUrl}\n\n🔐 구매자 자체 관리자 안내\n1) 앱 우측 상단 [🏢 사내관리] 클릭\n2) 초기 비밀번호: admin 입력\n3) 보안을 위해 즉시 새 비밀번호로 변경 후 사용\n• 담당 판매자: ${sale.sellerName || '본사 직판'}`;
+  const kakaoTxt = `[${sale.brandTitle} ${sale.brandBadge || 'PRO'} 납품 완료 안내]\n• 고객사(시설): ${sale.companyName}${sale.contactName ? ` (${sale.contactName})` : ''}\n• 연락처/이메일: ${sale.phone || '-'} / ${sale.email || '-'}\n• 주소: ${sale.address || '-'}\n• 라이선스: ${sale.licId} (${pkgInfo.label})\n• 판매일자/경로: ${sale.saleDate || sale.issuedAt || '-'} (${sale.channel || '본사직판'})\n• 사용기간: ${sale.expiryDate || '영구 소장'}\n• 전용 접속 링크:\n${sale.signedUrl}\n\n🔐 구매자 자체 관리자 안내\n1) 앱 우측 상단 [🏢 사내관리] 클릭\n2) 초기 비밀번호: admin 입력\n3) 보안을 위해 즉시 새 비밀번호로 변경 후 사용\n• 담당 판매자: ${sale.sellerName || '본사 직판'}`;
 
   $('adminModalTitle').textContent = `📦 고객 납품 키트 · ${sale.companyName}`;
-  $('adminModalSub').textContent = `라이선스 ${sale.licId} · 카톡 전달 문구 복사 & A4 납품확인서 인쇄`;
+  $('adminModalSub').textContent = `라이선스 ${sale.licId} · 담당자 ${sale.contactName || '-'} · 카톡 전달 문구 복사 & 확인`;
   $('adminBody').innerHTML = `
     <div class="domain-box" style="margin-bottom:10px">
-      <h4 style="margin:0 0 8px">1. 고객사 전용 서명 판매링크 (마스터 모드와 완전 격리)</h4>
+      <h4 style="margin:0 0 8px">1. 납품 고객 · 시설 요약 및 전용 서명 링크</h4>
       <input class="input mono" readonly value="${esc(sale.signedUrl)}" style="width:100%;font-size:11.5px;margin-bottom:6px" onclick="this.select()" />
-      <div style="font-size:11.5px;color:var(--muted)">
-        • 포함 도메인: <b>${esc(activeTabs)}</b><br>
-        • 구매자 자체 관리자: <b>초기 비밀번호 <code>admin</code> (첫 로그인 시 강제 변경 안내 포함)</b>
+      <div style="font-size:11.5px;color:var(--muted);line-height:1.6">
+        • 고객명 / 연락처 / 이메일: <b>${esc(sale.contactName || '-')}</b> · ${esc(sale.phone || '-')} · ${esc(sale.email || '-')}<br>
+        • 시설 주소 / 업종: <b>${esc(sale.address || '-')}</b> (${esc(sale.bizType || '-')})<br>
+        • 판매일자 / 판매경로 / 비고: <b>${esc(sale.saleDate || sale.issuedAt || '-')}</b> · ${esc(sale.channel || '-')} · ${esc(sale.memo || '-')}<br>
+        • 포함 도메인: <b>${esc(activeTabs)}</b> · 구매자 초기 비번: <code>admin</code> (첫 로그인 시 강제 변경)
       </div>
     </div>
     <div class="domain-box">
       <h4 style="margin:0 0 6px">2. 카카오톡 · 이메일 납품 안내문 (바로 복사)</h4>
-      <textarea id="kitKakaoArea" class="input" rows="10" style="width:100%;font-size:12px;line-height:1.5;font-family:inherit">${esc(kakaoTxt)}</textarea>
+      <textarea id="kitKakaoArea" class="input" rows="11" style="width:100%;font-size:12px;line-height:1.5;font-family:inherit">${esc(kakaoTxt)}</textarea>
     </div>
   `;
   $('adminFoot').innerHTML = `
     <button id="btnKitCopyTxt" class="btn btn-emerald btn-sm" type="button">📱 납품 안내문 전체 복사</button>
     <button id="btnKitOpenNew" class="btn btn-primary btn-sm" type="button">👁️ 새 탭에서 구매자 화면 확인</button>
-    <button id="btnKitBack" class="btn btn-sm" type="button" style="margin-left:auto">← 판매 현황으로</button>
+    <button id="btnKitBack" class="btn btn-sm" type="button" style="margin-left:auto">← 납품 고객 현황으로</button>
   `;
   $('btnKitCopyTxt')?.addEventListener('click', () => {
     navigator.clipboard?.writeText($('kitKakaoArea')?.value || kakaoTxt);
-    toast('📱 납품 안내문(링크 + 초기비번 admin 가이드)이 복사되었습니다!');
+    toast('📱 납품 안내문(링크 + 고객정보 + 초기비번 admin 가이드)이 복사되었습니다!');
   });
   $('btnKitOpenNew')?.addEventListener('click', () => window.open(sale.signedUrl, '_blank', 'noopener'));
   $('btnKitBack')?.addEventListener('click', () => openAdminSalesModal('status'));
+}
+
+// ===== DELIVERED CUSTOMER DETAIL / INLINE EDITOR MODAL =====
+function openCustomerEditModal(licId) {
+  const reg = loadSellerRegistry();
+  const s = reg.sales.find((x) => x.licId === licId);
+  if (!s) return;
+
+  $('adminModalTitle').textContent = `✏️ 납품 시설 고객 정보 수정 · ${s.companyName}`;
+  $('adminModalSub').textContent = `라이선스 ${s.licId} · 고객명 · 연락처 · 주소 · 이메일 · 판매일자 · 판매경로 · 비고 관리`;
+  $('adminBody').innerHTML = `
+    <div class="domain-box" style="margin-bottom:10px">
+      <h4 style="margin:0 0 8px">🏢 납품 시설 · 고객 상세 정보</h4>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:8px">
+        <label style="font-size:11px;color:var(--muted)">고객사 / 시설명 *
+          <input id="edCompName" class="input" value="${esc(s.companyName || '')}" style="width:100%;margin-top:2px;font-size:12px" />
+        </label>
+        <label style="font-size:11px;color:var(--muted)">고객명 (담당자)
+          <input id="edContactName" class="input" value="${esc(s.contactName || '')}" placeholder="예: 홍길동 팀장" style="width:100%;margin-top:2px;font-size:12px" />
+        </label>
+        <label style="font-size:11px;color:var(--muted)">시설 / 업종 구분
+          <select id="edBizType" class="select" style="width:100%;margin-top:2px;font-size:12px">
+            <option value="">선택</option>
+            ${FACILITY_TYPES.map((f) => `<option value="${esc(f)}" ${s.bizType === f ? 'selected' : ''}>${esc(f)}</option>`).join('')}
+          </select>
+        </label>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px">
+        <label style="font-size:11px;color:var(--muted)">연락처 (휴대폰 / 대표번호)
+          <input id="edPhone" class="input" value="${esc(s.phone || '')}" placeholder="010-0000-0000" style="width:100%;margin-top:2px;font-size:12px" />
+        </label>
+        <label style="font-size:11px;color:var(--muted)">이메일
+          <input id="edEmail" class="input" type="email" value="${esc(s.email || '')}" placeholder="name@company.co.kr" style="width:100%;margin-top:2px;font-size:12px" />
+        </label>
+      </div>
+      <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:8px">시설 / 사업장 주소
+        <input id="edAddress" class="input" value="${esc(s.address || '')}" placeholder="예: 서울시 강남구 테헤란로 123, 5층" style="width:100%;margin-top:2px;font-size:12px" />
+      </label>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr 110px;gap:8px;margin-bottom:8px">
+        <label style="font-size:11px;color:var(--muted)">판매일자
+          <input id="edSaleDate" class="input" type="date" value="${esc(s.saleDate || s.issuedAt || '')}" style="width:100%;margin-top:2px;font-size:12px" />
+        </label>
+        <label style="font-size:11px;color:var(--muted)">판매경로
+          <select id="edChannel" class="select" style="width:100%;margin-top:2px;font-size:12px">
+            ${SALES_CHANNELS.map((c) => `<option value="${esc(c)}" ${(s.channel || '본사직판') === c ? 'selected' : ''}>${esc(c)}</option>`).join('')}
+          </select>
+        </label>
+        <label style="font-size:11px;color:var(--muted)">담당 판매자
+          <select id="edSeller" class="select" style="width:100%;margin-top:2px;font-size:12px">
+            ${reg.sellers.map((sl) => `<option value="${esc(sl.id)}" ${s.sellerCode === sl.id ? 'selected' : ''}>${esc(sl.name)}</option>`).join('')}
+          </select>
+        </label>
+        <label style="font-size:11px;color:var(--muted)">판매금액(만원)
+          <input id="edPrice" class="input" type="number" min="0" value="${Number(s.priceMan) || 0}" style="width:100%;margin-top:2px;font-size:12px" />
+        </label>
+      </div>
+      <div style="display:grid;grid-template-columns:150px 1fr;gap:8px">
+        <label style="font-size:11px;color:var(--muted)">만료일 (비우면 영구)
+          <input id="edExpiry" class="input" type="date" value="${esc(s.expiryDate || '')}" style="width:100%;margin-top:2px;font-size:12px" />
+        </label>
+        <label style="font-size:11px;color:var(--muted)">비고 (계약·세금계산서·시설 특이사항)
+          <input id="edMemo" class="input" value="${esc(s.memo || '')}" placeholder="세금계산서 발행, 추가 요청사항 등" style="width:100%;margin-top:2px;font-size:12px" />
+        </label>
+      </div>
+    </div>
+  `;
+  $('adminFoot').innerHTML = `
+    <button id="btnEdSave" class="btn btn-primary btn-sm" type="button">✅ 고객 정보 저장</button>
+    <button id="btnEdCancel" class="btn btn-sm" type="button" style="margin-left:auto">← 목록으로</button>
+  `;
+  $('btnEdCancel')?.addEventListener('click', () => openAdminSalesModal('status'));
+  $('btnEdSave')?.addEventListener('click', () => {
+    s.companyName = $('edCompName')?.value.trim() || s.companyName;
+    s.contactName = $('edContactName')?.value.trim() || '';
+    s.bizType = $('edBizType')?.value || '';
+    s.phone = $('edPhone')?.value.trim() || '';
+    s.email = $('edEmail')?.value.trim() || '';
+    s.address = $('edAddress')?.value.trim() || '';
+    s.saleDate = $('edSaleDate')?.value || s.issuedAt || '';
+    s.issuedAt = s.saleDate || s.issuedAt;
+    s.channel = $('edChannel')?.value || '본사직판';
+    s.sellerCode = $('edSeller')?.value || s.sellerCode;
+    s.sellerName = reg.sellers.find((x) => x.id === s.sellerCode)?.name || s.sellerName;
+    s.priceMan = Math.max(0, Number($('edPrice')?.value) || 0);
+    s.expiryDate = $('edExpiry')?.value || '';
+    s.memo = $('edMemo')?.value.trim() || '';
+    if (s.cfg) {
+      s.cfg.companyName = s.companyName;
+      s.cfg.sellerCode = s.sellerCode;
+      s.cfg.sellerName = s.sellerName;
+      s.cfg.expiryDate = s.expiryDate;
+      s.signedUrl = `${location.origin}${location.pathname}?lic=${encodeSignedLicense(s.cfg, reg.expertOpts)}`;
+    }
+    saveSellerRegistry(reg);
+    appendAudit('CUSTOMER_UPDATED', s.licId, `${s.companyName} (${s.contactName || '-'} · ${s.phone || '-'} · ${s.channel})`);
+    toast(`✅ ${s.companyName} 납품 고객 정보가 저장되었습니다!`);
+    openAdminSalesModal('status');
+  });
 }
 
 // ===== SELLER MASTER CONSOLE (5 TABS: ISSUE · STATUS/RESET · SELLERS · TOP 10 EXPERT · AUDIT) =====
@@ -1101,7 +1224,7 @@ function openAdminSalesModal(tabKey = null) {
   const tabBarHtml = `
     <div class="nx-adm-tabs">
       <button type="button" class="nx-adm-tab ${activeTab === 'issue' ? 'active' : ''}" data-adm-nav="issue">🚀 판매링크 발급</button>
-      <button type="button" class="nx-adm-tab ${activeTab === 'status' ? 'active' : ''}" data-adm-nav="status">📊 판매현황·비번초기화 (${reg.sales.length})</button>
+      <button type="button" class="nx-adm-tab ${activeTab === 'status' ? 'active' : ''}" data-adm-nav="status">📊 납품고객·판매현황 (${reg.sales.length})</button>
       <button type="button" class="nx-adm-tab ${activeTab === 'sellers' ? 'active' : ''}" data-adm-nav="sellers">🧑‍💼 판매자 관리 (${reg.sellers.length})</button>
       <button type="button" class="nx-adm-tab ${activeTab === 'expert' ? 'active' : ''}" data-adm-nav="expert">💎 전문가 기법 TOP 10 · 옵션</button>
       <button type="button" class="nx-adm-tab ${activeTab === 'audit' ? 'active' : ''}" data-adm-nav="audit">📜 감사 로그</button>
@@ -1109,10 +1232,18 @@ function openAdminSalesModal(tabKey = null) {
 
   // ---------- TAB 1: ISSUE SIGNED SALES LINK ----------
   if (activeTab === 'issue') {
+    const todayKst = new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 10);
     const draft = S.salesDraft || {
       ...createClientSampleConfig(),
       licId: `NX-${new Date().getFullYear()}-${String(reg.sales.length + 1).padStart(3, '0')}`,
       companyName: '',
+      contactName: '',
+      phone: '',
+      email: '',
+      address: '',
+      bizType: '건설·안전시설',
+      saleDate: todayKst,
+      channel: '크몽',
       brandTitle: '',
       brandBadge: 'PRO',
       brandSub: '',
@@ -1164,19 +1295,52 @@ function openAdminSalesModal(tabKey = null) {
       </div>
 
       <div class="domain-box" style="margin-bottom:10px">
-        <h4 style="margin:0 0 8px">2. 구매 고객사 · 판매자 · 계약 정보</h4>
-        <div style="display:grid;grid-template-columns:1fr 1fr 130px;gap:6px;margin-bottom:6px">
-          <label style="font-size:11px;color:var(--muted)">구매 고객사명 *
-            <input id="dCompName" class="input" value="${esc(draft.companyName)}" placeholder="예: ㈜대한안전건설" style="width:100%;margin-top:2px;padding:6px 8px;font-size:12px" />
+        <h4 style="margin:0 0 8px">2. 납품 시설 고객 정보 · 판매일자 · 판매경로 · 계약</h4>
+        <div style="display:grid;grid-template-columns:1.2fr 1fr 1fr;gap:6px;margin-bottom:6px">
+          <label style="font-size:11px;color:var(--muted)">고객사 / 시설명 *
+            <input id="dCompName" class="input" value="${esc(draft.companyName || '')}" placeholder="예: ㈜대한안전건설" style="width:100%;margin-top:2px;padding:6px 8px;font-size:12px" />
           </label>
-          <label style="font-size:11px;color:var(--muted)">화이트라벨 브랜드명 *
-            <input id="dBrandTitle" class="input" value="${esc(draft.brandTitle)}" placeholder="예: 대한 입찰레이더" style="width:100%;margin-top:2px;padding:6px 8px;font-size:12px" />
+          <label style="font-size:11px;color:var(--muted)">고객명 (담당자)
+            <input id="dContactName" class="input" value="${esc(draft.contactName || '')}" placeholder="예: 김담당 부장" style="width:100%;margin-top:2px;padding:6px 8px;font-size:12px" />
           </label>
-          <label style="font-size:11px;color:var(--muted)">배지
-            <input id="dBrandBadge" class="input" value="${esc(draft.brandBadge)}" placeholder="PRO" style="width:100%;margin-top:2px;padding:6px 8px;font-size:12px" />
+          <label style="font-size:11px;color:var(--muted)">시설 / 업종 구분
+            <select id="dBizType" class="select" style="width:100%;margin-top:2px;padding:6px 8px;font-size:12px">
+              <option value="">선택</option>
+              ${FACILITY_TYPES.map((f) => `<option value="${esc(f)}" ${draft.bizType === f ? 'selected' : ''}>${esc(f)}</option>`).join('')}
+            </select>
           </label>
         </div>
-        <div style="display:grid;grid-template-columns:1fr 1fr 110px 140px;gap:6px;margin-bottom:6px">
+        <div style="display:grid;grid-template-columns:1fr 1fr 1.4fr;gap:6px;margin-bottom:6px">
+          <label style="font-size:11px;color:var(--muted)">연락처 (휴대폰 / 전화)
+            <input id="dPhone" class="input" value="${esc(draft.phone || '')}" placeholder="010-1234-5678" style="width:100%;margin-top:2px;padding:6px 8px;font-size:12px" />
+          </label>
+          <label style="font-size:11px;color:var(--muted)">이메일
+            <input id="dEmail" class="input" type="email" value="${esc(draft.email || '')}" placeholder="bid@company.co.kr" style="width:100%;margin-top:2px;padding:6px 8px;font-size:12px" />
+          </label>
+          <label style="font-size:11px;color:var(--muted)">시설 / 사업장 주소
+            <input id="dAddress" class="input" value="${esc(draft.address || '')}" placeholder="예: 경기도 수원시 영통구 광교중앙로 145" style="width:100%;margin-top:2px;padding:6px 8px;font-size:12px" />
+          </label>
+        </div>
+        <div style="display:grid;grid-template-columns:1.2fr 84px 125px 125px 110px;gap:6px;margin-bottom:6px">
+          <label style="font-size:11px;color:var(--muted)">화이트라벨 브랜드명 *
+            <input id="dBrandTitle" class="input" value="${esc(draft.brandTitle || '')}" placeholder="예: 대한 입찰레이더" style="width:100%;margin-top:2px;padding:6px 8px;font-size:12px" />
+          </label>
+          <label style="font-size:11px;color:var(--muted)">배지
+            <input id="dBrandBadge" class="input" value="${esc(draft.brandBadge || '')}" placeholder="PRO" style="width:100%;margin-top:2px;padding:6px 8px;font-size:12px" />
+          </label>
+          <label style="font-size:11px;color:var(--muted)">판매일자
+            <input id="dSaleDate" class="input" type="date" value="${esc(draft.saleDate || todayKst)}" style="width:100%;margin-top:2px;padding:5px 7px;font-size:12px" />
+          </label>
+          <label style="font-size:11px;color:var(--muted)">판매경로
+            <select id="dChannel" class="select" style="width:100%;margin-top:2px;padding:6px 8px;font-size:12px">
+              ${SALES_CHANNELS.map((c) => `<option value="${esc(c)}" ${(draft.channel || '크몽') === c ? 'selected' : ''}>${esc(c)}</option>`).join('')}
+            </select>
+          </label>
+          <label style="font-size:11px;color:var(--muted)">판매금액(만원)
+            <input id="dPrice" class="input" type="number" min="0" value="${Number(draft.priceMan) || 0}" style="width:100%;margin-top:2px;padding:6px 8px;font-size:12px" />
+          </label>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr 130px;gap:6px;margin-bottom:6px">
           <label style="font-size:11px;color:var(--muted)">라이선스 코드
             <input id="dLicId" class="input mono" value="${esc(draft.licId)}" style="width:100%;margin-top:2px;padding:6px 8px;font-size:12px" />
           </label>
@@ -1185,18 +1349,15 @@ function openAdminSalesModal(tabKey = null) {
               ${reg.sellers.map((sl) => `<option value="${esc(sl.id)}" ${draft.sellerCode === sl.id ? 'selected' : ''}>${esc(sl.name)} (${sl.commissionPct}%)</option>`).join('')}
             </select>
           </label>
-          <label style="font-size:11px;color:var(--muted)">판매금액(만원)
-            <input id="dPrice" class="input" type="number" min="0" value="${Number(draft.priceMan) || 0}" style="width:100%;margin-top:2px;padding:6px 8px;font-size:12px" />
-          </label>
           <label style="font-size:11px;color:var(--muted)">만료일 (비우면 영구)
             <input id="dExpiry" class="input" type="date" value="${esc(draft.expiryDate || '')}" style="width:100%;margin-top:2px;padding:5px 7px;font-size:12px" />
           </label>
         </div>
-        <div style="display:grid;grid-template-columns:1.4fr 1fr;gap:6px">
+        <div style="display:grid;grid-template-columns:1.2fr 1fr;gap:6px">
           <label style="font-size:11px;color:var(--muted)">상단 서브타이틀
-            <input id="dBrandSub" class="input" value="${esc(draft.brandSub)}" placeholder="예: ㈜대한안전건설 전용 · 실시간 입찰·기업 분석" style="width:100%;margin-top:2px;padding:6px 8px;font-size:12px" />
+            <input id="dBrandSub" class="input" value="${esc(draft.brandSub || '')}" placeholder="예: ㈜대한안전건설 전용 · 실시간 입찰·기업 분석" style="width:100%;margin-top:2px;padding:6px 8px;font-size:12px" />
           </label>
-          <label style="font-size:11px;color:var(--muted)">계약 메모
+          <label style="font-size:11px;color:var(--muted)">비고 (세금계산서 · 설치 · 특이사항)
             <input id="dMemo" class="input" value="${esc(draft.memo || '')}" placeholder="예: 크몽 주문 #12345 / 세금계산서 발행" style="width:100%;margin-top:2px;padding:6px 8px;font-size:12px" />
           </label>
         </div>
@@ -1251,6 +1412,13 @@ function openAdminSalesModal(tabKey = null) {
 
     const syncDraft = () => {
       draft.companyName = $('dCompName')?.value.trim() || '신규 고객사';
+      draft.contactName = $('dContactName')?.value.trim() || '';
+      draft.bizType = $('dBizType')?.value || '';
+      draft.phone = $('dPhone')?.value.trim() || '';
+      draft.email = $('dEmail')?.value.trim() || '';
+      draft.address = $('dAddress')?.value.trim() || '';
+      draft.saleDate = $('dSaleDate')?.value || todayKst;
+      draft.channel = $('dChannel')?.value || '크몽';
       draft.brandTitle = $('dBrandTitle')?.value.trim() || draft.companyName;
       draft.brandBadge = $('dBrandBadge')?.value.trim() || '';
       draft.brandSub = $('dBrandSub')?.value.trim() || `${draft.companyName} 전용 · 맞춤형 B2B 영업 인텔리전스`;
@@ -1279,9 +1447,19 @@ function openAdminSalesModal(tabKey = null) {
     });
 
     $('admLoadSampleDraft')?.addEventListener('click', () => {
-      S.salesDraft = { ...createClientSampleConfig(), memo: '실제 판매 납품 샘플 · DELUXE' };
+      S.salesDraft = {
+        ...createClientSampleConfig(),
+        contactName: '김한빛 부장',
+        phone: '010-4821-7700',
+        email: 'bid@hanbitsafety.co.kr',
+        address: '경기도 수원시 영통구 광교중앙로 145',
+        bizType: '건설·안전시설',
+        saleDate: todayKst,
+        channel: '크몽',
+        memo: '실제 판매 납품 샘플 · DELUXE · 세금계산서 발행',
+      };
       openAdminSalesModal('issue');
-      toast('📦 ㈜한빛안전건설 샘플 설정을 초안에 불러왔습니다.');
+      toast('📦 ㈜한빛안전건설 납품 고객 샘플을 초안에 불러왔습니다.');
     });
 
     $('adminBody').querySelectorAll('[data-adm-pkg]').forEach((b) => {
@@ -1301,10 +1479,14 @@ function openAdminSalesModal(tabKey = null) {
       syncDraft();
       const base = `${location.origin}${location.pathname}`;
       const signedUrl = `${base}?lic=${encodeSignedLicense(draft, eo)}`;
-      const todayIso = new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 10);
       const saleObj = {
         licId: draft.licId,
         companyName: draft.companyName,
+        contactName: draft.contactName,
+        phone: draft.phone,
+        email: draft.email,
+        address: draft.address,
+        bizType: draft.bizType,
         brandTitle: draft.brandTitle,
         brandBadge: draft.brandBadge,
         brandSub: draft.brandSub,
@@ -1312,7 +1494,9 @@ function openAdminSalesModal(tabKey = null) {
         priceMan: draft.priceMan,
         sellerCode: draft.sellerCode,
         sellerName: draft.sellerName,
-        issuedAt: todayIso,
+        saleDate: draft.saleDate || todayKst,
+        issuedAt: draft.saleDate || todayKst,
+        channel: draft.channel || '크몽',
         expiryDate: draft.expiryDate,
         status: 'active',
         resetCount: 0,
@@ -1365,7 +1549,11 @@ function openAdminSalesModal(tabKey = null) {
       </div>
 
       <div style="display:flex;gap:6px;margin-bottom:8px;flex-wrap:wrap">
-        <input id="crmQ" class="input" placeholder="고객사명 · 라이선스 ID · 판매자 검색…" style="flex:1;min-width:180px;padding:6px 10px;font-size:12px" />
+        <input id="crmQ" class="input" placeholder="고객사 · 고객명 · 연락처 · 이메일 · 주소 · 판매경로 · 비고 검색…" style="flex:1;min-width:200px;padding:6px 10px;font-size:12px" />
+        <select id="crmChannelFilter" class="select" style="font-size:12px;padding:6px 9px">
+          <option value="">전체 판매경로</option>
+          ${SALES_CHANNELS.map((c) => `<option value="${esc(c)}">${esc(c)}</option>`).join('')}
+        </select>
         <select id="crmStatusFilter" class="select" style="font-size:12px;padding:6px 9px">
           <option value="">전체 상태</option>
           <option value="active">정상 활성</option>
@@ -1374,40 +1562,45 @@ function openAdminSalesModal(tabKey = null) {
         </select>
       </div>
 
-      <div class="table-wrap" style="max-height:360px;overflow-y:auto">
+      <div class="table-wrap" style="max-height:370px;overflow-y:auto">
         <table class="data-table" style="font-size:11.5px">
           <thead>
             <tr>
-              <th>고객사 / 브랜드</th>
-              <th>라이선스 · 등급</th>
-              <th>판매자 · 금액</th>
-              <th>발급일 / 만료</th>
-              <th>상태 · 비번상태</th>
-              <th>관리 액션 (링크 · 비번초기화 · 정지 · 납품서)</th>
+              <th>고객사 / 고객명 / 업종</th>
+              <th>연락처 / 이메일 / 시설주소</th>
+              <th>라이선스 · 등급 · 금액</th>
+              <th>판매일자 · 판매경로 · 판매자</th>
+              <th>상태 · 비번 · 비고</th>
+              <th>관리 액션</th>
             </tr>
           </thead>
           <tbody id="crmTableBody"></tbody>
         </table>
       </div>
       <div style="font-size:11px;color:var(--muted);margin-top:8px">
-        💡 <b>🔑 비번초기화</b> 클릭 시: (1) 동일 브라우저의 구매자 비밀번호를 즉시 <code>admin</code>으로 리셋하고, (2) 원격 고객사 기기에서도 사용 가능한 <b>1회용 서명 초기화 링크(유효 ${eo.resetHours || 72}시간)</b>를 자동 복사합니다.
+        💡 <b>✏️ 수정</b>으로 고객명·연락처·주소·이메일·판매일자·판매경로·비고를 언제든 관리할 수 있고, <b>🔑 비번초기화</b>로 구매자 비번을 즉시 <code>admin</code> 리셋 및 1회용 원격 초기화 링크(유효 ${eo.resetHours || 72}시간)를 복사합니다.
       </div>
     `;
 
     $('adminFoot').innerHTML = `
-      <button id="btnCrmCsv" class="btn btn-emerald btn-sm" type="button">📥 판매현황 CSV</button>
+      <button id="btnCrmCsv" class="btn btn-emerald btn-sm" type="button">📥 납품고객 CSV (전체컬럼)</button>
       <button id="btnCrmBackup" class="btn btn-sm" type="button">📤 CRM JSON 백업</button>
-      <button id="btnCrmNew" class="btn btn-primary btn-sm" type="button" style="margin-left:auto">➕ 새 판매링크 발급</button>
+      <button id="btnCrmRestore" class="btn btn-sm" type="button">📂 JSON 복원</button>
+      <input id="crmRestoreFile" type="file" accept=".json" style="display:none" />
+      <button id="btnCrmNew" class="btn btn-primary btn-sm" type="button" style="margin-left:auto">➕ 신규 납품 고객 등록</button>
     `;
 
     const drawRows = () => {
       const q = ($('crmQ')?.value || '').trim().toLowerCase();
+      const cf = $('crmChannelFilter')?.value || '';
       const sf = $('crmStatusFilter')?.value || '';
       const filtered = reg.sales.filter((x) => {
         const isExp = Boolean(x.expiryDate && x.expiryDate < todayIso);
         const effSt = x.status === 'revoked' ? 'revoked' : (isExp ? 'expired' : 'active');
         if (sf && effSt !== sf) return false;
-        if (q && !`${x.companyName} ${x.brandTitle} ${x.licId} ${x.sellerName} ${x.memo || ''}`.toLowerCase().includes(q)) return false;
+        if (cf && (x.channel || '') !== cf) return false;
+        const hay = `${x.companyName} ${x.contactName || ''} ${x.phone || ''} ${x.email || ''} ${x.address || ''} ${x.bizType || ''} ${x.channel || ''} ${x.brandTitle} ${x.licId} ${x.sellerName} ${x.saleDate || x.issuedAt || ''} ${x.memo || ''}`.toLowerCase();
+        if (q && !hay.includes(q)) return false;
         return true;
       });
       const tb = $('crmTableBody');
@@ -1422,13 +1615,32 @@ function openAdminSalesModal(tabKey = null) {
         const pwTag = bLocal.mustChangePw ? '<span style="color:#d97706;font-size:10.5px">초기(admin)</span>' : '<span style="color:#059669;font-size:10.5px">변경완료</span>';
         return `
           <tr>
-            <td><b>${esc(x.companyName)}</b><div style="font-size:10.5px;color:var(--muted)">${esc(x.brandTitle)} ${esc(x.brandBadge || '')}</div></td>
-            <td><code>${esc(x.licId)}</code><div style="font-size:10.5px;color:var(--c-corp);font-weight:700">${esc((x.pkg || '').toUpperCase())}</div></td>
-            <td>${esc(x.sellerName || '-')}<div style="font-weight:800">${fmt(x.priceMan || 0)}만원</div></td>
-            <td>${esc(x.issuedAt || '-')}<div style="font-size:10.5px;color:var(--muted)">${esc(x.expiryDate || '영구 소장')}</div></td>
-            <td>${stBadge}<div style="margin-top:2px">${pwTag}${x.resetCount ? ` · 리셋${x.resetCount}` : ''}</div></td>
+            <td>
+              <b>${esc(x.companyName)}</b>
+              <div style="font-size:11px;color:var(--text-2)">👤 ${esc(x.contactName || '담당자 미입력')}${x.bizType ? ` · <span style="color:var(--c-corp)">${esc(x.bizType)}</span>` : ''}</div>
+              <div style="font-size:10.5px;color:var(--muted)">${esc(x.brandTitle)} ${esc(x.brandBadge || '')}</div>
+            </td>
+            <td style="min-width:170px">
+              <div>${x.phone ? `<a href="tel:${esc(x.phone)}" style="color:var(--text);font-weight:700;text-decoration:none">📞 ${esc(x.phone)}</a>` : '<span style="color:var(--muted)">연락처 미입력</span>'}</div>
+              <div style="font-size:10.5px">${x.email ? `<a href="mailto:${esc(x.email)}" style="color:var(--c-corp);text-decoration:none">✉️ ${esc(x.email)}</a>` : '<span style="color:var(--muted)">이메일 미입력</span>'}</div>
+              <div style="font-size:10.5px;color:var(--muted);max-width:210px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(x.address || '')}">📍 ${esc(x.address || '주소 미입력')}</div>
+            </td>
+            <td>
+              <code>${esc(x.licId)}</code>
+              <div style="font-size:10.5px;color:var(--c-corp);font-weight:700">${esc((x.pkg || '').toUpperCase())} · ${fmt(x.priceMan || 0)}만원</div>
+            </td>
+            <td>
+              <b>${esc(x.saleDate || x.issuedAt || '-')}</b>
+              <div style="font-size:10.5px"><span class="tag tag-gray" style="padding:1px 6px;font-size:10px">${esc(x.channel || '본사직판')}</span></div>
+              <div style="font-size:10.5px;color:var(--muted)">${esc(x.sellerName || '-')} · ${esc(x.expiryDate || '영구')}</div>
+            </td>
+            <td style="max-width:150px">
+              ${stBadge} ${pwTag}${x.resetCount ? `<span style="font-size:10px;color:var(--muted)"> · 리셋${x.resetCount}</span>` : ''}
+              <div style="font-size:10.5px;color:var(--muted);margin-top:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(x.memo || '')}">${esc(x.memo || '-')}</div>
+            </td>
             <td>
               <div style="display:flex;gap:4px;flex-wrap:wrap">
+                <button type="button" class="btn btn-primary btn-sm" data-crm-edit="${esc(x.licId)}" title="고객명·연락처·주소·이메일·판매경로·비고 수정">✏️ 수정</button>
                 <button type="button" class="btn btn-sm" data-crm-copy="${esc(x.licId)}" title="판매링크 복사">🔗</button>
                 <button type="button" class="btn btn-amber btn-sm" data-crm-reset="${esc(x.licId)}" title="구매자 비밀번호 admin 초기화 + 원격 리셋링크 복사">🔑 비번초기화</button>
                 <button type="button" class="btn btn-sm" data-crm-prev="${esc(x.licId)}" title="새 탭에서 구매자 화면 미리보기">👁️</button>
@@ -1438,8 +1650,9 @@ function openAdminSalesModal(tabKey = null) {
               </div>
             </td>
           </tr>`;
-      }).join('') || '<tr><td colspan="6" style="text-align:center;padding:24px;color:var(--muted)">조건에 맞는 판매 이력이 없습니다.</td></tr>';
+      }).join('') || '<tr><td colspan="6" style="text-align:center;padding:24px;color:var(--muted)">조건에 맞는 납품 고객 이력이 없습니다.</td></tr>';
 
+      tb.querySelectorAll('[data-crm-edit]').forEach((b) => b.addEventListener('click', () => openCustomerEditModal(b.dataset.crmEdit)));
       tb.querySelectorAll('[data-crm-copy]').forEach((b) => b.addEventListener('click', () => {
         const s = reg.sales.find((x) => x.licId === b.dataset.crmCopy);
         if (s) { navigator.clipboard?.writeText(s.signedUrl); toast(`🔗 ${s.companyName} 판매링크가 복사되었습니다.`); }
@@ -1496,19 +1709,43 @@ function openAdminSalesModal(tabKey = null) {
 
     drawRows();
     $('crmQ')?.addEventListener('input', drawRows);
+    $('crmChannelFilter')?.addEventListener('change', drawRows);
     $('crmStatusFilter')?.addEventListener('change', drawRows);
     $('btnCrmNew')?.addEventListener('click', () => openAdminSalesModal('issue'));
     $('btnCrmCsv')?.addEventListener('click', () => {
-      const hd = '라이선스ID,고객사명,브랜드,패키지,판매금액(만원),판매자,발급일,만료일,상태,비번초기화횟수,메모,판매링크\n';
-      const rows = reg.sales.map((x) => [x.licId, x.companyName, x.brandTitle, x.pkg, x.priceMan, x.sellerName, x.issuedAt, x.expiryDate || '영구', x.status, x.resetCount || 0, x.memo || '', x.signedUrl].map((v) => `"${String(v ?? '').replace(/"/g, '""')}"`).join(',')).join('\n');
+      const hd = '라이선스ID,고객사(시설명),고객명(담당자),연락처,이메일,주소,시설업종,브랜드,패키지,판매금액(만원),판매일자,판매경로,담당판매자,만료일,상태,비번초기화횟수,비고,판매링크\n';
+      const rows = reg.sales.map((x) => [
+        x.licId, x.companyName, x.contactName || '', x.phone || '', x.email || '', x.address || '', x.bizType || '',
+        x.brandTitle, x.pkg, x.priceMan, x.saleDate || x.issuedAt || '', x.channel || '본사직판',
+        x.sellerName, x.expiryDate || '영구', x.status, x.resetCount || 0, x.memo || '', x.signedUrl,
+      ].map((v) => `"${String(v ?? '').replace(/"/g, '""')}"`).join(',')).join('\n');
       const blob = new Blob(['\uFEFF' + hd + rows], { type: 'text/csv;charset=utf-8' });
-      const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `nexusone_sales_crm_${new Date().toISOString().slice(0, 10)}.csv`; a.click();
-      toast('📥 판매 현황 CSV 다운로드 완료');
+      const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `nexusone_delivered_customers_${new Date().toISOString().slice(0, 10)}.csv`; a.click();
+      toast('📥 납품 고객 리스트 CSV (18개 전체컬럼) 다운로드 완료');
     });
     $('btnCrmBackup')?.addEventListener('click', () => {
       const blob = new Blob([JSON.stringify(reg, null, 2)], { type: 'application/json' });
       const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `nexusone_crm_backup_${new Date().toISOString().slice(0, 10)}.json`; a.click();
-      toast('📤 판매자·현황 CRM JSON 백업 완료');
+      toast('📤 납품 고객·판매자 CRM JSON 백업 완료');
+    });
+    $('btnCrmRestore')?.addEventListener('click', () => $('crmRestoreFile')?.click());
+    $('crmRestoreFile')?.addEventListener('change', (e) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = () => {
+        try {
+          const parsed = JSON.parse(String(reader.result || '{}'));
+          if (!Array.isArray(parsed.sales)) throw new Error('유효한 CRM 백업 JSON 형식이 아닙니다.');
+          saveSellerRegistry(parsed);
+          appendAudit('CRM_RESTORED', 'MASTER', `JSON 백업 복원 (고객 ${parsed.sales.length}건)`);
+          openAdminSalesModal('status');
+          toast(`📂 CRM 백업 복원 완료! (납품 고객 ${parsed.sales.length}건)`);
+        } catch (err) {
+          toast(`⚠️ 복원 실패: ${err.message}`);
+        }
+      };
+      reader.readAsText(file);
     });
   }
 

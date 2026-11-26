@@ -579,6 +579,10 @@ const S = {
   // Bid filters & v8~v15 Early-Detection Radar GIS Map + Practical Suite state
   bidSub: 'map', bidQ: '', bidStage: '', bidField: '', bidUrgency: '', bidBudgetMin: 0, bidSd: '', bidPage: 1,
   bidHideCancelled: true, bidMyKwOnly: false, bidMyBizOnly: false,
+  bidFilterOpen: window.innerWidth > 820,
+  bidMapOptOpen: window.innerWidth > 820,
+  sbizSidoOpen: window.innerWidth > 820,
+  sbizGisOpen: window.innerWidth > 820,
   bidMyKeywords: (() => { try { return localStorage.getItem('nx1_bid_my_kw_v1') || 'CCTV,관제,보안,소방,승강기,시설,경비,미화,전기,통신,보험'; } catch { return 'CCTV,관제,보안,소방,승강기,시설,경비,미화,전기,통신,보험'; } })(),
   myBiz: (() => { try { return JSON.parse(localStorage.getItem('nx1_mybiz_v1') || '{}') || {}; } catch { return {}; } })(),
   qualProfile: (() => { try { return Object.assign({ credit: 'BBB', perfEok: 15, bonus: 1.5, cutoff: 95 }, JSON.parse(localStorage.getItem('nx1_qual_profile_v1') || '{}') || {}); } catch { return { credit: 'BBB', perfEok: 15, bonus: 1.5, cutoff: 95 }; } })(),
@@ -2639,49 +2643,90 @@ function renderBidFilterDeckHtml() {
     myKw: activePool.filter((o) => matchesMyBidKeywords(o, kwList)).length,
     myBiz: activePool.filter((o) => Boolean(S.myBiz[o.id])).length,
   };
+  const activeTags = [];
+  const stageLabels = { early: '⚡ 조기포착 전체', prespec: '🔭 사전규격', permit: '🏗️ 건축인허가', newbuild: '🏠 신축분양', complex: '🏘️ K-apt', bid: '📢 입찰공고' };
+  const urgLabels = { todayBid: '📅 당일 입찰만', today: '🗓️ 당일 전체', d3: '🚨 D-3 긴급', d7: '⏰ D-7 이번주', live: '🟢 실시간' };
+  if (S.bidStage) activeTags.push(['stage', stageLabels[S.bidStage] || S.bidStage]);
+  if (S.bidUrgency) activeTags.push(['urg', urgLabels[S.bidUrgency] || S.bidUrgency]);
+  if (S.bidMyKwOnly) activeTags.push(['myKw', '⭐ 내 키워드만']);
+  if (S.bidMyBizOnly) activeTags.push(['myBiz', '📁 내서류함']);
+  if (S.bidField) activeTags.push(['field', `분야: ${S.bidField}`]);
+  if (S.bidBudgetMin > 0) activeTags.push(['budget', `💰 ${S.bidBudgetMin / 10000}억+`]);
+  if (S.bidSd) activeTags.push(['sd', `📍 ${(sidos.find((x) => x.sd === S.bidSd)?.n || S.bidSd)}`]);
+  const filterCnt = activeTags.length;
+
   return `
-    <div class="gis-deck" style="margin-bottom:10px">
-      <div class="gis-row">
-        <span class="gis-label">🎯 조기포착·단계:</span>
-        ${[
-          ['', `전체 (${cnts.all})`],
-          ['early', `⚡ 조기포착 전체 (${cnts.early})`],
-          ['prespec', `🔭 사전규격 (${cnts.prespec})`],
-          ['permit', `🏗️ 건축인허가 (${cnts.permit})`],
-          ['newbuild', `🏠 신축분양 (${cnts.newbuild})`],
-          ['complex', `🏘️ K-apt (${cnts.complex})`],
-          ['bid', `📢 입찰공고 (${cnts.bid})`],
-        ].map(([k, lb]) => `<button class="toggle-pill ${S.bidStage === k ? 'on' : ''}" data-bid-st="${k}" type="button">${lb}</button>`).join('')}
-      </div>
-      <div class="gis-row">
-        <span class="gis-label">🚨 당일·긴급·실시간:</span>
-        ${[
-          ['', '전체'],
-          ['todayBid', `📅 당일 입찰만 (${cnts.todayBid})`],
-          ['today', `🗓️ 당일 전체 (${cnts.todayAll})`],
-          ['d3', `🚨 D-3 긴급 (${cnts.d3})`],
-          ['d7', '⏰ D-7 이번주'],
-          ['live', `🟢 카톡동일 실시간 (${cnts.live})`],
-        ].map(([k, lb]) => `<button class="toggle-pill ${S.bidUrgency === k ? 'on-emerald' : ''}" data-bid-urg="${k}" type="button">${lb}</button>`).join('')}
-        <button id="btnBidMyKw" class="toggle-pill ${S.bidMyKwOnly ? 'on' : ''}" type="button" title="관심 키워드: ${esc(S.bidMyKeywords)}">⭐ 내 키워드만 (${cnts.myKw})</button>
-        <button id="btnBidEditKw" class="toggle-pill" type="button" title="관심 키워드 편집">⚙️ 키워드</button>
-        <button id="btnBidMyBiz" class="toggle-pill ${S.bidMyBizOnly ? 'on' : ''}" type="button" title="내서류함(투찰관리) 저장 공고만 보기">📁 내서류함 (${cnts.myBiz})</button>
-        <button id="btnBidHideCancel" class="toggle-pill ${S.bidHideCancelled ? 'on-emerald' : ''}" type="button">🚫 취소공고 제외 (${cnts.cancelled})</button>
-        <select id="fBidField" class="select" style="padding:5px 8px;font-size:12px">
-          <option value="">전체 분야</option>
-          ${['보안·CCTV', 'AI·스마트', '시설·경비·미화', '전기·통신·소방', '건축·리모델링', '승강기·설비'].map((f) => `<option value="${f}" ${S.bidField === f ? 'selected' : ''}>${f}</option>`).join('')}
-        </select>
-        <select id="fBidBudget" class="select" style="padding:5px 8px;font-size:12px">
-          <option value="0" ${S.bidBudgetMin === 0 ? 'selected' : ''}>전체 예산</option>
-          <option value="10000" ${S.bidBudgetMin === 10000 ? 'selected' : ''}>💰 1억 이상</option>
-          <option value="50000" ${S.bidBudgetMin === 50000 ? 'selected' : ''}>💎 5억 이상</option>
-          <option value="100000" ${S.bidBudgetMin === 100000 ? 'selected' : ''}>🏆 10억 이상</option>
-        </select>
-        <select id="fBidSd" class="select" style="padding:5px 8px;font-size:12px">
-          <option value="">전국 시도</option>
-          ${sidos.map((s) => `<option value="${s.sd}" ${S.bidSd === s.sd ? 'selected' : ''}>${esc(s.n)}</option>`).join('')}
-        </select>
-        <input id="fBidQ" class="input" style="flex:1;min-width:150px;padding:5px 9px;font-size:12px" value="${esc(S.bidQ)}" placeholder="공고명 · 발주처 · 지역 · CCTV 검색" />
+    <div class="nx-filter-bar">
+      <input id="fBidQ" class="input nx-q-inp" value="${esc(S.bidQ)}" placeholder="🔍 공고명 · 발주처 · 지역 · CCTV 검색" />
+      <button type="button" class="toggle-pill ${S.bidUrgency === 'todayBid' ? 'on-emerald' : ''}" id="btnBidQuickToday">📅 당일입찰 (${cnts.todayBid})</button>
+      <button type="button" class="toggle-pill ${S.bidMyKwOnly ? 'on' : ''}" id="btnBidQuickKw">⭐ 키워드 (${cnts.myKw})</button>
+      <button type="button" class="toggle-pill ${S.bidMyBizOnly ? 'on' : ''}" id="btnBidQuickBiz">📁 서류함 (${cnts.myBiz})</button>
+      <button type="button" class="btn btn-sm ${S.bidFilterOpen ? 'btn-primary' : ''}" id="btnBidFilterToggle">
+        🎛️ 단계·상세필터${filterCnt > 0 ? `<span class="nx-filter-badge">${filterCnt}</span>` : ''} ${S.bidFilterOpen ? '▴' : '▾'}
+      </button>
+      ${S.bidSub === 'map' ? `<button type="button" class="btn btn-sm ${S.bidMapOptOpen ? 'btn-primary' : ''}" id="btnBidMapOptToggle">🗺️ 지도옵션 ${S.bidMapOptOpen ? '▴' : '▾'}</button>` : ''}
+    </div>
+
+    ${activeTags.length ? `
+      <div class="nx-active-pills">
+        ${activeTags.map(([k, lb]) => `<button type="button" class="nx-active-pill" data-clear-bf="${k}">${esc(lb)} <span>✕</span></button>`).join('')}
+        <button type="button" class="toggle-pill" id="btnBidResetAll" style="padding:2px 8px;font-size:11px">🔄 전체 초기화</button>
+      </div>` : ''}
+
+    <div id="bidFilterPanelWrap" class="nx-filter-panel-wrap ${S.bidFilterOpen ? 'open' : ''}">
+      <div class="nx-sheet-scrim" id="bidFilterScrim"></div>
+      <div class="gis-deck nx-collapsible-panel ${S.bidFilterOpen ? '' : 'collapsed'}" id="bidFilterPanel" style="margin-bottom:10px">
+        <div class="nx-sheet-head">
+          <span>🎛️ 조기포착 단계 · 상세 필터</span>
+          <button type="button" class="icon-btn" id="btnBidFilterClose" style="padding:3px 9px">✕</button>
+        </div>
+        <div class="nx-sheet-body">
+          <div class="gis-row">
+            <span class="gis-label">🎯 조기포착·단계:</span>
+            ${[
+              ['', `전체 (${cnts.all})`],
+              ['early', `⚡ 조기포착 전체 (${cnts.early})`],
+              ['prespec', `🔭 사전규격 (${cnts.prespec})`],
+              ['permit', `🏗️ 건축인허가 (${cnts.permit})`],
+              ['newbuild', `🏠 신축분양 (${cnts.newbuild})`],
+              ['complex', `🏘️ K-apt (${cnts.complex})`],
+              ['bid', `📢 입찰공고 (${cnts.bid})`],
+            ].map(([k, lb]) => `<button class="toggle-pill ${S.bidStage === k ? 'on' : ''}" data-bid-st="${k}" type="button">${lb}</button>`).join('')}
+          </div>
+          <div class="gis-row">
+            <span class="gis-label">🚨 당일·긴급·실시간:</span>
+            ${[
+              ['', '전체'],
+              ['todayBid', `📅 당일 입찰만 (${cnts.todayBid})`],
+              ['today', `🗓️ 당일 전체 (${cnts.todayAll})`],
+              ['d3', `🚨 D-3 긴급 (${cnts.d3})`],
+              ['d7', '⏰ D-7 이번주'],
+              ['live', `🟢 카톡동일 실시간 (${cnts.live})`],
+            ].map(([k, lb]) => `<button class="toggle-pill ${S.bidUrgency === k ? 'on-emerald' : ''}" data-bid-urg="${k}" type="button">${lb}</button>`).join('')}
+            <button id="btnBidMyKw" class="toggle-pill ${S.bidMyKwOnly ? 'on' : ''}" type="button" title="관심 키워드: ${esc(S.bidMyKeywords)}">⭐ 내 키워드만 (${cnts.myKw})</button>
+            <button id="btnBidEditKw" class="toggle-pill" type="button" title="관심 키워드 편집">⚙️ 키워드</button>
+            <button id="btnBidMyBiz" class="toggle-pill ${S.bidMyBizOnly ? 'on' : ''}" type="button" title="내서류함(투찰관리) 저장 공고만 보기">📁 내서류함 (${cnts.myBiz})</button>
+            <button id="btnBidHideCancel" class="toggle-pill ${S.bidHideCancelled ? 'on-emerald' : ''}" type="button">🚫 취소공고 제외 (${cnts.cancelled})</button>
+            <select id="fBidField" class="select" style="padding:5px 8px;font-size:12px">
+              <option value="">전체 분야</option>
+              ${['보안·CCTV', 'AI·스마트', '시설·경비·미화', '전기·통신·소방', '건축·리모델링', '승강기·설비'].map((f) => `<option value="${f}" ${S.bidField === f ? 'selected' : ''}>${f}</option>`).join('')}
+            </select>
+            <select id="fBidBudget" class="select" style="padding:5px 8px;font-size:12px">
+              <option value="0" ${S.bidBudgetMin === 0 ? 'selected' : ''}>전체 예산</option>
+              <option value="10000" ${S.bidBudgetMin === 10000 ? 'selected' : ''}>💰 1억 이상</option>
+              <option value="50000" ${S.bidBudgetMin === 50000 ? 'selected' : ''}>💎 5억 이상</option>
+              <option value="100000" ${S.bidBudgetMin === 100000 ? 'selected' : ''}>🏆 10억 이상</option>
+            </select>
+            <select id="fBidSd" class="select" style="padding:5px 8px;font-size:12px">
+              <option value="">전국 시도</option>
+              ${sidos.map((s) => `<option value="${s.sd}" ${S.bidSd === s.sd ? 'selected' : ''}>${esc(s.n)}</option>`).join('')}
+            </select>
+          </div>
+        </div>
+        <div class="nx-sheet-foot">
+          <button type="button" class="btn btn-sm" id="btnBidSheetReset" style="flex:1">🔄 초기화</button>
+          <button type="button" class="btn btn-primary btn-sm" id="btnBidSheetApply" style="flex:2">✅ 적용하고 보기</button>
+        </div>
       </div>
     </div>
   `;
@@ -2689,6 +2734,84 @@ function renderBidFilterDeckHtml() {
 
 function wireBidFilterControls(onUpdate) {
   let t = null;
+  const rerenderDeckAndUpdate = () => {
+    if (S.bidSub === 'map') renderBidMapWorkspace();
+    else renderBidOppsBody();
+  };
+  const closeFilterSheet = () => {
+    S.bidFilterOpen = false;
+    $('bidFilterPanelWrap')?.classList.remove('open');
+    $('bidFilterPanel')?.classList.add('collapsed');
+    const b = $('btnBidFilterToggle');
+    if (b) { b.classList.remove('btn-primary'); b.innerHTML = b.innerHTML.replace('▴', '▾'); }
+  };
+  const resetAllFilters = () => {
+    S.bidStage = ''; S.bidUrgency = ''; S.bidMyKwOnly = false; S.bidMyBizOnly = false;
+    S.bidField = ''; S.bidBudgetMin = 0; S.bidSd = ''; S.bidQ = ''; S.bidPage = 1;
+    if (window.innerWidth <= 820) S.bidFilterOpen = false;
+    toast('🔄 입찰 필터가 초기화되었습니다.');
+    rerenderDeckAndUpdate();
+  };
+
+  $('btnBidFilterToggle')?.addEventListener('click', () => {
+    S.bidFilterOpen = !S.bidFilterOpen;
+    $('bidFilterPanelWrap')?.classList.toggle('open', S.bidFilterOpen);
+    $('bidFilterPanel')?.classList.toggle('collapsed', !S.bidFilterOpen);
+    const b = $('btnBidFilterToggle');
+    if (b) {
+      b.classList.toggle('btn-primary', S.bidFilterOpen);
+      b.innerHTML = b.innerHTML.replace(/[▴▾]/, S.bidFilterOpen ? '▴' : '▾');
+    }
+  });
+  $('btnBidFilterClose')?.addEventListener('click', closeFilterSheet);
+  $('bidFilterScrim')?.addEventListener('click', closeFilterSheet);
+  $('btnBidSheetApply')?.addEventListener('click', () => { closeFilterSheet(); rerenderDeckAndUpdate(); });
+  $('btnBidSheetReset')?.addEventListener('click', resetAllFilters);
+  $('btnBidResetAll')?.addEventListener('click', resetAllFilters);
+
+  $('btnBidMapOptToggle')?.addEventListener('click', () => {
+    S.bidMapOptOpen = !S.bidMapOptOpen;
+    $('bidMapOptDeck')?.classList.toggle('collapsed', !S.bidMapOptOpen);
+    const b = $('btnBidMapOptToggle');
+    if (b) {
+      b.classList.toggle('btn-primary', S.bidMapOptOpen);
+      b.textContent = `🗺️ 지도옵션 ${S.bidMapOptOpen ? '▴' : '▾'}`;
+    }
+  });
+
+  $('btnBidQuickToday')?.addEventListener('click', () => {
+    S.bidUrgency = S.bidUrgency === 'todayBid' ? '' : 'todayBid';
+    if (S.bidUrgency === 'todayBid' && S.bidStage && S.bidStage !== 'bid') S.bidStage = '';
+    S.bidPage = 1;
+    rerenderDeckAndUpdate();
+  });
+  $('btnBidQuickKw')?.addEventListener('click', () => {
+    S.bidMyKwOnly = !S.bidMyKwOnly;
+    S.bidPage = 1;
+    toast(S.bidMyKwOnly ? `⭐ 내 관심 키워드 필터 ON` : '⭐ 내 관심 키워드 필터 해제');
+    rerenderDeckAndUpdate();
+  });
+  $('btnBidQuickBiz')?.addEventListener('click', () => {
+    S.bidMyBizOnly = !S.bidMyBizOnly;
+    S.bidPage = 1;
+    toast(S.bidMyBizOnly ? `📁 내서류함 저장 공고만 표시 (${Object.keys(S.myBiz).length}건)` : '📁 내서류함 필터 해제');
+    rerenderDeckAndUpdate();
+  });
+  $('bidBody').querySelectorAll('[data-clear-bf]').forEach((b) => {
+    b.addEventListener('click', () => {
+      const k = b.dataset.clearBf;
+      if (k === 'stage') S.bidStage = '';
+      else if (k === 'urg') S.bidUrgency = '';
+      else if (k === 'myKw') S.bidMyKwOnly = false;
+      else if (k === 'myBiz') S.bidMyBizOnly = false;
+      else if (k === 'field') S.bidField = '';
+      else if (k === 'budget') S.bidBudgetMin = 0;
+      else if (k === 'sd') S.bidSd = '';
+      S.bidPage = 1;
+      rerenderDeckAndUpdate();
+    });
+  });
+
   $('fBidQ')?.addEventListener('input', (e) => { clearTimeout(t); t = setTimeout(() => { S.bidQ = e.target.value; S.bidPage = 1; onUpdate(); }, 180); });
   $('fBidField')?.addEventListener('change', (e) => { S.bidField = e.target.value; S.bidPage = 1; onUpdate(); });
   $('fBidBudget')?.addEventListener('change', (e) => { S.bidBudgetMin = Number(e.target.value) || 0; S.bidPage = 1; onUpdate(); });
@@ -2705,6 +2828,7 @@ function wireBidFilterControls(onUpdate) {
     S.bidMyKwOnly = !S.bidMyKwOnly;
     S.bidPage = 1;
     $('btnBidMyKw')?.classList.toggle('on', S.bidMyKwOnly);
+    $('btnBidQuickKw')?.classList.toggle('on', S.bidMyKwOnly);
     toast(S.bidMyKwOnly ? `⭐ 내 관심 키워드 필터 ON (${getMyBidKwList().join(', ')})` : '⭐ 내 관심 키워드 필터 해제');
     onUpdate();
   });
@@ -2728,6 +2852,7 @@ function wireBidFilterControls(onUpdate) {
     S.bidMyBizOnly = !S.bidMyBizOnly;
     S.bidPage = 1;
     $('btnBidMyBiz')?.classList.toggle('on', S.bidMyBizOnly);
+    $('btnBidQuickBiz')?.classList.toggle('on', S.bidMyBizOnly);
     toast(S.bidMyBizOnly ? `📁 내서류함 저장 공고만 표시 (${Object.keys(S.myBiz).length}건)` : '📁 내서류함 필터 해제');
     onUpdate();
   });
@@ -2740,6 +2865,7 @@ function wireBidFilterControls(onUpdate) {
       }
       S.bidPage = 1;
       $('bidBody').querySelectorAll('[data-bid-urg]').forEach((x) => x.classList.toggle('on-emerald', x.dataset.bidUrg === S.bidUrgency));
+      $('btnBidQuickToday')?.classList.toggle('on-emerald', S.bidUrgency === 'todayBid');
       const topBtn = $('btnTodayBidOnly');
       if (topBtn) {
         topBtn.classList.toggle('btn-emerald', S.bidUrgency === 'todayBid');
@@ -2754,7 +2880,7 @@ function renderBidMapWorkspace() {
   $('bidBody').innerHTML = `
     ${renderBidFilterDeckHtml()}
 
-    <div class="gis-deck" style="margin-bottom:10px;padding:7px 11px">
+    <div id="bidMapOptDeck" class="gis-deck nx-collapsible-panel ${S.bidMapOptOpen ? '' : 'collapsed'}" style="margin-bottom:10px;padding:7px 11px">
       <div class="gis-row">
         <span class="gis-label">🗺️ 레이더 지도:</span>
         ${[
@@ -4697,7 +4823,16 @@ function renderSbizTab() {
         </div>
       </div>
 
-      <div class="sido-grid">
+      <div class="nx-collapse-bar">
+        <button id="btnSbizSidoToggle" type="button" class="btn btn-sm ${S.sbizSidoOpen ? 'btn-primary' : ''}">
+          📍 시도 선택 (${active ? esc(active.name) : '미선택'}) ${S.sbizSidoOpen ? '▴' : '▾'}
+        </button>
+        <button id="btnSbizGisToggle" type="button" class="btn btn-sm ${S.sbizGisOpen ? 'btn-primary' : ''}">
+          🎛️ 지도·GIS 옵션 ${Object.values(S.gisLayers).filter(Boolean).length ? `<span class="nx-filter-badge">${Object.values(S.gisLayers).filter(Boolean).length}</span>` : ''} ${S.sbizGisOpen ? '▴' : '▾'}
+        </button>
+      </div>
+
+      <div id="sbizSidoWrap" class="sido-grid nx-collapsible-panel ${S.sbizSidoOpen ? '' : 'collapsed'}">
         ${sidos.map((s) => {
           const isLoaded = S.sbizCache.has(s.slug);
           const isAct = S.sbizActiveSlug === s.slug;
@@ -4708,8 +4843,15 @@ function renderSbizTab() {
         }).join('')}
       </div>
 
-      <!-- PRO GIS CONTROL DECK -->
-      <div class="gis-deck">
+      <!-- PRO GIS CONTROL DECK (Collapsible + Mobile Bottom-Sheet Popup) -->
+      <div id="sbizGisPanelWrap" class="nx-filter-panel-wrap ${S.sbizGisOpen ? 'open' : ''}">
+        <div class="nx-sheet-scrim" id="sbizGisScrim"></div>
+        <div id="sbizGisDeck" class="gis-deck nx-collapsible-panel ${S.sbizGisOpen ? '' : 'collapsed'}">
+          <div class="nx-sheet-head">
+            <span>🎛️ 지도 · 국토부 GIS · 마커 옵션</span>
+            <button type="button" class="icon-btn" id="btnSbizGisClose" style="padding:3px 9px">✕</button>
+          </div>
+          <div class="nx-sheet-body">
         <div class="gis-row">
           <span class="gis-label">🗺️ 배경지도:</span>
           ${[
@@ -4752,6 +4894,11 @@ function renderSbizTab() {
             <button id="btnGisPlaceGo" class="btn btn-sm btn-primary" type="button">이동</button>
           </div>
         </div>
+          </div>
+          <div class="nx-sheet-foot">
+            <button type="button" class="btn btn-primary btn-sm" id="btnSbizGisDone" style="flex:1">✅ 옵션 적용하고 닫기</button>
+          </div>
+        </div>
       </div>
 
       ${active ? renderSbizControlsHtml(active) : `
@@ -4778,9 +4925,28 @@ function renderSbizTab() {
     </div>
   `;
 
+  $('btnSbizSidoToggle')?.addEventListener('click', () => {
+    S.sbizSidoOpen = !S.sbizSidoOpen;
+    $('sbizSidoWrap')?.classList.toggle('collapsed', !S.sbizSidoOpen);
+    const b = $('btnSbizSidoToggle');
+    if (b) { b.classList.toggle('btn-primary', S.sbizSidoOpen); b.innerHTML = b.innerHTML.replace(/[▴▾]/, S.sbizSidoOpen ? '▴' : '▾'); }
+  });
+  const toggleSbizGis = (forceVal) => {
+    S.sbizGisOpen = typeof forceVal === 'boolean' ? forceVal : !S.sbizGisOpen;
+    $('sbizGisPanelWrap')?.classList.toggle('open', S.sbizGisOpen);
+    $('sbizGisDeck')?.classList.toggle('collapsed', !S.sbizGisOpen);
+    const b = $('btnSbizGisToggle');
+    if (b) { b.classList.toggle('btn-primary', S.sbizGisOpen); b.innerHTML = b.innerHTML.replace(/[▴▾]/, S.sbizGisOpen ? '▴' : '▾'); }
+  };
+  $('btnSbizGisToggle')?.addEventListener('click', () => toggleSbizGis());
+  $('btnSbizGisClose')?.addEventListener('click', () => toggleSbizGis(false));
+  $('sbizGisScrim')?.addEventListener('click', () => toggleSbizGis(false));
+  $('btnSbizGisDone')?.addEventListener('click', () => toggleSbizGis(false));
+
   $('mainStage').querySelectorAll('[data-load-sido]').forEach((b) => {
     b.addEventListener('click', async () => {
       await loadSbizSido(b.dataset.loadSido);
+      if (window.innerWidth <= 820) S.sbizSidoOpen = false;
       S.catchment = null;
       S.sbizYear = ''; S.sbizMonth = ''; S.sbizPeriod = '';
       renderSbizTab();

@@ -10,7 +10,7 @@
   <link rel="manifest" href="manifest.json" />
   <link rel="icon" type="image/svg+xml" href="icons/icon.svg" />
   <link rel="stylesheet" href="vendor/leaflet.css" />
-  <link rel="stylesheet" href="styles.css?v=24" />
+  <link rel="stylesheet" href="styles.css?v=26" />
 </head>
 <body>
   <!-- ===== UNIFIED VAULT LOCK SCREEN ===== -->
@@ -74,6 +74,8 @@
       </div>
     </header>
 
+    <div id="nxTenantBar" class="nx-tenant-bar hidden"></div>
+
     <nav class="nav-bar" id="desktopNav">
       <button class="nav-tab active" data-tab="overview" style="--tab-accent:#4f46e5">⚡ 통합 360° 커맨드</button>
       <button class="nav-tab" data-tab="corp" style="--tab-accent:#4f46e5">🏢 기업분석 <span class="nav-count" id="cntCorp">12만</span></button>
@@ -122,13 +124,13 @@
     </div>
   </div>
 
-  <!-- ===== ADMIN SALES / LICENSE FEATURE-FLAG CONFIGURATOR MODAL ===== -->
+  <!-- ===== ADMIN SALES / BUYER SELF-ADMIN MODAL (v26) ===== -->
   <div id="adminBackdrop" class="modal-backdrop hidden">
-    <div class="modal-card" role="dialog" aria-modal="true" style="max-width:660px">
+    <div class="modal-card nx-admin-modal" role="dialog" aria-modal="true" style="max-width:880px">
       <div class="drawer-head">
         <div>
-          <h3 style="margin:0;font-size:16px;font-weight:800">🛡️ 관리자 · 판매 패키지 & 노출 서비스 제어</h3>
-          <div style="font-size:12px;color:var(--muted);margin-top:2px">크몽·B2B 납품 시 등급별 메뉴·기능 노출을 1클릭 제어하고 고객 전용 납품 URL을 발급합니다.</div>
+          <h3 id="adminModalTitle" style="margin:0;font-size:16px;font-weight:800">🛡️ 관리자 · 판매·라이선스·구매자 통합 콘솔</h3>
+          <div id="adminModalSub" style="font-size:12px;color:var(--muted);margin-top:2px">판매링크 발급 · 판매자/현황 CRM · 원격 비밀번호 초기화 · 전문가 기법 TOP 10 옵션</div>
         </div>
         <button id="adminClose" class="icon-btn" type="button">✕</button>
       </div>
@@ -155,6 +157,6 @@
   <div id="toast" class="toast hidden"></div>
 
   <script src="vendor/leaflet.min.js"></script>
-  <script type="module" src="app.js?v=25"></script>
+  <script type="module" src="app.js?v=26"></script>
 </body>
 </html>

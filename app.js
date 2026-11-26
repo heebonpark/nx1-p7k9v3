@@ -112,7 +112,7 @@ function getStoreB2bPitch(l1, l3, isNew2026) {
 
 function loadOpts() {
   try {
-    const saved = JSON.parse(localStorage.getItem(OPT_KEY) || '{}');
+    const saved = JSON.parse(localStorage.getItem(tStorageKey(OPT_KEY)) || '{}');
     return {
       ...DEFAULT_OPTS,
       ...saved,
@@ -123,11 +123,18 @@ function loadOpts() {
   }
 }
 function saveOpts() {
-  localStorage.setItem(OPT_KEY, JSON.stringify(S.opts));
+  try { localStorage.setItem(tStorageKey(OPT_KEY), JSON.stringify(S.opts)); } catch {}
 }
 
-// ===== ADMIN SALES / LICENSE FEATURE-FLAG CONFIGURATOR (v23) =====
-const ADMIN_KEY = 'nx1_admin_sales_v1';
+// ===== V26 MASTER / BUYER MULTI-TENANT ENGINE · SALES CRM · TOP 10 EXPERT OPTIONS =====
+const LEGACY_ADMIN_KEY = 'nx1_admin_sales_v1';
+const MASTER_CFG_KEY = 'nx1_master_cfg_v26';
+const MASTER_REG_KEY = 'nx1_seller_registry_v26';
+const MASTER_AUDIT_KEY = 'nx1_audit_log_v26';
+const BUYER_DEFAULT_PW = 'admin';
+const BUYER_DEFAULT_PW_HASH = '8c6976e5b5410415bde908bd4dee15dfb167a9c873fc4bb8a81f6f2ab448a918'; // sha256('admin')
+const MASTER_DEFAULT_PIN_HASH = '849a1538e94c65c43747c85670b73eb5477b2c87f9e33fdd66e47f49c504427f'; // sha256('nx1master')
+
 const INDIVIDUAL_PRO_APPS = [
   { key: 'corp', name: '🏢 기업분석앱 ↗', desc: '12만 법인 · EDA · 브이월드', color: 'var(--c-corp)', url: 'https://heebonpark.github.io/ca-v8x4k2/' },
   { key: 'bid', name: '🎯 입찰·영업기회 ↗', desc: '나라장터 · 사전규격 · 건설사', color: 'var(--c-bid)', url: 'https://heebonpark.github.io/bid-p9m3r7/' },
@@ -138,6 +145,7 @@ const INDIVIDUAL_PRO_APPS = [
 const SALES_PACKAGES = {
   standard: {
     label: '🟢 STANDARD',
+    priceMan: 29,
     sub: '입찰 실무형 (크몽 29만원)',
     tabs: { overview: false, corp: false, bid: true, sbiz: false, realestate: false, hub: true },
     features: { bidDetail: true, bidSim: true, bidAwards: false, bidPartners: false, bidA4: false, bid1km: false },
@@ -145,6 +153,7 @@ const SALES_PACKAGES = {
   },
   deluxe: {
     label: '🔵 DELUXE',
+    priceMan: 59,
     sub: '입찰+기업 통합형 (크몽 59만원)',
     tabs: { overview: true, corp: true, bid: true, sbiz: false, realestate: false, hub: true },
     features: { bidDetail: true, bidSim: true, bidAwards: true, bidPartners: true, bidA4: true, bid1km: false },
@@ -152,6 +161,7 @@ const SALES_PACKAGES = {
   },
   premium: {
     label: '🟣 PREMIUM',
+    priceMan: 119,
     sub: '4대 도메인 전체 (크몽 119만원)',
     tabs: { overview: true, corp: true, bid: true, sbiz: true, realestate: true, hub: true },
     features: { bidDetail: true, bidSim: true, bidAwards: true, bidPartners: true, bidA4: true, bid1km: true },
@@ -159,6 +169,7 @@ const SALES_PACKAGES = {
   },
   enterprise: {
     label: '👑 ENTERPRISE / 마스터',
+    priceMan: 250,
     sub: '화이트라벨 B2B · 개별앱 포함 (250만원+)',
     tabs: { overview: true, corp: true, bid: true, sbiz: true, realestate: true, hub: true },
     features: { bidDetail: true, bidSim: true, bidAwards: true, bidPartners: true, bidA4: true, bid1km: true },
@@ -166,13 +177,95 @@ const SALES_PACKAGES = {
   },
 };
 
+const EXPERT_TECHNIQUES_10 = [
+  { key: 'signedToken', num: 1, title: '🔐 무결성 서명 라이선스 토큰', desc: '판매링크(?lic=)에 위변조 방지 서명 체크섬 강제 · URL 임의 수정 시 즉시 차단' },
+  { key: 'tenantIsolation', num: 2, title: '🧩 멀티테넌트 스토리지 완전 격리', desc: '판매자 마스터와 구매자 설정·파이프라인·서류함 키 분리 · 마스터 모드 오염 원천 차단' },
+  { key: 'forcePwChange', num: 3, title: '🔑 구매자 초기 비번(admin) 강제 변경', desc: '구매자 최초 접속/초기화 시 보안 안내 배너 + admin 로그인 즉시 새 비밀번호 설정 강제' },
+  { key: 'oneTimeReset', num: 4, title: '♻️ 1회용 원격 비밀번호 초기화 링크', desc: '만료시간·논스 서명 토큰으로 원격 고객사 기기의 구매자 관리자 비번을 admin으로 안전 초기화' },
+  { key: 'expiryEngine', num: 5, title: '⏳ 구독 만료일 · D-7 갱신 알림 엔진', desc: '만료 D-7부터 상단 갱신 안내 배너 노출 · 만료 시 잠금 또는 읽기전용 자동 전환' },
+  { key: 'rbacStrict', num: 6, title: '🎭 3단계 RBAC 권한 경계 분리', desc: '판매자 마스터 / 구매자 사내관리자 / 일반직원 권한 완전 분리 · 단축키 마스터 PIN 보호' },
+  { key: 'a4Watermark', num: 7, title: '🎨 화이트라벨 & A4 PDF 동적 워터마크', desc: '고객사 브랜드명·라이선스 코드·담당부서를 잠금화면·헤더·A4 검토서에 자동 각인' },
+  { key: 'revocationGuard', num: 8, title: '🚫 원격 라이선스 정지 (Kill-Switch)', desc: '판매현황에서 정지 처리된 라이선스 접근 차단 + 판매자 갱신 연락처 안내 화면 표시' },
+  { key: 'auditTrail', num: 9, title: '📜 보안 감사 로그 (Audit Trail)', desc: '라이선스 발급·비번변경·초기화·정지·접근 이력을 타임스탬프와 함께 자동 기록·CSV 출력' },
+  { key: 'deliveryKit', num: 10, title: '📦 원클릭 고객 납품 키트 생성기', desc: '구매사 전용 A4 납품확인서 + 카톡 전달용 안내문(전용링크·초기비번 admin 가이드) 자동 생성' },
+];
+
+function defaultExpertOpts() {
+  return {
+    signedToken: true,
+    tenantIsolation: true,
+    forcePwChange: true,
+    oneTimeReset: true,
+    expiryEngine: true,
+    rbacStrict: true,
+    a4Watermark: true,
+    revocationGuard: true,
+    auditTrail: true,
+    deliveryKit: true,
+    expiryMode: 'lock',     // lock | readonly
+    resetHours: 72,         // 24 | 72 | 168
+  };
+}
+
+function signTokenStr(str) {
+  let h1 = 0x811c9dc5;
+  let h2 = 0x27d4eb2d;
+  const src = `NX1-LIC-SIG-V26-KR::${str}::SALT9`;
+  for (let i = 0; i < src.length; i++) {
+    const ch = src.charCodeAt(i);
+    h1 ^= ch;
+    h1 = Math.imul(h1, 0x01000193);
+    h2 ^= (ch + (i & 255));
+    h2 = Math.imul(h2, 0x85ebca6b);
+  }
+  const a = (h1 >>> 0).toString(36).padStart(6, '0').slice(-6);
+  const b = (h2 >>> 0).toString(36).padStart(6, '0').slice(-6);
+  return `${a}${b}`;
+}
+
+async function sha256Hex(text) {
+  const s = String(text ?? '');
+  try {
+    if (crypto?.subtle) {
+      const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s));
+      return Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, '0')).join('');
+    }
+  } catch {}
+  return `fb_${signTokenStr(s)}`;
+}
+
+function toBase64Url(obj) {
+  const bytes = new TextEncoder().encode(JSON.stringify(obj));
+  let bin = '';
+  bytes.forEach((b) => { bin += String.fromCharCode(b); });
+  return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+function fromBase64Url(b64) {
+  const pad = b64.replace(/-/g, '+').replace(/_/g, '/') + '==='.slice((b64.length + 3) % 4);
+  const bin = atob(pad);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return JSON.parse(new TextDecoder().decode(bytes));
+}
+
 function createClientSampleConfig() {
   return {
+    licId: 'HB-2026-DLX-001',
+    companyName: '㈜한빛안전건설',
+    sellerName: '본사 직판 (마스터)',
+    sellerCode: 'SLR-001',
     pkg: 'deluxe',
+    priceMan: 59,
     brandTitle: '한빛 입찰레이더',
     brandBadge: 'PRO',
     brandSub: '㈜한빛안전건설 전용 · 실시간 나라장터·투찰분석·12만 기업 인텔리전스',
-    hideAdminBtn: true,
+    expiryDate: '',
+    expiryMode: 'lock',
+    forcePwChange: true,
+    a4Watermark: true,
+    rbacStrict: true,
+    hideAdminBtn: false,
     tabs: { ...SALES_PACKAGES.deluxe.tabs },
     features: { ...SALES_PACKAGES.deluxe.features },
     appLinks: { showSection: false, corp: false, bid: false, sbiz: false, re: false },
@@ -181,10 +274,20 @@ function createClientSampleConfig() {
 
 function defaultAdminConfig() {
   return {
+    licId: 'MASTER',
+    companyName: '넥서스원 본사 (마스터)',
+    sellerName: '본사 직판 (마스터)',
+    sellerCode: 'SLR-001',
     pkg: 'enterprise',
+    priceMan: 250,
     brandTitle: '넥서스원',
     brandBadge: 'PRO',
     brandSub: '',
+    expiryDate: '',
+    expiryMode: 'lock',
+    forcePwChange: true,
+    a4Watermark: false,
+    rbacStrict: true,
     hideAdminBtn: false,
     tabs: { ...SALES_PACKAGES.enterprise.tabs },
     features: { ...SALES_PACKAGES.enterprise.features },
@@ -192,105 +295,375 @@ function defaultAdminConfig() {
   };
 }
 
-function encodeAdminCfg(cfg) {
+function encodeSignedLicense(cfg, expertOpts = null) {
+  const eo = expertOpts || loadSellerRegistry().expertOpts;
   const al = cfg.appLinks || {};
-  const enabledApps = al.showSection
-    ? INDIVIDUAL_PRO_APPS.filter((a) => al[a.key]).map((a) => a.key)
-    : [];
+  const enabledApps = al.showSection ? INDIVIDUAL_PRO_APPS.filter((a) => al[a.key]).map((a) => a.key) : [];
   const compact = {
-    p: cfg.pkg,
-    bt: cfg.brandTitle,
-    bb: cfg.brandBadge,
-    bs: cfg.brandSub,
-    ha: cfg.hideAdminBtn ? 1 : 0,
-    t: Object.entries(cfg.tabs).filter(([, v]) => v).map(([k]) => k),
-    f: Object.entries(cfg.features).filter(([, v]) => v).map(([k]) => k),
+    v: 26,
+    id: cfg.licId || `NX-${new Date().getFullYear()}-${String(Math.floor(100 + Math.random() * 900))}`,
+    co: cfg.companyName || cfg.brandTitle || '고객사',
+    sl: cfg.sellerName || '본사 직판 (마스터)',
+    sc: cfg.sellerCode || 'SLR-001',
+    p: cfg.pkg || 'deluxe',
+    bt: cfg.brandTitle || '넥서스원',
+    bb: cfg.brandBadge ?? 'PRO',
+    bs: cfg.brandSub || '',
+    t: Object.entries(cfg.tabs || {}).filter(([, v]) => v).map(([k]) => k),
+    f: Object.entries(cfg.features || {}).filter(([, v]) => v).map(([k]) => k),
     als: al.showSection ? 1 : 0,
     al: enabledApps,
+    exp: cfg.expiryDate || '',
+    em: cfg.expiryMode || eo.expiryMode || 'lock',
+    fp: (cfg.forcePwChange !== undefined ? cfg.forcePwChange : eo.forcePwChange) ? 1 : 0,
+    wm: (cfg.a4Watermark !== undefined ? cfg.a4Watermark : eo.a4Watermark) ? 1 : 0,
+    rb: (cfg.rbacStrict !== undefined ? cfg.rbacStrict : eo.rbacStrict) ? 1 : 0,
   };
-  const bytes = new TextEncoder().encode(JSON.stringify(compact));
-  let bin = '';
-  bytes.forEach((b) => { bin += String.fromCharCode(b); });
-  return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  const b64 = toBase64Url(compact);
+  return `${b64}.${signTokenStr(b64)}`;
 }
 
-function decodeAdminCfg(b64) {
+function decodeSignedLicense(token, requireSig = true) {
   try {
-    const pad = b64.replace(/-/g, '+').replace(/_/g, '/') + '==='.slice((b64.length + 3) % 4);
-    const bin = atob(pad);
-    const bytes = new Uint8Array(bin.length);
-    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-    const c = JSON.parse(new TextDecoder().decode(bytes));
+    const parts = String(token || '').split('.');
+    if (parts.length !== 2) return { ok: false, reason: 'FORMAT' };
+    const [b64, sig] = parts;
+    if (requireSig && signTokenStr(b64) !== sig) return { ok: false, reason: 'TAMPERED' };
+    const c = fromBase64Url(b64);
     const base = defaultAdminConfig();
+    base.licId = c.id || 'CLIENT-001';
+    base.companyName = c.co || c.bt || '구매 고객사';
+    base.sellerName = c.sl || '본사 직판 (마스터)';
+    base.sellerCode = c.sc || 'SLR-001';
     if (c.p) base.pkg = c.p;
     if (typeof c.bt === 'string' && c.bt) base.brandTitle = c.bt;
     if (typeof c.bb === 'string') base.brandBadge = c.bb;
     if (typeof c.bs === 'string') base.brandSub = c.bs;
-    if (c.ha !== undefined) base.hideAdminBtn = Boolean(c.ha);
+    base.expiryDate = c.exp || '';
+    base.expiryMode = c.em || 'lock';
+    base.forcePwChange = c.fp !== 0;
+    base.a4Watermark = c.wm !== 0;
+    base.rbacStrict = c.rb !== 0;
+    base.hideAdminBtn = false; // Buyer always sees Buyer Self-Admin button!
     if (Array.isArray(c.t)) Object.keys(base.tabs).forEach((k) => { base.tabs[k] = c.t.includes(k); });
     if (Array.isArray(c.f)) Object.keys(base.features).forEach((k) => { base.features[k] = c.f.includes(k); });
-    if (c.als !== undefined || Array.isArray(c.al)) {
-      const showSec = c.als !== undefined ? Boolean(c.als) : (Array.isArray(c.al) && c.al.length > 0);
-      base.appLinks = {
-        showSection: showSec,
-        corp: Array.isArray(c.al) ? c.al.includes('corp') : showSec,
-        bid: Array.isArray(c.al) ? c.al.includes('bid') : showSec,
-        sbiz: Array.isArray(c.al) ? c.al.includes('sbiz') : showSec,
-        re: Array.isArray(c.al) ? c.al.includes('re') : showSec,
-      };
-    } else if (c.ha) {
-      // Legacy client delivery URLs default to hiding seller's individual apps
-      base.appLinks = { showSection: false, corp: false, bid: false, sbiz: false, re: false };
-    }
+    const showSec = Boolean(c.als);
+    base.appLinks = {
+      showSection: showSec,
+      corp: showSec && Array.isArray(c.al) && c.al.includes('corp'),
+      bid: showSec && Array.isArray(c.al) && c.al.includes('bid'),
+      sbiz: showSec && Array.isArray(c.al) && c.al.includes('sbiz'),
+      re: showSec && Array.isArray(c.al) && c.al.includes('re'),
+    };
+    return { ok: true, cfg: base };
+  } catch {
+    return { ok: false, reason: 'DECODE_ERR' };
+  }
+}
+
+function decodeLegacyCfg(b64) {
+  try {
+    const c = fromBase64Url(b64);
+    const base = defaultAdminConfig();
+    base.licId = c.id || (c.bt && c.bt.includes('한빛') ? 'HB-2026-DLX-001' : `LEGACY-${signTokenStr(b64).slice(0, 6).toUpperCase()}`);
+    base.companyName = c.co || (c.bt && c.bt.includes('한빛') ? '㈜한빛안전건설' : (c.bt || '구매 고객사'));
+    base.sellerName = c.sl || '본사 직판 (마스터)';
+    if (c.p) base.pkg = c.p;
+    if (typeof c.bt === 'string' && c.bt) base.brandTitle = c.bt;
+    if (typeof c.bb === 'string') base.brandBadge = c.bb;
+    if (typeof c.bs === 'string') base.brandSub = c.bs;
+    base.hideAdminBtn = false;
+    base.forcePwChange = true;
+    base.a4Watermark = true;
+    if (Array.isArray(c.t)) Object.keys(base.tabs).forEach((k) => { base.tabs[k] = c.t.includes(k); });
+    if (Array.isArray(c.f)) Object.keys(base.features).forEach((k) => { base.features[k] = c.f.includes(k); });
+    const showSec = c.als !== undefined ? Boolean(c.als) : false;
+    base.appLinks = {
+      showSection: showSec,
+      corp: showSec && Array.isArray(c.al) && c.al.includes('corp'),
+      bid: showSec && Array.isArray(c.al) && c.al.includes('bid'),
+      sbiz: showSec && Array.isArray(c.al) && c.al.includes('sbiz'),
+      re: showSec && Array.isArray(c.al) && c.al.includes('re'),
+    };
     return base;
   } catch { return null; }
 }
 
-function loadAdminConfig() {
-  const params = new URLSearchParams(location.search);
-  const urlCfg = params.get('cfg');
-  if (urlCfg) {
-    const dec = decodeAdminCfg(urlCfg);
-    if (dec) {
-      if (params.get('admin') === '1') dec.hideAdminBtn = false;
-      try { localStorage.setItem(ADMIN_KEY, JSON.stringify(dec)); } catch {}
-      return dec;
-    }
-  }
-  const urlPkg = params.get('pkg');
-  if (urlPkg === 'sample') {
-    const sample = createClientSampleConfig();
-    if (params.get('admin') === '1') sample.hideAdminBtn = false;
-    try { localStorage.setItem(ADMIN_KEY, JSON.stringify(sample)); } catch {}
-    return sample;
-  }
-  if (urlPkg && SALES_PACKAGES[urlPkg]) {
-    const base = defaultAdminConfig();
-    base.pkg = urlPkg;
-    base.tabs = { ...SALES_PACKAGES[urlPkg].tabs };
-    base.features = { ...SALES_PACKAGES[urlPkg].features };
-    base.appLinks = { ...SALES_PACKAGES[urlPkg].appLinks };
-    return base;
-  }
+function buildRemoteResetToken(licId, hours = 72) {
+  const payload = {
+    id: licId,
+    n: `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`,
+    exp: Date.now() + Math.max(1, Number(hours) || 72) * 3600 * 1000,
+  };
+  const b64 = toBase64Url(payload);
+  return `${b64}.${signTokenStr(`RST:${b64}`)}`;
+}
+
+function verifyRemoteResetToken(token, expectedLicId) {
   try {
-    const saved = JSON.parse(localStorage.getItem(ADMIN_KEY) || 'null');
-    if (saved) {
-      const base = defaultAdminConfig();
-      const merged = {
-        ...base, ...saved,
-        tabs: { ...base.tabs, ...(saved.tabs || {}) },
-        features: { ...base.features, ...(saved.features || {}) },
-        appLinks: { ...base.appLinks, ...(saved.appLinks || {}) },
+    const parts = String(token || '').split('.');
+    if (parts.length !== 2) return { ok: false, msg: '초기화 토큰 형식이 올바르지 않습니다.' };
+    const [b64, sig] = parts;
+    if (signTokenStr(`RST:${b64}`) !== sig) return { ok: false, msg: '초기화 토큰 서명이 위변조되었습니다.' };
+    const p = fromBase64Url(b64);
+    if (p.id !== expectedLicId) return { ok: false, msg: '다른 고객사 라이선스용 초기화 토큰입니다.' };
+    if (Date.now() > Number(p.exp || 0)) return { ok: false, msg: '만료된 비밀번호 초기화 링크입니다. 판매자에게 재발급을 요청하세요.' };
+    return { ok: true, nonce: p.n, exp: p.exp };
+  } catch {
+    return { ok: false, msg: '초기화 토큰 해석에 실패했습니다.' };
+  }
+}
+
+// ===== SELLER CRM REGISTRY (SALES · SELLERS · REVOCATION · TOP 10 OPTIONS) =====
+function defaultSellerRegistry() {
+  const sampleCfg = createClientSampleConfig();
+  return {
+    sellers: [
+      { id: 'SLR-001', name: '본사 직판 (마스터)', channel: '본사 직판', phone: '010-0000-0000', commissionPct: 0, memo: '대표 마스터 채널' },
+      { id: 'SLR-002', name: '크몽 공식 스토어', channel: '크몽 플랫폼', phone: '크몽 1:1 메시지', commissionPct: 15, memo: '온라인 패키지 판매' },
+    ],
+    sales: [
+      {
+        licId: sampleCfg.licId,
+        companyName: sampleCfg.companyName,
+        brandTitle: sampleCfg.brandTitle,
+        brandBadge: sampleCfg.brandBadge,
+        brandSub: sampleCfg.brandSub,
+        pkg: sampleCfg.pkg,
+        priceMan: 59,
+        sellerCode: 'SLR-001',
+        sellerName: '본사 직판 (마스터)',
+        issuedAt: '2026-11-26',
+        expiryDate: '',
+        status: 'active', // active | revoked
+        resetCount: 0,
+        lastResetAt: '',
+        memo: '실제 판매 납품 샘플 · DELUXE 화이트라벨',
+        cfg: sampleCfg,
+        signedUrl: `${location.origin}${location.pathname}?lic=${encodeSignedLicense(sampleCfg, defaultExpertOpts())}`,
+      },
+    ],
+    revoked: [],
+    expertOpts: defaultExpertOpts(),
+    masterPinHash: MASTER_DEFAULT_PIN_HASH,
+  };
+}
+
+function loadSellerRegistry() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(MASTER_REG_KEY) || 'null');
+    if (raw && Array.isArray(raw.sales)) {
+      return {
+        sellers: Array.isArray(raw.sellers) && raw.sellers.length ? raw.sellers : defaultSellerRegistry().sellers,
+        sales: raw.sales,
+        revoked: Array.isArray(raw.revoked) ? raw.revoked : [],
+        expertOpts: { ...defaultExpertOpts(), ...(raw.expertOpts || {}) },
+        masterPinHash: raw.masterPinHash || MASTER_DEFAULT_PIN_HASH,
       };
-      if (params.get('admin') === '1') merged.hideAdminBtn = false;
-      return merged;
     }
   } catch {}
-  return defaultAdminConfig();
+  const initReg = defaultSellerRegistry();
+  try { localStorage.setItem(MASTER_REG_KEY, JSON.stringify(initReg)); } catch {}
+  return initReg;
+}
+
+function saveSellerRegistry(reg) {
+  try { localStorage.setItem(MASTER_REG_KEY, JSON.stringify(reg)); } catch {}
+}
+
+function appendAudit(action, target, detail, actor = '') {
+  try {
+    const reg = loadSellerRegistry();
+    if (!reg.expertOpts?.auditTrail) return;
+    const isBuyer = typeof S !== 'undefined' && S?.isBuyerMode;
+    const key = isBuyer ? `nx1_tenant_${S.tenantId}_audit_v26` : MASTER_AUDIT_KEY;
+    const list = JSON.parse(localStorage.getItem(key) || '[]');
+    list.unshift({
+      ts: new Date().toLocaleString('ko-KR'),
+      actor: actor || (isBuyer ? `구매자(${S.tenantId})` : '판매자 마스터'),
+      action,
+      target: String(target || ''),
+      detail: String(detail || ''),
+    });
+    localStorage.setItem(key, JSON.stringify(list.slice(0, 200)));
+  } catch {}
+}
+
+function loadAuditLog(tenantId = null) {
+  try {
+    const key = tenantId ? `nx1_tenant_${tenantId}_audit_v26` : MASTER_AUDIT_KEY;
+    return JSON.parse(localStorage.getItem(key) || '[]');
+  } catch { return []; }
+}
+
+// ===== BUYER SELF-ADMIN ISOLATED STORAGE =====
+function buyerStorageKey(licId) {
+  return `nx1_tenant_${licId || 'DEFAULT'}_buyer_v26`;
+}
+
+function defaultBuyerState() {
+  return {
+    pwHash: BUYER_DEFAULT_PW_HASH, // default 'admin'
+    mustChangePw: true,
+    pwChangedAt: '',
+    notice: '',
+    deptName: '',
+    contact: '',
+    startTab: '',
+    usedResetNonces: [],
+  };
+}
+
+function loadBuyerState(licId) {
+  try {
+    const saved = JSON.parse(localStorage.getItem(buyerStorageKey(licId)) || 'null');
+    if (saved) return { ...defaultBuyerState(), ...saved };
+  } catch {}
+  return defaultBuyerState();
+}
+
+function saveBuyerState(licId, st) {
+  try { localStorage.setItem(buyerStorageKey(licId), JSON.stringify(st)); } catch {}
+}
+
+// ===== BOOTSTRAP TENANT CONTEXT RESOLUTION (NEVER POLLUTES MASTER!) =====
+function resolveInitialContext() {
+  const params = new URLSearchParams(location.search);
+  const reg = loadSellerRegistry();
+  const eo = reg.expertOpts || defaultExpertOpts();
+
+  // Explicit master escape hatch (?master=1) or clean root URL -> ALWAYS Master Mode!
+  const urlLic = params.get('lic');
+  const urlCfg = params.get('cfg');
+  const urlPkg = params.get('pkg');
+  const forceMaster = params.get('master') === '1';
+
+  if (forceMaster || (!urlLic && !urlCfg && urlPkg !== 'sample')) {
+    // Auto-heal legacy v23~v25 buyer pollution in localStorage!
+    try { localStorage.removeItem(LEGACY_ADMIN_KEY); } catch {}
+    let masterCfg = defaultAdminConfig();
+    if (!forceMaster && urlPkg && SALES_PACKAGES[urlPkg]) {
+      masterCfg.pkg = urlPkg;
+      masterCfg.tabs = { ...SALES_PACKAGES[urlPkg].tabs };
+      masterCfg.features = { ...SALES_PACKAGES[urlPkg].features };
+      masterCfg.appLinks = { ...SALES_PACKAGES[urlPkg].appLinks };
+    } else if (!forceMaster) {
+      try {
+        const savedM = JSON.parse(localStorage.getItem(MASTER_CFG_KEY) || 'null');
+        if (savedM && savedM.licId === 'MASTER') {
+          masterCfg = {
+            ...masterCfg, ...savedM,
+            tabs: { ...masterCfg.tabs, ...(savedM.tabs || {}) },
+            features: { ...masterCfg.features, ...(savedM.features || {}) },
+            appLinks: { ...masterCfg.appLinks, ...(savedM.appLinks || {}) },
+          };
+        }
+      } catch {}
+    }
+    return { isBuyerMode: false, tenantId: 'MASTER', admin: masterCfg, licenseStatus: { state: 'OK', msg: '' }, justResetPw: false, resetErr: '' };
+  }
+
+  // Buyer Mode (?lic=... | legacy ?cfg=... | ?pkg=sample) -> 100% isolated from Master!
+  let adminCfg = null;
+  let licenseStatus = { state: 'OK', msg: '' };
+
+  if (urlLic) {
+    const res = decodeSignedLicense(urlLic, eo.signedToken !== false);
+    if (res.ok) {
+      adminCfg = res.cfg;
+    } else {
+      adminCfg = createClientSampleConfig();
+      adminCfg.brandTitle = '라이선스 검증 오류';
+      adminCfg.brandBadge = 'LOCKED';
+      licenseStatus = {
+        state: 'TAMPERED',
+        msg: '라이선스 토큰 서명 무결성 검증에 실패했습니다. URL이 변조되었거나 손상되었습니다.',
+      };
+    }
+  } else if (urlCfg) {
+    adminCfg = decodeLegacyCfg(urlCfg) || createClientSampleConfig();
+  } else if (urlPkg === 'sample') {
+    adminCfg = createClientSampleConfig();
+  }
+
+  const tid = adminCfg.licId || 'CLIENT-001';
+
+  // Check Revocation Guard (Kill-Switch)
+  if (licenseStatus.state === 'OK' && eo.revocationGuard !== false) {
+    const saleRec = (reg.sales || []).find((x) => x.licId === tid);
+    if ((reg.revoked || []).includes(tid) || saleRec?.status === 'revoked') {
+      licenseStatus = {
+        state: 'REVOKED',
+        msg: `라이선스(${tid})가 관리자에 의해 일시 정지되었습니다. 담당 판매자(${adminCfg.sellerName || '본사'})에게 문의해 주세요.`,
+      };
+    }
+  }
+
+  // Check Expiry Engine
+  if (licenseStatus.state === 'OK' && eo.expiryEngine !== false && adminCfg.expiryDate) {
+    const todayIso = new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 10);
+    const diffDays = Math.ceil((new Date(`${adminCfg.expiryDate}T23:59:59+09:00`).getTime() - Date.now()) / 86400000);
+    if (todayIso > adminCfg.expiryDate) {
+      licenseStatus = {
+        state: adminCfg.expiryMode === 'readonly' ? 'EXPIRED_RO' : 'EXPIRED_LOCK',
+        daysLeft: diffDays,
+        msg: `라이선스 사용 기간(${adminCfg.expiryDate})이 만료되었습니다. 담당 판매자(${adminCfg.sellerName || '본사'})에게 갱신을 요청해 주세요.`,
+      };
+    } else if (diffDays <= 7) {
+      licenseStatus = {
+        state: 'EXPIRING_SOON',
+        daysLeft: Math.max(0, diffDays),
+        msg: `라이선스 만료 D-${Math.max(0, diffDays)}일 (${adminCfg.expiryDate}) · 담당 판매자(${adminCfg.sellerName || '본사'})에게 연장을 문의하세요.`,
+      };
+    }
+  }
+
+  // Process Remote 1-Time Password Reset Link (&rst=...)
+  let justResetPw = false;
+  let resetErr = '';
+  const urlRst = params.get('rst');
+  if (urlRst && licenseStatus.state !== 'TAMPERED') {
+    const vr = verifyRemoteResetToken(urlRst, tid);
+    const bSt = loadBuyerState(tid);
+    if (!vr.ok) {
+      resetErr = vr.msg;
+    } else if ((bSt.usedResetNonces || []).includes(vr.nonce)) {
+      resetErr = '이미 사용 완료된 1회용 비밀번호 초기화 링크입니다.';
+    } else {
+      bSt.pwHash = BUYER_DEFAULT_PW_HASH;
+      bSt.mustChangePw = true;
+      bSt.pwChangedAt = '';
+      bSt.usedResetNonces = [...(bSt.usedResetNonces || []).slice(-19), vr.nonce];
+      saveBuyerState(tid, bSt);
+      justResetPw = true;
+      try {
+        const cleanUrl = new URL(location.href);
+        cleanUrl.searchParams.delete('rst');
+        history.replaceState(null, '', cleanUrl.toString());
+      } catch {}
+    }
+  }
+
+  return { isBuyerMode: true, tenantId: tid, admin: adminCfg, licenseStatus, justResetPw, resetErr };
+}
+
+const BOOT_CTX = resolveInitialContext();
+
+function tStorageKey(baseKey) {
+  if (!BOOT_CTX.isBuyerMode) return baseKey;
+  try {
+    const eo = loadSellerRegistry().expertOpts;
+    if (eo && eo.tenantIsolation === false) return baseKey;
+  } catch {}
+  return `${baseKey}__${BOOT_CTX.tenantId}`;
 }
 
 function saveAdminConfig() {
-  try { localStorage.setItem(ADMIN_KEY, JSON.stringify(S.admin)); } catch {}
+  if (S.isBuyerMode) return; // Buyer mode NEVER overwrites Master config!
+  try {
+    S.admin.licId = 'MASTER';
+    localStorage.setItem(MASTER_CFG_KEY, JSON.stringify(S.admin));
+  } catch {}
 }
 
 function applyLockScreenBranding() {
@@ -306,6 +679,69 @@ function applyLockScreenBranding() {
     if (k) el.classList.toggle('hidden', !cfg.tabs[k]);
   });
   document.title = `${cfg.brandTitle || '넥서스원'} ${cfg.brandBadge || 'PRO'} — 통합 영업 인텔리전스`;
+}
+
+function renderTenantBar() {
+  const bar = $('nxTenantBar');
+  if (!bar) return;
+  if (!S.isBuyerMode) {
+    bar.classList.add('hidden');
+    bar.innerHTML = '';
+    return;
+  }
+  const bSt = loadBuyerState(S.tenantId);
+  const rows = [];
+  if (S.licenseStatus?.state === 'EXPIRED_RO') {
+    rows.push(`<div class="nx-tbar-row nx-tbar-danger"><span>⛔ <b>[만료 · 읽기전용]</b> ${esc(S.licenseStatus.msg)}</span><span>라이선스: <code>${esc(S.tenantId)}</code></span></div>`);
+  } else if (S.licenseStatus?.state === 'EXPIRING_SOON') {
+    rows.push(`<div class="nx-tbar-row nx-tbar-warn"><span>⏳ <b>[만료 임박]</b> ${esc(S.licenseStatus.msg)}</span><span>라이선스: <code>${esc(S.tenantId)}</code></span></div>`);
+  }
+  if (bSt.mustChangePw && S.admin.forcePwChange !== false) {
+    rows.push(`
+      <div class="nx-tbar-row nx-tbar-warn">
+        <span>🔐 <b>[구매자 초기 보안 안내]</b> 사내 관리자 기본 비밀번호(<code>admin</code>)가 적용되어 있습니다. 보안을 위해 비밀번호를 변경한 후 사용해 주세요.</span>
+        <button id="btnTenantChangePwNow" type="button" class="btn btn-amber btn-sm">🔑 지금 비밀번호 변경</button>
+      </div>`);
+  }
+  if (bSt.notice) {
+    rows.push(`<div class="nx-tbar-row nx-tbar-info"><span>📢 <b>사내 공지</b>: ${esc(bSt.notice)}</span><span style="font-size:11px;color:var(--muted)">${esc(bSt.deptName || S.admin.companyName || '')}${bSt.contact ? ` · ${esc(bSt.contact)}` : ''}</span></div>`);
+  }
+  if (!rows.length) {
+    bar.classList.add('hidden');
+    bar.innerHTML = '';
+    return;
+  }
+  bar.innerHTML = rows.join('');
+  bar.classList.remove('hidden');
+  $('btnTenantChangePwNow')?.addEventListener('click', () => openBuyerAdminModal());
+}
+
+function renderLicenseLockWallIfNeeded() {
+  const st = S.licenseStatus?.state;
+  if (!S.isBuyerMode || !['TAMPERED', 'REVOKED', 'EXPIRED_LOCK'].includes(st)) return false;
+  const stage = $('mainStage');
+  if (!stage) return true;
+  const titleMap = {
+    TAMPERED: '🛡️ 라이선스 서명 무결성 검증 실패',
+    REVOKED: '🚫 라이선스 일시 정지 안내',
+    EXPIRED_LOCK: '⏳ 라이선스 사용 기간 만료',
+  };
+  stage.innerHTML = `
+    <div class="nx-license-wall">
+      <div style="font-size:38px;margin-bottom:8px">${st === 'TAMPERED' ? '🛡️' : st === 'REVOKED' ? '🚫' : '⏳'}</div>
+      <h2 style="margin:0 0 8px;font-size:19px;font-weight:900">${titleMap[st]}</h2>
+      <p style="font-size:13px;color:var(--text-2);margin:0 0 14px">${esc(S.licenseStatus.msg)}</p>
+      <div style="background:var(--surface-2);border:1px solid var(--border);border-radius:10px;padding:10px 12px;font-size:12px;text-align:left;margin-bottom:14px">
+        <div><b>라이선스 ID</b>: <code>${esc(S.tenantId)}</code></div>
+        <div><b>고객사 / 브랜드</b>: ${esc(S.admin.companyName || S.admin.brandTitle)}</div>
+        <div><b>담당 판매자</b>: ${esc(S.admin.sellerName || '본사 직판')}</div>
+      </div>
+      <div style="display:flex;gap:8px;justify-content:center;flex-wrap:wrap">
+        <button id="btnWallMasterBack" type="button" class="btn btn-primary btn-sm">🔄 판매자 마스터 모드 복귀</button>
+      </div>
+    </div>`;
+  $('btnWallMasterBack')?.addEventListener('click', () => openMasterEscapePrompt());
+  return true;
 }
 
 function applyAdminConfig(rerender = false) {
@@ -333,7 +769,23 @@ function applyAdminConfig(rerender = false) {
     $('brandMeta').textContent = parts.join(' · ') || '맞춤형 B2B 영업 인텔리전스';
   }
   applyLockScreenBranding();
-  $('btnAdminSales')?.classList.toggle('hidden', Boolean(cfg.hideAdminBtn));
+
+  const admBtn = $('btnAdminSales');
+  if (admBtn) {
+    admBtn.classList.remove('hidden');
+    if (S.isBuyerMode) {
+      const bSt = loadBuyerState(S.tenantId);
+      const dot = (bSt.mustChangePw && cfg.forcePwChange !== false) ? '<span class="nx-pulse-dot" title="초기 비밀번호 변경 필요"></span>' : '';
+      admBtn.innerHTML = `🏢 <span class="hide-xs">사내관리</span>${dot}`;
+      admBtn.title = '구매자 자체 관리자 · 비밀번호 변경 · 사내 공지 및 라이선스 정보';
+    } else {
+      admBtn.innerHTML = `🛡️ <span class="hide-xs">관리자</span>`;
+      admBtn.title = '판매자 마스터 콘솔 · 판매링크 발급 · 현황 · 비번초기화 · TOP 10 옵션 (Ctrl+Shift+A)';
+    }
+  }
+
+  renderTenantBar();
+  if (renderLicenseLockWallIfNeeded()) return;
 
   if (!cfg.tabs[S.tab]) {
     S.tab = enabledTabs[0];
@@ -344,183 +796,909 @@ function applyAdminConfig(rerender = false) {
   }
 }
 
-function openAdminSalesModal() {
-  const cfg = S.admin;
-  if (!cfg.appLinks) cfg.appLinks = { ...defaultAdminConfig().appLinks };
-  const tabMeta = [
-    ['overview', '⚡ 통합 360° 커맨드', '229 시군구 융합지도·BCG·전략가중치'],
-    ['corp', '🏢 기업분석 (12만사)', '재무·매출·고용·업종 필터링 DB'],
-    ['bid', '🎯 입찰·사전규격·레이더', '실시간 나라장터·당일·건설사 1.2만'],
-    ['sbiz', '🏪 상권지도 (275만)', '브이월드 GIS·지적도·반경 상권진단'],
-    ['realestate', '🏠 청약·착공·인허가', '신축분양·건축인허가·K-apt 단지'],
-    ['hub', '🔌 API진단 · CRM', '파이프라인 관리·라이브 API 진단'],
-  ];
-  const featMeta = [
-    ['bidDetail', '📎 입찰 상세내역 · 첨부서류 다운로드', '공고문/과업지시서/내역서 직링크 + 상세표'],
-    ['bidSim', '🎯 K-Bid급 투찰·A값·1,365조합·적격심사', 'A값/순공사 98% 경고·15예가·적격심사 판정'],
-    ['bidAwards', '📊 과거 낙찰결과 · 분포도 히스토그램', 'ScsbidInfoService 평균 낙찰률·최빈 구간'],
-    ['bidPartners', '🤝 지역 추천 협력 파트너 TOP 5', '12,198 건설·시설사 자동 매칭'],
-    ['bidA4', '📑 A4 수주 검토서 & 캘린더(.ics)', '인앱 1P 인쇄/PDF + 마감 일정 캘린더'],
-    ['bid1km', '🗺️ 현장 반경 1km 주변 영업처 점프', '입찰 현장 → 브이월드 정밀좌표·상권 즉시 이동'],
-  ];
-
+// ===== MASTER ESCAPE / AUTH PROMPT (WHEN CTRL+SHIFT+A PRESSED IN BUYER MODE) =====
+function openMasterEscapePrompt() {
+  $('adminModalTitle').textContent = '🔐 판매자 마스터 모드 전환 인증';
+  $('adminModalSub').textContent = '구매자 전용 화면에서는 판매자 마스터 PIN 또는 볼트 비밀번호 확인 후 마스터 모드로 복귀할 수 있습니다.';
   $('adminBody').innerHTML = `
-    <div class="domain-box" style="margin-bottom:10px">
-      <div style="display:flex;justify-content:space-between;align-items:center;gap:6px;margin-bottom:8px;flex-wrap:wrap">
-        <h4 style="margin:0">1. 크몽 · B2B 판매 패키지 원클릭 프리셋</h4>
-        <button id="admLoadSample" type="button" class="btn btn-amber btn-sm" style="padding:4px 9px;font-size:11px">📦 실제 판매 납품 샘플 적용 (㈜한빛안전건설)</button>
+    <div class="domain-box">
+      <div style="font-size:12.5px;margin-bottom:10px;color:var(--text-2)">
+        현재 <b>${esc(S.admin.companyName || S.admin.brandTitle)}</b> 구매자 격리 세션(<code>${esc(S.tenantId)}</code>)에서 실행 중입니다.<br>
+        기본 주소(<code>${esc(location.origin + location.pathname)}</code>)로 이동해도 마스터 모드가 자동 복원됩니다.
       </div>
-      <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:6px">
-        ${Object.entries(SALES_PACKAGES).map(([k, p]) => `
-          <button type="button" data-adm-pkg="${k}" class="btn btn-sm ${cfg.pkg === k ? 'btn-primary' : ''}" style="justify-content:flex-start;flex-direction:column;align-items:flex-start;padding:8px 10px;height:auto;text-align:left">
-            <span style="font-weight:800;font-size:12.5px">${p.label}</span>
-            <span style="font-size:11px;opacity:.85">${p.sub}</span>
-          </button>`).join('')}
+      <label style="font-size:11.5px;color:var(--muted);display:block;margin-bottom:6px">판매자 마스터 PIN (기본: <code>nx1master</code> 또는 볼트 마스터 비밀번호)
+        <input id="masterEscPin" class="input" type="password" placeholder="마스터 PIN 입력" style="width:100%;margin-top:4px" />
+      </label>
+      <div id="masterEscErr" style="color:#e11d48;font-size:12px;min-height:18px"></div>
+    </div>`;
+  $('adminFoot').innerHTML = `
+    <button id="btnMasterEscGo" class="btn btn-primary btn-sm" type="button">🔄 인증 후 넥서스원 기본(마스터) 모드로 복귀</button>
+    <button id="btnMasterEscClose" class="btn btn-sm" type="button">닫기</button>
+  `;
+  $('adminBackdrop')?.classList.remove('hidden');
+  $('btnMasterEscClose')?.addEventListener('click', () => $('adminBackdrop')?.classList.add('hidden'));
+  const verifyAndReturn = async () => {
+    const pin = $('masterEscPin')?.value || '';
+    if (!pin) { $('masterEscErr').textContent = 'PIN 또는 볼트 비밀번호를 입력하세요.'; return; }
+    const reg = loadSellerRegistry();
+    const pinHash = await sha256Hex(pin);
+    let ok = pinHash === (reg.masterPinHash || MASTER_DEFAULT_PIN_HASH);
+    if (!ok && S.vault) {
+      try {
+        const k = await deriveKey(pin, S.vault.salt, S.vault.iter);
+        ok = await verifyKey(k, S.vault);
+      } catch {}
+    }
+    if (!ok) {
+      $('masterEscErr').textContent = '판매자 마스터 인증 정보가 일치하지 않습니다.';
+      appendAudit('MASTER_AUTH_FAIL', S.tenantId, '구매자 모드에서 마스터 전환 PIN 불일치');
+      return;
+    }
+    location.href = `${location.origin}${location.pathname}?master=1`;
+  };
+  $('btnMasterEscGo')?.addEventListener('click', verifyAndReturn);
+  $('masterEscPin')?.addEventListener('keydown', (e) => { if (e.key === 'Enter') verifyAndReturn(); });
+}
+
+// ===== BUYER SELF-ADMIN MODAL (INITIAL PW: admin -> MANDATORY CHANGE -> SELF SETTINGS) =====
+function openBuyerAdminModal() {
+  const cfg = S.admin;
+  const bSt = loadBuyerState(S.tenantId);
+  const enabledTabs = Object.keys(cfg.tabs).filter((k) => cfg.tabs[k]);
+  const tabLabels = { overview: '⚡ 통합 360°', corp: '🏢 기업분석', bid: '🎯 입찰·사전규격', sbiz: '🏪 상권지도', realestate: '🏠 청약·착공', hub: '🔌 API·CRM' };
+
+  $('adminModalTitle').textContent = `🏢 ${cfg.brandTitle || '고객사'} · 구매자 자체 관리자`;
+  $('adminModalSub').textContent = `${cfg.companyName || ''} (${S.tenantId}) · 사내 보안 비밀번호·공지·A4 결재 브랜딩 관리`;
+
+  // STEP 1: Buyer Admin Login Gate
+  if (!S.buyerAuthed) {
+    $('adminBody').innerHTML = `
+      ${bSt.mustChangePw ? `
+        <div class="domain-box" style="margin-bottom:12px;border-color:rgba(245,158,11,.5);background:rgba(245,158,11,.08)">
+          <div style="font-weight:800;font-size:13px;color:#b45309;margin-bottom:4px">🔐 초기 관리자 비밀번호 안내 (최초 1회 변경 필수)</div>
+          <div style="font-size:12px;color:var(--text-2);line-height:1.55">
+            구매자 자체 관리자 기본 비밀번호는 <b><code>admin</code></b> 입니다.<br>
+            <b><code>admin</code></b>으로 로그인하시면 즉시 <b>새 비밀번호 설정 화면</b>으로 이동하며, 변경 후 안전하게 사내 관리 기능을 이용하실 수 있습니다.
+          </div>
+        </div>` : ''}
+      <div class="domain-box">
+        <label style="font-size:12px;font-weight:700;display:block;margin-bottom:6px">사내 관리자 비밀번호 입력
+          <input id="buyerLoginPw" class="input" type="password" placeholder="${bSt.mustChangePw ? '초기 비밀번호: admin' : '사내 관리자 비밀번호 입력'}" style="width:100%;margin-top:5px" autocomplete="current-password" />
+        </label>
+        <div id="buyerLoginErr" style="color:#e11d48;font-size:12px;min-height:18px;margin-top:4px"></div>
+        <div style="font-size:11.5px;color:var(--muted);margin-top:8px;padding-top:8px;border-top:1px dashed var(--border)">
+          ❓ 비밀번호를 분실하셨나요? 담당 판매자(<b>${esc(cfg.sellerName || '본사 직판')}</b>)에게 <b>원격 비밀번호 초기화 링크</b> 발급을 요청해 주세요.
+        </div>
+      </div>`;
+    $('adminFoot').innerHTML = `
+      <button id="btnBuyerLoginSubmit" class="btn btn-primary btn-sm" type="button">🔓 사내 관리자 로그인</button>
+      <button id="btnBuyerModalClose" class="btn btn-sm" type="button">닫기</button>
+    `;
+    $('adminBackdrop')?.classList.remove('hidden');
+    $('btnBuyerModalClose')?.addEventListener('click', () => $('adminBackdrop')?.classList.add('hidden'));
+    const doLogin = async () => {
+      const pw = $('buyerLoginPw')?.value || '';
+      if (!pw) { $('buyerLoginErr').textContent = '비밀번호를 입력하세요.'; return; }
+      const h = await sha256Hex(pw);
+      if (h !== bSt.pwHash) {
+        $('buyerLoginErr').textContent = bSt.mustChangePw
+          ? '비밀번호가 일치하지 않습니다. (초기 기본 비밀번호: admin)'
+          : '비밀번호가 일치하지 않습니다. 분실 시 담당 판매자에게 초기화를 요청하세요.';
+        appendAudit('BUYER_LOGIN_FAIL', S.tenantId, '구매자 사내관리자 로그인 실패');
+        return;
+      }
+      S.buyerAuthed = true;
+      appendAudit('BUYER_LOGIN_OK', S.tenantId, bSt.mustChangePw ? '초기 비밀번호(admin) 로그인 — 변경 단계 진입' : '사내관리자 정상 로그인');
+      openBuyerAdminModal();
+    };
+    $('btnBuyerLoginSubmit')?.addEventListener('click', doLogin);
+    $('buyerLoginPw')?.addEventListener('keydown', (e) => { if (e.key === 'Enter') doLogin(); });
+    setTimeout(() => $('buyerLoginPw')?.focus(), 40);
+    return;
+  }
+
+  // STEP 2: Mandatory First-Login Password Rotation Gate
+  if (bSt.mustChangePw && cfg.forcePwChange !== false) {
+    $('adminBody').innerHTML = `
+      <div class="domain-box" style="margin-bottom:12px;border-color:rgba(225,29,72,.4);background:rgba(225,29,72,.06)">
+        <div style="font-weight:800;font-size:13.5px;color:#be123c;margin-bottom:4px">🔑 보안 필수: 초기 비밀번호(admin)를 지금 변경해 주세요</div>
+        <div style="font-size:12px;color:var(--text-2)">
+          현재 초기 기본값(<code>admin</code>)이 설정되어 있습니다. 사내 전용 비밀번호(4자 이상, <code>admin</code> 불가)로 변경 완료 후 관리자 메뉴를 사용할 수 있습니다.
+        </div>
+      </div>
+      <div class="domain-box">
+        <div style="display:grid;gap:9px">
+          <label style="font-size:12px;font-weight:700">새 사내 관리자 비밀번호 (4자 이상)
+            <input id="buyerNewPw1" class="input" type="password" placeholder="새 비밀번호 입력 (admin 제외)" style="width:100%;margin-top:4px" autocomplete="new-password" />
+          </label>
+          <label style="font-size:12px;font-weight:700">새 비밀번호 확인
+            <input id="buyerNewPw2" class="input" type="password" placeholder="새 비밀번호 다시 입력" style="width:100%;margin-top:4px" autocomplete="new-password" />
+          </label>
+          <div id="buyerForceErr" style="color:#e11d48;font-size:12px;min-height:18px"></div>
+        </div>
+      </div>`;
+    $('adminFoot').innerHTML = `
+      <button id="btnBuyerForceSave" class="btn btn-primary btn-sm" type="button">✅ 비밀번호 변경 완료 및 관리자 진입</button>
+      <button id="btnBuyerForceCancel" class="btn btn-sm" type="button">나중에</button>
+    `;
+    $('adminBackdrop')?.classList.remove('hidden');
+    $('btnBuyerForceCancel')?.addEventListener('click', () => { S.buyerAuthed = false; $('adminBackdrop')?.classList.add('hidden'); });
+    const doRotate = async () => {
+      const p1 = $('buyerNewPw1')?.value || '';
+      const p2 = $('buyerNewPw2')?.value || '';
+      if (p1.length < 4) { $('buyerForceErr').textContent = '비밀번호는 최소 4자 이상이어야 합니다.'; return; }
+      if (p1.toLowerCase() === BUYER_DEFAULT_PW) { $('buyerForceErr').textContent = '초기 기본값(admin)과 다른 비밀번호를 입력하세요.'; return; }
+      if (p1 !== p2) { $('buyerForceErr').textContent = '새 비밀번호와 확인 입력이 일치하지 않습니다.'; return; }
+      bSt.pwHash = await sha256Hex(p1);
+      bSt.mustChangePw = false;
+      bSt.pwChangedAt = new Date().toLocaleString('ko-KR');
+      saveBuyerState(S.tenantId, bSt);
+      appendAudit('BUYER_PW_CHANGED', S.tenantId, '초기 비밀번호(admin) → 사내 전용 비밀번호 변경 완료');
+      applyAdminConfig(false);
+      toast('🔐 사내 관리자 비밀번호가 안전하게 변경되었습니다!');
+      openBuyerAdminModal();
+    };
+    $('btnBuyerForceSave')?.addEventListener('click', doRotate);
+    $('buyerNewPw2')?.addEventListener('keydown', (e) => { if (e.key === 'Enter') doRotate(); });
+    setTimeout(() => $('buyerNewPw1')?.focus(), 40);
+    return;
+  }
+
+  // STEP 3: Full Buyer Self-Admin Workspace (Strictly scoped to Buyer Permissions!)
+  const auditList = loadAuditLog(S.tenantId).slice(0, 12);
+  $('adminBody').innerHTML = `
+    <div class="domain-box" style="margin-bottom:10px;background:rgba(79,70,229,.05);border-color:rgba(79,70,229,.28)">
+      <h4 style="margin:0 0 8px">📋 계약 라이선스 정보 (읽기 전용 · 위변조 서명 검증됨)</h4>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:8px;font-size:12px">
+        <div><span style="color:var(--muted)">구매 고객사</span><br><b>${esc(cfg.companyName || cfg.brandTitle)}</b></div>
+        <div><span style="color:var(--muted)">라이선스 코드</span><br><code>${esc(S.tenantId)}</code></div>
+        <div><span style="color:var(--muted)">계약 패키지</span><br><b>${esc(SALES_PACKAGES[cfg.pkg]?.label || cfg.pkg)}</b></div>
+        <div><span style="color:var(--muted)">만료일 / 담당 판매자</span><br><b>${esc(cfg.expiryDate || '영구 소장')}</b> · ${esc(cfg.sellerName || '본사')}</div>
+      </div>
+      <div style="margin-top:8px;display:flex;gap:5px;flex-wrap:wrap">
+        ${enabledTabs.map((k) => `<span class="nx-lic-badge nx-lic-active">✓ ${tabLabels[k] || k}</span>`).join('')}
       </div>
     </div>
 
     <div class="domain-box" style="margin-bottom:10px">
-      <h4 style="margin:0 0 8px">2. 도메인 메뉴(탭) 노출 제어</h4>
-      <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:6px">
-        ${tabMeta.map(([k, lb, desc]) => `
-          <label style="display:flex;gap:7px;align-items:flex-start;padding:7px 8px;border:1px solid var(--border);border-radius:8px;cursor:pointer;background:var(--bg)">
-            <input type="checkbox" data-adm-tab="${k}" ${cfg.tabs[k] ? 'checked' : ''} style="margin-top:2px" />
-            <span><b style="font-size:12px;display:block">${lb}</b><span style="font-size:10.5px;color:var(--muted)">${desc}</span></span>
-          </label>`).join('')}
-      </div>
-    </div>
-
-    <div class="domain-box" style="margin-bottom:10px">
-      <h4 style="margin:0 0 8px">3. 입찰·영업 프리미엄 기능 노출 제어</h4>
-      <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:6px">
-        ${featMeta.map(([k, lb, desc]) => `
-          <label style="display:flex;gap:7px;align-items:flex-start;padding:7px 8px;border:1px solid var(--border);border-radius:8px;cursor:pointer;background:var(--bg)">
-            <input type="checkbox" data-adm-feat="${k}" ${cfg.features[k] ? 'checked' : ''} style="margin-top:2px" />
-            <span><b style="font-size:12px;display:block">${lb}</b><span style="font-size:10.5px;color:var(--muted)">${desc}</span></span>
-          </label>`).join('')}
-      </div>
-    </div>
-
-    <div class="domain-box" style="margin-bottom:10px;border-color:#fde68a;background:rgba(245,158,11,.04)">
-      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap">
-        <h4 style="margin:0">4. 🚀 개별 전문 앱 바로가기 노출 통제 (허브 탭)</h4>
-        <label style="display:flex;align-items:center;gap:6px;font-size:12px;font-weight:800;cursor:pointer;color:var(--text)">
-          <input id="admAppLinksMaster" type="checkbox" ${cfg.appLinks.showSection ? 'checked' : ''} />
-          <span>바로가기 섹션 표시</span>
+      <h4 style="margin:0 0 8px">🏢 사내 맞춤 운영 설정</h4>
+      <div style="display:grid;gap:8px">
+        <label style="font-size:11.5px;color:var(--muted)">사내 상단 공지 배너 (비워두면 숨김)
+          <input id="byNotice" class="input" value="${esc(bSt.notice || '')}" placeholder="예: 이번 주 금요일 14시 입찰 검토회의 · 투찰가는 내서류함에 사전 등록" style="width:100%;margin-top:3px;font-size:12px" />
+        </label>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+          <label style="font-size:11.5px;color:var(--muted)">담당 부서명 (A4 검토서 워터마크·하단 표기)
+            <input id="byDept" class="input" value="${esc(bSt.deptName || '')}" placeholder="예: 영업기획팀 / 공무팀" style="width:100%;margin-top:3px;font-size:12px" />
+          </label>
+          <label style="font-size:11.5px;color:var(--muted)">사내 관리자 연락처
+            <input id="byContact" class="input" value="${esc(bSt.contact || '')}" placeholder="예: 내선 204 / bid@company.co.kr" style="width:100%;margin-top:3px;font-size:12px" />
+          </label>
+        </div>
+        <label style="font-size:11.5px;color:var(--muted)">임직원 기본 시작 화면 (계약 허용 도메인 중 선택)
+          <select id="byStartTab" class="select" style="width:100%;margin-top:3px;font-size:12px">
+            <option value="">기본 순서 유지</option>
+            ${enabledTabs.map((k) => `<option value="${k}" ${bSt.startTab === k ? 'selected' : ''}>${tabLabels[k] || k}</option>`).join('')}
+          </select>
         </label>
       </div>
-      <div style="font-size:11px;color:var(--muted);margin-bottom:7px">고객 납품 시 체크를 해제하면 판매자의 개별 전문 앱(기업·입찰·상권·홈레이더 단독 링크)이 화면에서 완전히 숨겨집니다.</div>
-      <div id="admAppLinksGrid" style="display:grid;grid-template-columns:repeat(2,1fr);gap:6px;opacity:${cfg.appLinks.showSection ? '1' : '.45'}">
-        ${INDIVIDUAL_PRO_APPS.map((a) => `
-          <label style="display:flex;gap:7px;align-items:flex-start;padding:6px 8px;border:1px solid var(--border);border-radius:8px;cursor:pointer;background:var(--bg)">
-            <input type="checkbox" data-adm-app="${a.key}" ${cfg.appLinks[a.key] ? 'checked' : ''} ${cfg.appLinks.showSection ? '' : 'disabled'} style="margin-top:2px" />
-            <span><b style="font-size:12px;display:block">${a.name}</b><span style="font-size:10.5px;color:var(--muted)">${a.desc}</span></span>
-          </label>`).join('')}
+    </div>
+
+    <div class="domain-box" style="margin-bottom:10px">
+      <h4 style="margin:0 0 8px">🔑 사내 관리자 비밀번호 변경 <span style="font-size:11px;font-weight:600;color:var(--muted)">(최근 변경: ${esc(bSt.pwChangedAt || '미변경')})</span></h4>
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px">
+        <input id="byCurPw" class="input" type="password" placeholder="현재 비밀번호" style="font-size:12px" />
+        <input id="byChgPw1" class="input" type="password" placeholder="새 비밀번호 (4자+)" style="font-size:12px" />
+        <input id="byChgPw2" class="input" type="password" placeholder="새 비밀번호 확인" style="font-size:12px" />
+      </div>
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-top:7px;gap:8px">
+        <span id="byPwMsg" style="font-size:11.5px;color:var(--muted)"></span>
+        <button id="btnByChgPw" class="btn btn-amber btn-sm" type="button">🔐 비밀번호 변경 적용</button>
       </div>
     </div>
 
     <div class="domain-box">
-      <h4 style="margin:0 0 8px">5. 화이트라벨(구매사 브랜딩) & 납품 잠금</h4>
-      <div style="display:grid;grid-template-columns:1fr 90px;gap:6px;margin-bottom:6px">
-        <label style="font-size:11px;color:var(--muted)">서비스 브랜드명
-          <input id="admBrandTitle" class="input" value="${esc(cfg.brandTitle)}" placeholder="예: 한빛 입찰레이더" style="width:100%;margin-top:2px;padding:6px 8px;font-size:12px" />
-        </label>
-        <label style="font-size:11px;color:var(--muted)">배지
-          <input id="admBrandBadge" class="input" value="${esc(cfg.brandBadge)}" placeholder="PRO" style="width:100%;margin-top:2px;padding:6px 8px;font-size:12px" />
-        </label>
+      <h4 style="margin:0 0 6px">📜 최근 사내 보안·설정 감사 로그 (${auditList.length}건)</h4>
+      <div style="max-height:130px;overflow-y:auto;font-size:11.5px">
+        ${auditList.length ? auditList.map((a) => `<div style="display:flex;justify-content:space-between;gap:8px;padding:4px 0;border-bottom:1px solid var(--border)"><span><b>${esc(a.action)}</b> · ${esc(a.detail)}</span><span style="color:var(--muted);white-space:nowrap">${esc(a.ts)}</span></div>`).join('') : '<div style="color:var(--muted)">기록된 이력이 없습니다.</div>'}
       </div>
-      <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:8px">상단 서브타이틀 (비워두면 실시간 데이터 요약 자동 표시)
-        <input id="admBrandSub" class="input" value="${esc(cfg.brandSub)}" placeholder="예: ㈜한빛안전건설 전용 · 공공입찰·기업 인텔리전스" style="width:100%;margin-top:2px;padding:6px 8px;font-size:12px" />
-      </label>
-      <label style="display:flex;align-items:center;gap:7px;font-size:12px;cursor:pointer">
-        <input id="admHideBtn" type="checkbox" ${cfg.hideAdminBtn ? 'checked' : ''} />
-        <span><b>🔒 고객 납품 시 상단 '관리자' 버튼 숨기기</b> <span style="color:var(--muted)">(재진입: Ctrl+Shift+A 또는 ?admin=1)</span></span>
-      </label>
     </div>
   `;
 
   $('adminFoot').innerHTML = `
-    <button id="admCopyUrl" class="btn btn-emerald btn-sm" type="button">🔗 고객 납품 URL 복사</button>
-    <button id="admCopyJson" class="btn btn-sm" type="button">📋 설정 JSON 복사</button>
-    <button id="admReset" class="btn btn-sm" type="button">🔄 마스터 풀모드 복원</button>
-    <button id="admSave" class="btn btn-primary btn-sm" type="button">✅ 즉시 적용</button>
+    <button id="btnBySave" class="btn btn-primary btn-sm" type="button">✅ 사내 설정 저장</button>
+    <button id="btnByLogout" class="btn btn-sm" type="button" style="margin-left:auto">🔒 사내 관리자 로그아웃</button>
   `;
+  $('adminBackdrop')?.classList.remove('hidden');
 
-  $('admAppLinksMaster')?.addEventListener('change', (e) => {
-    const on = e.target.checked;
-    const grid = $('admAppLinksGrid');
-    if (grid) grid.style.opacity = on ? '1' : '.45';
-    $('adminBody').querySelectorAll('[data-adm-app]').forEach((cb) => {
-      cb.disabled = !on;
-      if (on && !Object.values(S.admin.appLinks || {}).some(Boolean)) cb.checked = true;
-    });
+  $('btnBySave')?.addEventListener('click', () => {
+    bSt.notice = $('byNotice')?.value.trim() || '';
+    bSt.deptName = $('byDept')?.value.trim() || '';
+    bSt.contact = $('byContact')?.value.trim() || '';
+    bSt.startTab = $('byStartTab')?.value || '';
+    saveBuyerState(S.tenantId, bSt);
+    appendAudit('BUYER_CFG_SAVED', S.tenantId, `공지:${bSt.notice ? 'Y' : 'N'}, 부서:${bSt.deptName || '-'}, 시작탭:${bSt.startTab || '기본'}`);
+    renderTenantBar();
+    toast('✅ 사내 맞춤 설정이 저장되었습니다.');
   });
 
-  const syncFromForm = () => {
-    $('adminBody').querySelectorAll('[data-adm-tab]').forEach((el) => { S.admin.tabs[el.dataset.admTab] = el.checked; });
-    $('adminBody').querySelectorAll('[data-adm-feat]').forEach((el) => { S.admin.features[el.dataset.admFeat] = el.checked; });
-    const showSec = Boolean($('admAppLinksMaster')?.checked);
-    S.admin.appLinks = { showSection: showSec, corp: false, bid: false, sbiz: false, re: false };
-    $('adminBody').querySelectorAll('[data-adm-app]').forEach((el) => { S.admin.appLinks[el.dataset.admApp] = showSec && el.checked; });
-    S.admin.brandTitle = $('admBrandTitle')?.value.trim() || '넥서스원';
-    S.admin.brandBadge = $('admBrandBadge')?.value.trim() || '';
-    S.admin.brandSub = $('admBrandSub')?.value.trim() || '';
-    S.admin.hideAdminBtn = Boolean($('admHideBtn')?.checked);
-  };
-
-  $('admLoadSample')?.addEventListener('click', () => {
-    S.admin = { ...createClientSampleConfig(), hideAdminBtn: false };
-    saveAdminConfig();
-    applyAdminConfig(true);
-    openAdminSalesModal();
-    toast('📦 판매용 납품 샘플(㈜한빛안전건설 · DELUXE · 개별앱 숨김) 미리보기 적용!');
+  $('btnByChgPw')?.addEventListener('click', async () => {
+    const cur = $('byCurPw')?.value || '';
+    const n1 = $('byChgPw1')?.value || '';
+    const n2 = $('byChgPw2')?.value || '';
+    const msg = $('byPwMsg');
+    if (await sha256Hex(cur) !== bSt.pwHash) { msg.style.color = '#e11d48'; msg.textContent = '현재 비밀번호가 일치하지 않습니다.'; return; }
+    if (n1.length < 4) { msg.style.color = '#e11d48'; msg.textContent = '새 비밀번호는 4자 이상이어야 합니다.'; return; }
+    if (n1.toLowerCase() === BUYER_DEFAULT_PW) { msg.style.color = '#e11d48'; msg.textContent = '기본 비밀번호(admin)는 사용할 수 없습니다.'; return; }
+    if (n1 !== n2) { msg.style.color = '#e11d48'; msg.textContent = '새 비밀번호 확인이 일치하지 않습니다.'; return; }
+    bSt.pwHash = await sha256Hex(n1);
+    bSt.mustChangePw = false;
+    bSt.pwChangedAt = new Date().toLocaleString('ko-KR');
+    saveBuyerState(S.tenantId, bSt);
+    appendAudit('BUYER_PW_CHANGED', S.tenantId, '사내 관리자 비밀번호 변경');
+    msg.style.color = '#059669';
+    msg.textContent = '✓ 비밀번호가 성공적으로 변경되었습니다.';
+    $('byCurPw').value = ''; $('byChgPw1').value = ''; $('byChgPw2').value = '';
+    toast('🔐 사내 관리자 비밀번호 변경 완료');
   });
 
-  $('adminBody').querySelectorAll('[data-adm-pkg]').forEach((b) => {
-    b.addEventListener('click', () => {
-      const k = b.dataset.admPkg;
-      S.admin.pkg = k;
-      S.admin.tabs = { ...SALES_PACKAGES[k].tabs };
-      S.admin.features = { ...SALES_PACKAGES[k].features };
-      S.admin.appLinks = { ...SALES_PACKAGES[k].appLinks };
-      saveAdminConfig();
-      applyAdminConfig(true);
-      openAdminSalesModal();
-      toast(`🛡️ ${SALES_PACKAGES[k].label} 패키지 구성 적용 완료`);
-    });
-  });
-
-  $('admSave')?.addEventListener('click', () => {
-    syncFromForm();
-    saveAdminConfig();
-    applyAdminConfig(true);
+  $('btnByLogout')?.addEventListener('click', () => {
+    S.buyerAuthed = false;
     $('adminBackdrop')?.classList.add('hidden');
-    toast('✅ 판매 노출 서비스 설정이 즉시 반영되었습니다.');
+    toast('🔒 사내 관리자에서 로그아웃했습니다.');
   });
+}
 
-  $('admCopyUrl')?.addEventListener('click', () => {
-    syncFromForm();
-    const deliveryCfg = { ...S.admin, hideAdminBtn: true };
-    const base = `${location.origin}${location.pathname}`;
-    const url = `${base}?cfg=${encodeAdminCfg(deliveryCfg)}`;
-    navigator.clipboard?.writeText(url);
-    toast('🔗 고객 납품 전용 URL 복사 완료! (관리자 버튼 자동 숨김 적용)');
+// ===== TURNKEY DELIVERY KIT POPUP (EXPERT TECHNIQUE #10) =====
+function openDeliveryKitModal(sale) {
+  const pkgInfo = SALES_PACKAGES[sale.pkg] || SALES_PACKAGES.deluxe;
+  const tabNames = { overview: '통합 360°', corp: '기업분석(12만)', bid: '입찰·사전규격', sbiz: '상권지도(275만)', realestate: '청약·착공', hub: 'API·CRM' };
+  const activeTabs = Object.entries(sale.cfg?.tabs || {}).filter(([, v]) => v).map(([k]) => tabNames[k] || k).join(' · ');
+  const kakaoTxt = `[${sale.brandTitle} ${sale.brandBadge || 'PRO'} 납품 완료 안내]\n• 고객사: ${sale.companyName}\n• 라이선스: ${sale.licId} (${pkgInfo.label})\n• 사용기간: ${sale.expiryDate || '영구 소장'}\n• 전용 접속 링크:\n${sale.signedUrl}\n\n🔐 구매자 자체 관리자 안내\n1) 앱 우측 상단 [🏢 사내관리] 클릭\n2) 초기 비밀번호: admin 입력\n3) 보안을 위해 즉시 새 비밀번호로 변경 후 사용\n• 담당 판매자: ${sale.sellerName || '본사 직판'}`;
+
+  $('adminModalTitle').textContent = `📦 고객 납품 키트 · ${sale.companyName}`;
+  $('adminModalSub').textContent = `라이선스 ${sale.licId} · 카톡 전달 문구 복사 & A4 납품확인서 인쇄`;
+  $('adminBody').innerHTML = `
+    <div class="domain-box" style="margin-bottom:10px">
+      <h4 style="margin:0 0 8px">1. 고객사 전용 서명 판매링크 (마스터 모드와 완전 격리)</h4>
+      <input class="input mono" readonly value="${esc(sale.signedUrl)}" style="width:100%;font-size:11.5px;margin-bottom:6px" onclick="this.select()" />
+      <div style="font-size:11.5px;color:var(--muted)">
+        • 포함 도메인: <b>${esc(activeTabs)}</b><br>
+        • 구매자 자체 관리자: <b>초기 비밀번호 <code>admin</code> (첫 로그인 시 강제 변경 안내 포함)</b>
+      </div>
+    </div>
+    <div class="domain-box">
+      <h4 style="margin:0 0 6px">2. 카카오톡 · 이메일 납품 안내문 (바로 복사)</h4>
+      <textarea id="kitKakaoArea" class="input" rows="10" style="width:100%;font-size:12px;line-height:1.5;font-family:inherit">${esc(kakaoTxt)}</textarea>
+    </div>
+  `;
+  $('adminFoot').innerHTML = `
+    <button id="btnKitCopyTxt" class="btn btn-emerald btn-sm" type="button">📱 납품 안내문 전체 복사</button>
+    <button id="btnKitOpenNew" class="btn btn-primary btn-sm" type="button">👁️ 새 탭에서 구매자 화면 확인</button>
+    <button id="btnKitBack" class="btn btn-sm" type="button" style="margin-left:auto">← 판매 현황으로</button>
+  `;
+  $('btnKitCopyTxt')?.addEventListener('click', () => {
+    navigator.clipboard?.writeText($('kitKakaoArea')?.value || kakaoTxt);
+    toast('📱 납품 안내문(링크 + 초기비번 admin 가이드)이 복사되었습니다!');
   });
+  $('btnKitOpenNew')?.addEventListener('click', () => window.open(sale.signedUrl, '_blank', 'noopener'));
+  $('btnKitBack')?.addEventListener('click', () => openAdminSalesModal('status'));
+}
 
-  $('admCopyJson')?.addEventListener('click', () => {
-    syncFromForm();
-    navigator.clipboard?.writeText(JSON.stringify(S.admin, null, 2));
-    toast('📋 현재 판매 설정 JSON 복사 완료');
+// ===== SELLER MASTER CONSOLE (5 TABS: ISSUE · STATUS/RESET · SELLERS · TOP 10 EXPERT · AUDIT) =====
+function openAdminSalesModal(tabKey = null) {
+  if (S.isBuyerMode) {
+    openBuyerAdminModal();
+    return;
+  }
+  if (tabKey) S.adminModalTab = tabKey;
+  const activeTab = S.adminModalTab || 'issue';
+  const reg = loadSellerRegistry();
+  const eo = reg.expertOpts || defaultExpertOpts();
+
+  $('adminModalTitle').textContent = '🛡️ 넥서스원 PRO · 판매자 마스터 통합 콘솔';
+  $('adminModalSub').textContent = '마스터 기본 모드 보호 · 판매링크 발급 · 판매자/현황 CRM · 원격 비밀번호 초기화 · 전문가 기법 TOP 10';
+
+  const tabBarHtml = `
+    <div class="nx-adm-tabs">
+      <button type="button" class="nx-adm-tab ${activeTab === 'issue' ? 'active' : ''}" data-adm-nav="issue">🚀 판매링크 발급</button>
+      <button type="button" class="nx-adm-tab ${activeTab === 'status' ? 'active' : ''}" data-adm-nav="status">📊 판매현황·비번초기화 (${reg.sales.length})</button>
+      <button type="button" class="nx-adm-tab ${activeTab === 'sellers' ? 'active' : ''}" data-adm-nav="sellers">🧑‍💼 판매자 관리 (${reg.sellers.length})</button>
+      <button type="button" class="nx-adm-tab ${activeTab === 'expert' ? 'active' : ''}" data-adm-nav="expert">💎 전문가 기법 TOP 10 · 옵션</button>
+      <button type="button" class="nx-adm-tab ${activeTab === 'audit' ? 'active' : ''}" data-adm-nav="audit">📜 감사 로그</button>
+    </div>`;
+
+  // ---------- TAB 1: ISSUE SIGNED SALES LINK ----------
+  if (activeTab === 'issue') {
+    const draft = S.salesDraft || {
+      ...createClientSampleConfig(),
+      licId: `NX-${new Date().getFullYear()}-${String(reg.sales.length + 1).padStart(3, '0')}`,
+      companyName: '',
+      brandTitle: '',
+      brandBadge: 'PRO',
+      brandSub: '',
+      priceMan: 59,
+      sellerCode: reg.sellers[0]?.id || 'SLR-001',
+      expiryDate: '',
+      memo: '',
+    };
+    S.salesDraft = draft;
+    if (!draft.appLinks) draft.appLinks = { showSection: false, corp: false, bid: false, sbiz: false, re: false };
+
+    const tabMeta = [
+      ['overview', '⚡ 통합 360° 커맨드', '229 시군구 융합지도·BCG'],
+      ['corp', '🏢 기업분석 (12만사)', 'DART공시+국민연금 추정매출'],
+      ['bid', '🎯 입찰·사전규격·레이더', '나라장터·당일·건설사 1.2만'],
+      ['sbiz', '🏪 상권지도 (275만)', '브이월드 GIS·지적도·반경'],
+      ['realestate', '🏠 청약·착공·인허가', '신축분양·인허가·K-apt'],
+      ['hub', '🔌 API진단 · CRM', '파이프라인·라이브 진단'],
+    ];
+    const featMeta = [
+      ['bidDetail', '📎 입찰 상세 · 첨부 직링크', '공고문/과업지시서 다운로드'],
+      ['bidSim', '🎯 A값·1,365조합·적격심사', '순공사 98% 경고·적격판정'],
+      ['bidAwards', '📊 과거 낙찰 분포도', '평균 낙찰률·최빈구간'],
+      ['bidPartners', '🤝 지역 협력 파트너 TOP 5', '건설·시설사 12,198 매칭'],
+      ['bidA4', '📑 A4 검토서 & 캘린더', '1P 결재 PDF + 워터마크'],
+      ['bid1km', '🗺️ 현장 반경 1km 상권점프', '브이월드 좌표·상권 연동'],
+    ];
+
+    $('adminBody').innerHTML = `${tabBarHtml}
+      <div class="domain-box" style="margin-bottom:10px;border-color:rgba(16,185,129,.4);background:rgba(16,185,129,.06)">
+        <div style="font-size:12px;line-height:1.5">
+          ✅ <b>마스터 보호 모드 작동 중</b>: 여기서 판매링크를 발급하거나 미리보기(새 탭)를 열어도 <b>본인의 넥서스원 PRO 기본 모드는 절대 덮어써지지 않습니다.</b><br>
+          🔑 발급된 구매자 전용 링크에는 <b>구매자 자체 관리자 (초기 비밀번호 <code>admin</code> · 첫 로그인 시 변경 강제)</b>가 자동 탑재됩니다.
+        </div>
+      </div>
+
+      <div class="domain-box" style="margin-bottom:10px">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:6px;margin-bottom:8px;flex-wrap:wrap">
+          <h4 style="margin:0">1. 판매 패키지 프리셋</h4>
+          <button id="admLoadSampleDraft" type="button" class="btn btn-amber btn-sm">📦 ㈜한빛안전건설 납품 샘플 불러오기</button>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px">
+          ${Object.entries(SALES_PACKAGES).map(([k, p]) => `
+            <button type="button" data-adm-pkg="${k}" class="btn btn-sm ${draft.pkg === k ? 'btn-primary' : ''}" style="justify-content:flex-start;flex-direction:column;align-items:flex-start;padding:7px 9px;height:auto;text-align:left">
+              <span style="font-weight:800;font-size:12px">${p.label}</span>
+              <span style="font-size:10.5px;opacity:.85">${p.priceMan}만원</span>
+            </button>`).join('')}
+        </div>
+      </div>
+
+      <div class="domain-box" style="margin-bottom:10px">
+        <h4 style="margin:0 0 8px">2. 구매 고객사 · 판매자 · 계약 정보</h4>
+        <div style="display:grid;grid-template-columns:1fr 1fr 130px;gap:6px;margin-bottom:6px">
+          <label style="font-size:11px;color:var(--muted)">구매 고객사명 *
+            <input id="dCompName" class="input" value="${esc(draft.companyName)}" placeholder="예: ㈜대한안전건설" style="width:100%;margin-top:2px;padding:6px 8px;font-size:12px" />
+          </label>
+          <label style="font-size:11px;color:var(--muted)">화이트라벨 브랜드명 *
+            <input id="dBrandTitle" class="input" value="${esc(draft.brandTitle)}" placeholder="예: 대한 입찰레이더" style="width:100%;margin-top:2px;padding:6px 8px;font-size:12px" />
+          </label>
+          <label style="font-size:11px;color:var(--muted)">배지
+            <input id="dBrandBadge" class="input" value="${esc(draft.brandBadge)}" placeholder="PRO" style="width:100%;margin-top:2px;padding:6px 8px;font-size:12px" />
+          </label>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr 110px 140px;gap:6px;margin-bottom:6px">
+          <label style="font-size:11px;color:var(--muted)">라이선스 코드
+            <input id="dLicId" class="input mono" value="${esc(draft.licId)}" style="width:100%;margin-top:2px;padding:6px 8px;font-size:12px" />
+          </label>
+          <label style="font-size:11px;color:var(--muted)">담당 판매자
+            <select id="dSeller" class="select" style="width:100%;margin-top:2px;padding:6px 8px;font-size:12px">
+              ${reg.sellers.map((sl) => `<option value="${esc(sl.id)}" ${draft.sellerCode === sl.id ? 'selected' : ''}>${esc(sl.name)} (${sl.commissionPct}%)</option>`).join('')}
+            </select>
+          </label>
+          <label style="font-size:11px;color:var(--muted)">판매금액(만원)
+            <input id="dPrice" class="input" type="number" min="0" value="${Number(draft.priceMan) || 0}" style="width:100%;margin-top:2px;padding:6px 8px;font-size:12px" />
+          </label>
+          <label style="font-size:11px;color:var(--muted)">만료일 (비우면 영구)
+            <input id="dExpiry" class="input" type="date" value="${esc(draft.expiryDate || '')}" style="width:100%;margin-top:2px;padding:5px 7px;font-size:12px" />
+          </label>
+        </div>
+        <div style="display:grid;grid-template-columns:1.4fr 1fr;gap:6px">
+          <label style="font-size:11px;color:var(--muted)">상단 서브타이틀
+            <input id="dBrandSub" class="input" value="${esc(draft.brandSub)}" placeholder="예: ㈜대한안전건설 전용 · 실시간 입찰·기업 분석" style="width:100%;margin-top:2px;padding:6px 8px;font-size:12px" />
+          </label>
+          <label style="font-size:11px;color:var(--muted)">계약 메모
+            <input id="dMemo" class="input" value="${esc(draft.memo || '')}" placeholder="예: 크몽 주문 #12345 / 세금계산서 발행" style="width:100%;margin-top:2px;padding:6px 8px;font-size:12px" />
+          </label>
+        </div>
+      </div>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px">
+        <div class="domain-box">
+          <h4 style="margin:0 0 6px">3. 허용 도메인(탭)</h4>
+          <div style="display:grid;gap:5px">
+            ${tabMeta.map(([k, lb, desc]) => `
+              <label style="display:flex;gap:6px;align-items:center;font-size:11.5px;cursor:pointer">
+                <input type="checkbox" data-adm-tab="${k}" ${draft.tabs[k] ? 'checked' : ''} />
+                <b>${lb}</b> <span style="color:var(--muted);font-size:10.5px">${desc}</span>
+              </label>`).join('')}
+          </div>
+        </div>
+        <div class="domain-box">
+          <h4 style="margin:0 0 6px">4. 입찰 프리미엄 기능</h4>
+          <div style="display:grid;gap:5px">
+            ${featMeta.map(([k, lb, desc]) => `
+              <label style="display:flex;gap:6px;align-items:center;font-size:11.5px;cursor:pointer">
+                <input type="checkbox" data-adm-feat="${k}" ${draft.features[k] ? 'checked' : ''} />
+                <b>${lb}</b> <span style="color:var(--muted);font-size:10.5px">${desc}</span>
+              </label>`).join('')}
+          </div>
+        </div>
+      </div>
+
+      <div class="domain-box" style="border-color:#fde68a;background:rgba(245,158,11,.04)">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:6px;flex-wrap:wrap">
+          <h4 style="margin:0">5. 🚀 개별 전문 앱 바로가기 노출 통제</h4>
+          <label style="display:flex;align-items:center;gap:6px;font-size:12px;font-weight:800;cursor:pointer">
+            <input id="admAppLinksMaster" type="checkbox" ${draft.appLinks.showSection ? 'checked' : ''} />
+            <span>구매자에게 바로가기 섹션 표시</span>
+          </label>
+        </div>
+        <div id="admAppLinksGrid" style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px;opacity:${draft.appLinks.showSection ? '1' : '.45'}">
+          ${INDIVIDUAL_PRO_APPS.map((a) => `
+            <label style="display:flex;gap:5px;align-items:center;padding:5px 7px;border:1px solid var(--border);border-radius:7px;cursor:pointer;background:var(--bg);font-size:11px">
+              <input type="checkbox" data-adm-app="${a.key}" ${draft.appLinks[a.key] ? 'checked' : ''} ${draft.appLinks.showSection ? '' : 'disabled'} />
+              <b>${a.name.replace(' ↗', '')}</b>
+            </label>`).join('')}
+        </div>
+      </div>
+    `;
+
+    $('adminFoot').innerHTML = `
+      <button id="btnIssueAndCopy" class="btn btn-primary btn-sm" type="button">✨ 판매 등록 + 서명 판매링크 발급·복사</button>
+      <button id="btnIssuePreview" class="btn btn-emerald btn-sm" type="button">👁️ 새 탭에서 구매자 미리보기</button>
+      <button id="btnMasterSelfReset" class="btn btn-sm" type="button" style="margin-left:auto">🔄 내 화면 마스터 기본값 유지</button>
+    `;
+
+    const syncDraft = () => {
+      draft.companyName = $('dCompName')?.value.trim() || '신규 고객사';
+      draft.brandTitle = $('dBrandTitle')?.value.trim() || draft.companyName;
+      draft.brandBadge = $('dBrandBadge')?.value.trim() || '';
+      draft.brandSub = $('dBrandSub')?.value.trim() || `${draft.companyName} 전용 · 맞춤형 B2B 영업 인텔리전스`;
+      draft.licId = $('dLicId')?.value.trim() || `NX-${new Date().getFullYear()}-${String(reg.sales.length + 1).padStart(3, '0')}`;
+      draft.sellerCode = $('dSeller')?.value || reg.sellers[0]?.id || 'SLR-001';
+      draft.sellerName = reg.sellers.find((x) => x.id === draft.sellerCode)?.name || '본사 직판 (마스터)';
+      draft.priceMan = Math.max(0, Number($('dPrice')?.value) || 0);
+      draft.expiryDate = $('dExpiry')?.value || '';
+      draft.memo = $('dMemo')?.value.trim() || '';
+      $('adminBody').querySelectorAll('[data-adm-tab]').forEach((el) => { draft.tabs[el.dataset.admTab] = el.checked; });
+      $('adminBody').querySelectorAll('[data-adm-feat]').forEach((el) => { draft.features[el.dataset.admFeat] = el.checked; });
+      const showSec = Boolean($('admAppLinksMaster')?.checked);
+      draft.appLinks = { showSection: showSec, corp: false, bid: false, sbiz: false, re: false };
+      $('adminBody').querySelectorAll('[data-adm-app]').forEach((el) => { draft.appLinks[el.dataset.admApp] = showSec && el.checked; });
+      draft.forcePwChange = eo.forcePwChange !== false;
+      draft.a4Watermark = eo.a4Watermark !== false;
+      draft.rbacStrict = eo.rbacStrict !== false;
+      draft.expiryMode = eo.expiryMode || 'lock';
+    };
+
+    $('admAppLinksMaster')?.addEventListener('change', (e) => {
+      const on = e.target.checked;
+      const g = $('admAppLinksGrid');
+      if (g) g.style.opacity = on ? '1' : '.45';
+      $('adminBody').querySelectorAll('[data-adm-app]').forEach((cb) => { cb.disabled = !on; });
+    });
+
+    $('admLoadSampleDraft')?.addEventListener('click', () => {
+      S.salesDraft = { ...createClientSampleConfig(), memo: '실제 판매 납품 샘플 · DELUXE' };
+      openAdminSalesModal('issue');
+      toast('📦 ㈜한빛안전건설 샘플 설정을 초안에 불러왔습니다.');
+    });
+
+    $('adminBody').querySelectorAll('[data-adm-pkg]').forEach((b) => {
+      b.addEventListener('click', () => {
+        syncDraft();
+        const k = b.dataset.admPkg;
+        draft.pkg = k;
+        draft.priceMan = SALES_PACKAGES[k].priceMan;
+        draft.tabs = { ...SALES_PACKAGES[k].tabs };
+        draft.features = { ...SALES_PACKAGES[k].features };
+        draft.appLinks = { ...SALES_PACKAGES[k].appLinks };
+        openAdminSalesModal('issue');
+      });
+    });
+
+    $('btnIssueAndCopy')?.addEventListener('click', () => {
+      syncDraft();
+      const base = `${location.origin}${location.pathname}`;
+      const signedUrl = `${base}?lic=${encodeSignedLicense(draft, eo)}`;
+      const todayIso = new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 10);
+      const saleObj = {
+        licId: draft.licId,
+        companyName: draft.companyName,
+        brandTitle: draft.brandTitle,
+        brandBadge: draft.brandBadge,
+        brandSub: draft.brandSub,
+        pkg: draft.pkg,
+        priceMan: draft.priceMan,
+        sellerCode: draft.sellerCode,
+        sellerName: draft.sellerName,
+        issuedAt: todayIso,
+        expiryDate: draft.expiryDate,
+        status: 'active',
+        resetCount: 0,
+        lastResetAt: '',
+        memo: draft.memo,
+        cfg: JSON.parse(JSON.stringify(draft)),
+        signedUrl,
+      };
+      const idx = reg.sales.findIndex((x) => x.licId === saleObj.licId);
+      if (idx >= 0) reg.sales[idx] = saleObj;
+      else reg.sales.unshift(saleObj);
+      saveSellerRegistry(reg);
+      appendAudit('LICENSE_ISSUED', saleObj.licId, `${saleObj.companyName} (${saleObj.pkg.toUpperCase()} · ${saleObj.priceMan}만원 · 판매자 ${saleObj.sellerName})`);
+      navigator.clipboard?.writeText(signedUrl);
+      S.salesDraft = null;
+      toast(`✨ ${saleObj.companyName} 판매 등록 & 서명 판매링크 복사 완료!`);
+      openAdminSalesModal('status');
+    });
+
+    $('btnIssuePreview')?.addEventListener('click', () => {
+      syncDraft();
+      const url = `${location.origin}${location.pathname}?lic=${encodeSignedLicense(draft, eo)}`;
+      window.open(url, '_blank', 'noopener');
+      toast('👁️ 새 탭에서 구매자 격리 미리보기를 열었습니다. (마스터 모드 유지됨)');
+    });
+
+    $('btnMasterSelfReset')?.addEventListener('click', () => {
+      S.admin = defaultAdminConfig();
+      saveAdminConfig();
+      try { localStorage.removeItem(LEGACY_ADMIN_KEY); } catch {}
+      applyAdminConfig(true);
+      toast('🔄 넥서스원 PRO 마스터 기본 모드가 확인되었습니다.');
+    });
+  }
+
+  // ---------- TAB 2: SALES STATUS CRM & PASSWORD RESET ----------
+  else if (activeTab === 'status') {
+    const todayIso = new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 10);
+    const totalSales = reg.sales.length;
+    const totalRevMan = reg.sales.reduce((s, x) => s + (Number(x.priceMan) || 0), 0);
+    const activeCnt = reg.sales.filter((x) => x.status !== 'revoked' && (!x.expiryDate || x.expiryDate >= todayIso)).length;
+    const issueCnt = totalSales - activeCnt;
+
+    $('adminBody').innerHTML = `${tabBarHtml}
+      <div class="nx-adm-kpi4">
+        <div class="nx-adm-kpi"><div class="l">총 판매 라이선스</div><div class="v">${fmt(totalSales)}건</div><div class="s">등록 고객사</div></div>
+        <div class="nx-adm-kpi"><div class="l">누적 판매 매출</div><div class="v" style="color:var(--c-corp)">${fmt(totalRevMan)}만원</div><div class="s">단순 합계 기준</div></div>
+        <div class="nx-adm-kpi"><div class="l">정상 활성 라이선스</div><div class="v" style="color:#059669">${fmt(activeCnt)}건</div><div class="s">실시간 이용 가능</div></div>
+        <div class="nx-adm-kpi"><div class="l">정지 · 만료</div><div class="v" style="color:#e11d48">${fmt(issueCnt)}건</div><div class="s">Kill-Switch / 만료</div></div>
+      </div>
+
+      <div style="display:flex;gap:6px;margin-bottom:8px;flex-wrap:wrap">
+        <input id="crmQ" class="input" placeholder="고객사명 · 라이선스 ID · 판매자 검색…" style="flex:1;min-width:180px;padding:6px 10px;font-size:12px" />
+        <select id="crmStatusFilter" class="select" style="font-size:12px;padding:6px 9px">
+          <option value="">전체 상태</option>
+          <option value="active">정상 활성</option>
+          <option value="revoked">정지됨</option>
+          <option value="expired">만료됨</option>
+        </select>
+      </div>
+
+      <div class="table-wrap" style="max-height:360px;overflow-y:auto">
+        <table class="data-table" style="font-size:11.5px">
+          <thead>
+            <tr>
+              <th>고객사 / 브랜드</th>
+              <th>라이선스 · 등급</th>
+              <th>판매자 · 금액</th>
+              <th>발급일 / 만료</th>
+              <th>상태 · 비번상태</th>
+              <th>관리 액션 (링크 · 비번초기화 · 정지 · 납품서)</th>
+            </tr>
+          </thead>
+          <tbody id="crmTableBody"></tbody>
+        </table>
+      </div>
+      <div style="font-size:11px;color:var(--muted);margin-top:8px">
+        💡 <b>🔑 비번초기화</b> 클릭 시: (1) 동일 브라우저의 구매자 비밀번호를 즉시 <code>admin</code>으로 리셋하고, (2) 원격 고객사 기기에서도 사용 가능한 <b>1회용 서명 초기화 링크(유효 ${eo.resetHours || 72}시간)</b>를 자동 복사합니다.
+      </div>
+    `;
+
+    $('adminFoot').innerHTML = `
+      <button id="btnCrmCsv" class="btn btn-emerald btn-sm" type="button">📥 판매현황 CSV</button>
+      <button id="btnCrmBackup" class="btn btn-sm" type="button">📤 CRM JSON 백업</button>
+      <button id="btnCrmNew" class="btn btn-primary btn-sm" type="button" style="margin-left:auto">➕ 새 판매링크 발급</button>
+    `;
+
+    const drawRows = () => {
+      const q = ($('crmQ')?.value || '').trim().toLowerCase();
+      const sf = $('crmStatusFilter')?.value || '';
+      const filtered = reg.sales.filter((x) => {
+        const isExp = Boolean(x.expiryDate && x.expiryDate < todayIso);
+        const effSt = x.status === 'revoked' ? 'revoked' : (isExp ? 'expired' : 'active');
+        if (sf && effSt !== sf) return false;
+        if (q && !`${x.companyName} ${x.brandTitle} ${x.licId} ${x.sellerName} ${x.memo || ''}`.toLowerCase().includes(q)) return false;
+        return true;
+      });
+      const tb = $('crmTableBody');
+      if (!tb) return;
+      tb.innerHTML = filtered.map((x) => {
+        const isExp = Boolean(x.expiryDate && x.expiryDate < todayIso);
+        const isRev = x.status === 'revoked';
+        const stBadge = isRev
+          ? '<span class="nx-lic-badge nx-lic-revoked">🚫 정지</span>'
+          : (isExp ? '<span class="nx-lic-badge nx-lic-expired">⏳ 만료</span>' : '<span class="nx-lic-badge nx-lic-active">✓ 정상</span>');
+        const bLocal = loadBuyerState(x.licId);
+        const pwTag = bLocal.mustChangePw ? '<span style="color:#d97706;font-size:10.5px">초기(admin)</span>' : '<span style="color:#059669;font-size:10.5px">변경완료</span>';
+        return `
+          <tr>
+            <td><b>${esc(x.companyName)}</b><div style="font-size:10.5px;color:var(--muted)">${esc(x.brandTitle)} ${esc(x.brandBadge || '')}</div></td>
+            <td><code>${esc(x.licId)}</code><div style="font-size:10.5px;color:var(--c-corp);font-weight:700">${esc((x.pkg || '').toUpperCase())}</div></td>
+            <td>${esc(x.sellerName || '-')}<div style="font-weight:800">${fmt(x.priceMan || 0)}만원</div></td>
+            <td>${esc(x.issuedAt || '-')}<div style="font-size:10.5px;color:var(--muted)">${esc(x.expiryDate || '영구 소장')}</div></td>
+            <td>${stBadge}<div style="margin-top:2px">${pwTag}${x.resetCount ? ` · 리셋${x.resetCount}` : ''}</div></td>
+            <td>
+              <div style="display:flex;gap:4px;flex-wrap:wrap">
+                <button type="button" class="btn btn-sm" data-crm-copy="${esc(x.licId)}" title="판매링크 복사">🔗</button>
+                <button type="button" class="btn btn-amber btn-sm" data-crm-reset="${esc(x.licId)}" title="구매자 비밀번호 admin 초기화 + 원격 리셋링크 복사">🔑 비번초기화</button>
+                <button type="button" class="btn btn-sm" data-crm-prev="${esc(x.licId)}" title="새 탭에서 구매자 화면 미리보기">👁️</button>
+                <button type="button" class="btn btn-sm" data-crm-kit="${esc(x.licId)}" title="납품 안내 키트">📦</button>
+                <button type="button" class="btn btn-sm" data-crm-rev="${esc(x.licId)}" title="${isRev ? '라이선스 복구' : '라이선스 정지'}">${isRev ? '▶️ 복구' : '⏸️ 정지'}</button>
+                <button type="button" class="btn btn-sm" data-crm-del="${esc(x.licId)}" title="삭제">🗑️</button>
+              </div>
+            </td>
+          </tr>`;
+      }).join('') || '<tr><td colspan="6" style="text-align:center;padding:24px;color:var(--muted)">조건에 맞는 판매 이력이 없습니다.</td></tr>';
+
+      tb.querySelectorAll('[data-crm-copy]').forEach((b) => b.addEventListener('click', () => {
+        const s = reg.sales.find((x) => x.licId === b.dataset.crmCopy);
+        if (s) { navigator.clipboard?.writeText(s.signedUrl); toast(`🔗 ${s.companyName} 판매링크가 복사되었습니다.`); }
+      }));
+      tb.querySelectorAll('[data-crm-prev]').forEach((b) => b.addEventListener('click', () => {
+        const s = reg.sales.find((x) => x.licId === b.dataset.crmPrev);
+        if (s) window.open(s.signedUrl, '_blank', 'noopener');
+      }));
+      tb.querySelectorAll('[data-crm-kit]').forEach((b) => b.addEventListener('click', () => {
+        const s = reg.sales.find((x) => x.licId === b.dataset.crmKit);
+        if (s) openDeliveryKitModal(s);
+      }));
+      tb.querySelectorAll('[data-crm-reset]').forEach((b) => b.addEventListener('click', () => {
+        const s = reg.sales.find((x) => x.licId === b.dataset.crmReset);
+        if (!s) return;
+        // 1) Local tenant instant reset to 'admin'
+        const bSt = loadBuyerState(s.licId);
+        bSt.pwHash = BUYER_DEFAULT_PW_HASH;
+        bSt.mustChangePw = true;
+        bSt.pwChangedAt = '';
+        saveBuyerState(s.licId, bSt);
+        // 2) Generate signed 1-time remote reset URL
+        const rstTok = buildRemoteResetToken(s.licId, eo.resetHours || 72);
+        const rstUrl = `${s.signedUrl}${s.signedUrl.includes('?') ? '&' : '?'}rst=${rstTok}`;
+        s.resetCount = (s.resetCount || 0) + 1;
+        s.lastResetAt = new Date().toLocaleString('ko-KR');
+        saveSellerRegistry(reg);
+        appendAudit('ADMIN_PW_RESET', s.licId, `${s.companyName} 구매자 비번 admin 초기화 및 1회용 원격 리셋링크 발급`);
+        navigator.clipboard?.writeText(rstUrl);
+        drawRows();
+        toast(`🔑 ${s.companyName} 비번이 admin으로 초기화되었고, 원격 초기화 링크가 복사되었습니다!`);
+      }));
+      tb.querySelectorAll('[data-crm-rev]').forEach((b) => b.addEventListener('click', () => {
+        const s = reg.sales.find((x) => x.licId === b.dataset.crmRev);
+        if (!s) return;
+        const nextRev = s.status !== 'revoked';
+        s.status = nextRev ? 'revoked' : 'active';
+        reg.revoked = reg.sales.filter((x) => x.status === 'revoked').map((x) => x.licId);
+        saveSellerRegistry(reg);
+        appendAudit(nextRev ? 'LICENSE_REVOKED' : 'LICENSE_RESTORED', s.licId, `${s.companyName} 상태 → ${s.status}`);
+        openAdminSalesModal('status');
+        toast(nextRev ? `🚫 ${s.companyName} 라이선스가 정지되었습니다.` : `▶️ ${s.companyName} 라이선스가 정상 복구되었습니다.`);
+      }));
+      tb.querySelectorAll('[data-crm-del]').forEach((b) => b.addEventListener('click', () => {
+        const id = b.dataset.crmDel;
+        reg.sales = reg.sales.filter((x) => x.licId !== id);
+        reg.revoked = reg.revoked.filter((x) => x !== id);
+        saveSellerRegistry(reg);
+        appendAudit('LICENSE_DELETED', id, '판매 현황 레코드 삭제');
+        openAdminSalesModal('status');
+        toast('🗑️ 판매 이력이 삭제되었습니다.');
+      }));
+    };
+
+    drawRows();
+    $('crmQ')?.addEventListener('input', drawRows);
+    $('crmStatusFilter')?.addEventListener('change', drawRows);
+    $('btnCrmNew')?.addEventListener('click', () => openAdminSalesModal('issue'));
+    $('btnCrmCsv')?.addEventListener('click', () => {
+      const hd = '라이선스ID,고객사명,브랜드,패키지,판매금액(만원),판매자,발급일,만료일,상태,비번초기화횟수,메모,판매링크\n';
+      const rows = reg.sales.map((x) => [x.licId, x.companyName, x.brandTitle, x.pkg, x.priceMan, x.sellerName, x.issuedAt, x.expiryDate || '영구', x.status, x.resetCount || 0, x.memo || '', x.signedUrl].map((v) => `"${String(v ?? '').replace(/"/g, '""')}"`).join(',')).join('\n');
+      const blob = new Blob(['\uFEFF' + hd + rows], { type: 'text/csv;charset=utf-8' });
+      const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `nexusone_sales_crm_${new Date().toISOString().slice(0, 10)}.csv`; a.click();
+      toast('📥 판매 현황 CSV 다운로드 완료');
+    });
+    $('btnCrmBackup')?.addEventListener('click', () => {
+      const blob = new Blob([JSON.stringify(reg, null, 2)], { type: 'application/json' });
+      const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `nexusone_crm_backup_${new Date().toISOString().slice(0, 10)}.json`; a.click();
+      toast('📤 판매자·현황 CRM JSON 백업 완료');
+    });
+  }
+
+  // ---------- TAB 3: SELLER / RESELLER MANAGEMENT ----------
+  else if (activeTab === 'sellers') {
+    $('adminBody').innerHTML = `${tabBarHtml}
+      <div class="domain-box" style="margin-bottom:10px">
+        <h4 style="margin:0 0 8px">➕ 신규 판매자 / 영업담당 / 파트너 채널 등록</h4>
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr 90px auto;gap:6px;align-items:end">
+          <label style="font-size:11px;color:var(--muted)">판매자명 *<input id="slName" class="input" placeholder="예: 김영업 팀장" style="width:100%;margin-top:2px;font-size:12px" /></label>
+          <label style="font-size:11px;color:var(--muted)">채널/소속<input id="slChannel" class="input" placeholder="예: 경기지사 / 크몽" style="width:100%;margin-top:2px;font-size:12px" /></label>
+          <label style="font-size:11px;color:var(--muted)">연락처<input id="slPhone" class="input" placeholder="010-1234-5678" style="width:100%;margin-top:2px;font-size:12px" /></label>
+          <label style="font-size:11px;color:var(--muted)">수수료(%)<input id="slComm" class="input" type="number" min="0" max="80" value="20" style="width:100%;margin-top:2px;font-size:12px" /></label>
+          <button id="btnAddSeller" class="btn btn-primary btn-sm" type="button" style="height:34px">등록</button>
+        </div>
+      </div>
+
+      <div class="table-wrap">
+        <table class="data-table" style="font-size:12px">
+          <thead><tr><th>코드</th><th>판매자명</th><th>채널 / 연락처</th><th>수수료율</th><th>판매건수</th><th>누적 매출</th><th>예상 정산액</th><th>삭제</th></tr></thead>
+          <tbody>
+            ${reg.sellers.map((sl) => {
+              const mySales = reg.sales.filter((x) => x.sellerCode === sl.id || x.sellerName === sl.name);
+              const rev = mySales.reduce((s, x) => s + (Number(x.priceMan) || 0), 0);
+              const commWon = Math.round(rev * (Number(sl.commissionPct) || 0) / 100);
+              return `
+                <tr>
+                  <td><code>${esc(sl.id)}</code></td>
+                  <td><b>${esc(sl.name)}</b></td>
+                  <td>${esc(sl.channel || '-')} <span style="color:var(--muted)">· ${esc(sl.phone || '-')}</span></td>
+                  <td><b>${Number(sl.commissionPct) || 0}%</b></td>
+                  <td>${fmt(mySales.length)}건</td>
+                  <td style="font-weight:800;color:var(--c-corp)">${fmt(rev)}만원</td>
+                  <td style="font-weight:800;color:#059669">${fmt(commWon)}만원</td>
+                  <td>${sl.id === 'SLR-001' ? '<span style="font-size:10.5px;color:var(--muted)">기본</span>' : `<button type="button" class="btn btn-sm" data-sl-del="${esc(sl.id)}">✕</button>`}</td>
+                </tr>`;
+            }).join('')}
+          </tbody>
+        </table>
+      </div>
+    `;
+    $('adminFoot').innerHTML = `<button id="btnSlGoIssue" class="btn btn-primary btn-sm" type="button">🚀 판매링크 발급으로 이동</button>`;
+    $('btnSlGoIssue')?.addEventListener('click', () => openAdminSalesModal('issue'));
+    $('btnAddSeller')?.addEventListener('click', () => {
+      const name = $('slName')?.value.trim();
+      if (!name) { toast('판매자명을 입력하세요.'); return; }
+      const nextNum = reg.sellers.length + 1;
+      const newSl = {
+        id: `SLR-${String(nextNum).padStart(3, '0')}`,
+        name,
+        channel: $('slChannel')?.value.trim() || '파트너',
+        phone: $('slPhone')?.value.trim() || '-',
+        commissionPct: Math.max(0, Math.min(80, Number($('slComm')?.value) || 0)),
+        memo: '',
+      };
+      reg.sellers.push(newSl);
+      saveSellerRegistry(reg);
+      appendAudit('SELLER_ADDED', newSl.id, `${newSl.name} (${newSl.channel}, 수수료 ${newSl.commissionPct}%)`);
+      openAdminSalesModal('sellers');
+      toast(`🧑‍💼 판매자 '${newSl.name}' 등록 완료!`);
+    });
+    $('adminBody').querySelectorAll('[data-sl-del]').forEach((b) => b.addEventListener('click', () => {
+      const id = b.dataset.slDel;
+      reg.sellers = reg.sellers.filter((x) => x.id !== id);
+      saveSellerRegistry(reg);
+      appendAudit('SELLER_DELETED', id, '판매자 삭제');
+      openAdminSalesModal('sellers');
+    }));
+  }
+
+  // ---------- TAB 4: TOP 10 EXPERT TECHNIQUES & SECURITY OPTIONS ----------
+  else if (activeTab === 'expert') {
+    $('adminBody').innerHTML = `${tabBarHtml}
+      <div class="domain-box" style="margin-bottom:10px">
+        <h4 style="margin:0 0 8px">💎 SaaS 화이트라벨 · 보안·라이선스 전문가 기법 TOP 10 (실시간 ON/OFF 옵션)</h4>
+        <div class="nx-expert-grid">
+          ${EXPERT_TECHNIQUES_10.map((t) => `
+            <label class="nx-expert-item ${eo[t.key] ? 'on' : ''}">
+              <input type="checkbox" data-exp-opt="${t.key}" ${eo[t.key] ? 'checked' : ''} style="margin-top:3px" />
+              <span>
+                <b style="font-size:12px;display:block">${t.num}. ${t.title}</b>
+                <span style="font-size:11px;color:var(--muted);line-height:1.4;display:block;margin-top:2px">${t.desc}</span>
+              </span>
+            </label>`).join('')}
+        </div>
+      </div>
+
+      <div class="domain-box" style="margin-bottom:10px">
+        <h4 style="margin:0 0 8px">⚙️ 세부 운영 정책 옵션</h4>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+          <label style="font-size:11.5px;color:var(--muted)">라이선스 만료 시 동작 정책
+            <select id="expExpiryMode" class="select" style="width:100%;margin-top:3px;font-size:12px">
+              <option value="lock" ${eo.expiryMode === 'lock' ? 'selected' : ''}>🔒 화면 잠금 + 갱신 연락처 표시 (권장)</option>
+              <option value="readonly" ${eo.expiryMode === 'readonly' ? 'selected' : ''}>📖 읽기전용 유예 + 상단 만료 배너</option>
+            </select>
+          </label>
+          <label style="font-size:11.5px;color:var(--muted)">1회용 원격 비번 초기화 링크 유효시간
+            <select id="expResetHours" class="select" style="width:100%;margin-top:3px;font-size:12px">
+              <option value="24" ${Number(eo.resetHours) === 24 ? 'selected' : ''}>24시간 (고보안)</option>
+              <option value="72" ${Number(eo.resetHours) === 72 ? 'selected' : ''}>72시간 (표준 권장)</option>
+              <option value="168" ${Number(eo.resetHours) === 168 ? 'selected' : ''}>7일 (주말 대응)</option>
+            </select>
+          </label>
+        </div>
+      </div>
+
+      <div class="domain-box">
+        <h4 style="margin:0 0 6px">🔐 판매자 마스터 전환 PIN 변경 (구매자 화면에서 Ctrl+Shift+A 복귀용)</h4>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+          <input id="expNewMasterPin" class="input" type="password" placeholder="새 마스터 PIN (기본: nx1master, 4자+)" style="flex:1;min-width:200px;font-size:12px" />
+          <button id="btnSaveMasterPin" class="btn btn-amber btn-sm" type="button">🔑 마스터 PIN 변경</button>
+        </div>
+      </div>
+    `;
+
+    $('adminFoot').innerHTML = `
+      <button id="btnSaveExpertOpts" class="btn btn-primary btn-sm" type="button">✅ TOP 10 전문가 옵션 저장</button>
+      <button id="btnResetExpertOpts" class="btn btn-sm" type="button" style="margin-left:auto">↺ 권장 기본값(10개 전체 ON)</button>
+    `;
+
+    $('btnSaveExpertOpts')?.addEventListener('click', () => {
+      $('adminBody').querySelectorAll('[data-exp-opt]').forEach((el) => { eo[el.dataset.expOpt] = el.checked; });
+      eo.expiryMode = $('expExpiryMode')?.value || 'lock';
+      eo.resetHours = Number($('expResetHours')?.value) || 72;
+      reg.expertOpts = eo;
+      saveSellerRegistry(reg);
+      appendAudit('EXPERT_OPTS_SAVED', 'MASTER', `활성 옵션 ${EXPERT_TECHNIQUES_10.filter((t) => eo[t.key]).length}/10, 만료정책:${eo.expiryMode}`);
+      toast('✅ 전문가 기법 TOP 10 옵션이 저장 및 적용되었습니다!');
+      openAdminSalesModal('expert');
+    });
+
+    $('btnResetExpertOpts')?.addEventListener('click', () => {
+      reg.expertOpts = defaultExpertOpts();
+      saveSellerRegistry(reg);
+      toast('↺ 전문가 기법 TOP 10 권장 기본값으로 복원되었습니다.');
+      openAdminSalesModal('expert');
+    });
+
+    $('btnSaveMasterPin')?.addEventListener('click', async () => {
+      const np = $('expNewMasterPin')?.value.trim() || '';
+      if (np.length < 4) { toast('마스터 PIN은 4자 이상 입력하세요.'); return; }
+      reg.masterPinHash = await sha256Hex(np);
+      saveSellerRegistry(reg);
+      appendAudit('MASTER_PIN_CHANGED', 'MASTER', '판매자 마스터 전환 PIN 변경 완료');
+      $('expNewMasterPin').value = '';
+      toast('🔐 판매자 마스터 PIN이 안전하게 변경되었습니다!');
+    });
+  }
+
+  // ---------- TAB 5: SECURITY AUDIT TRAIL ----------
+  else if (activeTab === 'audit') {
+    const logs = loadAuditLog(null);
+    $('adminBody').innerHTML = `${tabBarHtml}
+      <div class="table-wrap" style="max-height:400px;overflow-y:auto">
+        <table class="data-table" style="font-size:11.5px">
+          <thead><tr><th>일시</th><th>주체</th><th>이벤트</th><th>대상</th><th>상세 내용</th></tr></thead>
+          <tbody>
+            ${logs.map((l) => `
+              <tr>
+                <td style="white-space:nowrap;color:var(--muted)">${esc(l.ts)}</td>
+                <td>${esc(l.actor)}</td>
+                <td><b>${esc(l.action)}</b></td>
+                <td><code>${esc(l.target)}</code></td>
+                <td>${esc(l.detail)}</td>
+              </tr>`).join('') || '<tr><td colspan="5" style="text-align:center;padding:24px;color:var(--muted)">아직 기록된 보안 감사 로그가 없습니다.</td></tr>'}
+          </tbody>
+        </table>
+      </div>
+    `;
+    $('adminFoot').innerHTML = `
+      <button id="btnAuditCsv" class="btn btn-emerald btn-sm" type="button">📥 감사 로그 CSV</button>
+      <button id="btnAuditClear" class="btn btn-sm" type="button" style="margin-left:auto">🗑️ 로그 비우기</button>
+    `;
+    $('btnAuditCsv')?.addEventListener('click', () => {
+      const hd = '일시,주체,이벤트,대상,상세내용\n';
+      const rows = logs.map((l) => [l.ts, l.actor, l.action, l.target, l.detail].map((v) => `"${String(v ?? '').replace(/"/g, '""')}"`).join(',')).join('\n');
+      const blob = new Blob(['\uFEFF' + hd + rows], { type: 'text/csv;charset=utf-8' });
+      const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `nexusone_audit_${new Date().toISOString().slice(0, 10)}.csv`; a.click();
+    });
+    $('btnAuditClear')?.addEventListener('click', () => {
+      localStorage.removeItem(MASTER_AUDIT_KEY);
+      openAdminSalesModal('audit');
+      toast('🗑️ 감사 로그가 초기화되었습니다.');
+    });
+  }
+
+  // Wire top navigation tabs inside Master Console
+  $('adminBody').querySelectorAll('[data-adm-nav]').forEach((b) => {
+    b.addEventListener('click', () => openAdminSalesModal(b.dataset.admNav));
   });
-
-  $('admReset')?.addEventListener('click', () => {
-    S.admin = defaultAdminConfig();
-    saveAdminConfig();
-    applyAdminConfig(true);
-    openAdminSalesModal();
-    toast('🔄 마스터 풀모드(전체 서비스 노출)로 복원되었습니다.');
-  });
-
   $('adminBackdrop')?.classList.remove('hidden');
 }
 
@@ -564,7 +1742,13 @@ const S = {
 
   // UI Navigation, Pro Options, Admin Sales Config & Expert State
   opts: loadOpts(),
-  admin: loadAdminConfig(),
+  isBuyerMode: BOOT_CTX.isBuyerMode,
+  tenantId: BOOT_CTX.tenantId,
+  licenseStatus: BOOT_CTX.licenseStatus,
+  buyerAuthed: false,
+  adminModalTab: 'issue',
+  salesDraft: null,
+  admin: BOOT_CTX.admin,
   tab: 'overview',
   selectedRid: -1,
   compareRid: -1,
@@ -641,11 +1825,11 @@ function maskKey(k) {
 }
 
 function loadPipeline() {
-  try { S.pipeline = JSON.parse(localStorage.getItem(PIPE_KEY) || '[]'); } catch { S.pipeline = []; }
+  try { S.pipeline = JSON.parse(localStorage.getItem(tStorageKey(PIPE_KEY)) || '[]'); } catch { S.pipeline = []; }
   updatePipeBadge();
 }
 function savePipeline() {
-  localStorage.setItem(PIPE_KEY, JSON.stringify(S.pipeline));
+  try { localStorage.setItem(tStorageKey(PIPE_KEY), JSON.stringify(S.pipeline)); } catch {}
   updatePipeBadge();
 }
 function updatePipeBadge() {
@@ -1048,7 +2232,7 @@ function openExecutiveReport(r) {
   $('reportPaper').innerHTML = `
     <div class="rep-banner">
       <div>
-        <div style="font-size:11px;font-weight:700;color:#a5b4fc;letter-spacing:0.05em">NEXUS ONE PRO · COMMERCIAL OPPORTUNITY REPORT</div>
+        <div style="font-size:11px;font-weight:700;color:#a5b4fc;letter-spacing:0.05em">${esc((S.admin?.brandTitle || 'NEXUS ONE').toUpperCase())} ${esc(S.admin?.brandBadge || 'PRO')} · COMMERCIAL OPPORTUNITY REPORT${S.isBuyerMode && S.admin?.a4Watermark !== false ? ` · LICENSED TO ${esc(S.admin.companyName || '')} (${esc(S.tenantId)})` : ''}</div>
         <h2>${esc(r.fullName)} — 상업적 영업기회 정밀 리포트</h2>
         <p>적용 업종: ${esc(c.p.label)} · 기준일: ${today} · 전략 모델: ${esc(STRATEGY_PRESETS[S.opts.preset]?.label || '커스텀')}</p>
       </div>
@@ -1203,11 +2387,15 @@ async function unlockAndBoot(key) {
   $('cntRe').textContent = fmt((reObj.listings?.length || 0) + (reObj.starts?.length || 0) + (reObj.complexes?.length || 0));
   $('brandMeta').textContent = `법인 ${fmt(core.stats.corpCount)} · 상가 ${fmt(core.stats.sbizCount)} · 입찰 ${fmt(S.opps.length)} · 청약 ${fmt(reObj.listings?.length || 0)}`;
 
-  // Apply URL deep link (?tab=bid|sbiz|corp|realestate|hub)
+  // Apply URL deep link (?tab=bid|sbiz|corp|realestate|hub) or Buyer Admin configured startTab
   const urlTab = new URLSearchParams(location.search).get('tab');
-  if (urlTab && ['overview', 'corp', 'bid', 'sbiz', 'realestate', 'hub'].includes(urlTab)) {
-    S.tab = urlTab;
-    document.querySelectorAll('[data-tab]').forEach((el) => el.classList.toggle('active', el.dataset.tab === urlTab));
+  const buyerStartTab = S.isBuyerMode ? loadBuyerState(S.tenantId).startTab : '';
+  const initTab = (urlTab && ['overview', 'corp', 'bid', 'sbiz', 'realestate', 'hub'].includes(urlTab))
+    ? urlTab
+    : (buyerStartTab && S.admin?.tabs?.[buyerStartTab] ? buyerStartTab : '');
+  if (initTab) {
+    S.tab = initTab;
+    document.querySelectorAll('[data-tab]').forEach((el) => el.classList.toggle('active', el.dataset.tab === initTab));
   }
 
   // Enrich all loaded opportunities with accurate 229-sigungu rid & WGS84 coords
@@ -1216,7 +2404,16 @@ async function unlockAndBoot(key) {
   $('lockScreen').classList.add('hidden');
   $('appShell').classList.remove('hidden');
   applyAdminConfig(false);
-  renderCurrentTab();
+  if (!renderLicenseLockWallIfNeeded()) {
+    renderCurrentTab();
+  }
+  if (BOOT_CTX.justResetPw) {
+    appendAudit('REMOTE_PW_RESET', S.tenantId, '1회용 원격 초기화 링크로 구매자 비밀번호 admin 초기화 완료');
+    toast('🔑 원격 비밀번호 초기화 완료! 초기 비밀번호(admin)로 로그인 후 새 비밀번호를 설정하세요.');
+    setTimeout(() => openBuyerAdminModal(), 350);
+  } else if (BOOT_CTX.resetErr) {
+    toast(`⚠️ ${BOOT_CTX.resetErr}`);
+  }
 
   // Auto background real-time sync (same live APIs as KakaoTalk Alert Bot!)
   setTimeout(() => fetchLiveG2bAndPrespec({ silent: true }), 400);
@@ -4499,6 +5696,10 @@ function openBidReviewReport(o) {
         </div>
         <table><tr><th>담당</th><th>팀장</th><th>임원</th></tr><tr style="height:36px"><td></td><td></td><td></td></tr></table>
       </div>
+      ${S.isBuyerMode && S.admin?.a4Watermark !== false ? (() => {
+        const bSt = loadBuyerState(S.tenantId);
+        return `<div style="margin-top:8px;padding-top:6px;border-top:1px dashed #cbd5e1;display:flex;justify-content:space-between;font-size:9.5px;color:#64748b"><span>Licensed to <b>${esc(S.admin.companyName || S.admin.brandTitle)}</b> (${esc(S.tenantId)})${bSt.deptName ? ` · ${esc(bSt.deptName)}` : ''}${bSt.contact ? ` · ${esc(bSt.contact)}` : ''}</span><span>Authorized White-Label Edition · ${todayStr}</span></div>`;
+      })() : ''}
     </div>`;
   document.body.classList.add('nx-a4-printing');
   document.body.appendChild(wrap);
@@ -6982,13 +8183,17 @@ async function init() {
   $('drawerBackdrop').addEventListener('click', (e) => { if (e.target === $('drawerBackdrop')) closeDrawer(); });
   document.querySelectorAll('[data-tab]').forEach((b) => b.addEventListener('click', () => switchTab(b.dataset.tab)));
 
-  $('btnAdminSales')?.addEventListener('click', openAdminSalesModal);
+  $('btnAdminSales')?.addEventListener('click', () => {
+    if (S.isBuyerMode) openBuyerAdminModal();
+    else openAdminSalesModal();
+  });
   $('adminClose')?.addEventListener('click', () => $('adminBackdrop')?.classList.add('hidden'));
   $('adminBackdrop')?.addEventListener('click', (e) => { if (e.target === $('adminBackdrop')) $('adminBackdrop').classList.add('hidden'); });
   document.addEventListener('keydown', (e) => {
     if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 'a') {
       e.preventDefault();
-      openAdminSalesModal();
+      if (S.isBuyerMode) openMasterEscapePrompt();
+      else openAdminSalesModal();
     }
   });
 

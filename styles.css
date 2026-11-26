@@ -852,3 +852,81 @@ table.data-table tbody tr:hover { background: var(--surface-2); }
   .bid-workspace .leaflet-box { height: 340px; }
   .sbiz-workspace.split .leaflet-box { height: 340px; }
 }
+
+/* ===== V26 MASTER / BUYER MULTI-TENANT & SALES CRM CONSOLE ===== */
+.nx-tenant-bar {
+  display: flex; flex-direction: column; gap: 4px;
+  padding: 6px 16px; background: var(--surface); border-bottom: 1px solid var(--border);
+  font-size: 12px;
+}
+.nx-tbar-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap;
+  padding: 6px 11px; border-radius: 9px;
+}
+.nx-tbar-warn {
+  background: rgba(245, 158, 11, 0.12); border: 1px solid rgba(245, 158, 11, 0.4); color: #b45309;
+}
+[data-theme="dark"] .nx-tbar-warn { color: #fde68a; }
+.nx-tbar-info {
+  background: rgba(79, 70, 229, 0.08); border: 1px solid rgba(79, 70, 229, 0.25); color: var(--text);
+}
+.nx-tbar-danger {
+  background: rgba(225, 29, 72, 0.12); border: 1px solid rgba(225, 29, 72, 0.4); color: #be123c;
+}
+[data-theme="dark"] .nx-tbar-danger { color: #fda4af; }
+
+.nx-adm-tabs {
+  display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 12px;
+  padding-bottom: 10px; border-bottom: 1px solid var(--border);
+}
+.nx-adm-tab {
+  padding: 7px 12px; border-radius: 9px; border: 1px solid var(--border);
+  background: var(--surface-2); color: var(--text-2); font-size: 12px; font-weight: 800; cursor: pointer;
+}
+.nx-adm-tab.active {
+  background: var(--c-accent); color: #fff; border-color: var(--c-accent);
+}
+.nx-adm-kpi4 {
+  display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 12px;
+}
+.nx-adm-kpi {
+  background: var(--surface-2); border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px;
+}
+.nx-adm-kpi .l { font-size: 11px; color: var(--muted); font-weight: 700; }
+.nx-adm-kpi .v { font-size: 18px; font-weight: 900; margin-top: 2px; color: var(--text); }
+.nx-adm-kpi .s { font-size: 10.5px; color: var(--muted); margin-top: 2px; }
+
+.nx-lic-badge {
+  display: inline-flex; align-items: center; gap: 4px; padding: 2px 7px;
+  border-radius: 999px; font-size: 10.5px; font-weight: 800; white-space: nowrap;
+}
+.nx-lic-active { background: rgba(16, 185, 129, 0.14); color: #047857; }
+.nx-lic-revoked { background: rgba(225, 29, 72, 0.14); color: #be123c; }
+.nx-lic-expired { background: rgba(245, 158, 11, 0.18); color: #b45309; }
+[data-theme="dark"] .nx-lic-active { color: #6ee7b7; }
+[data-theme="dark"] .nx-lic-revoked { color: #fda4af; }
+[data-theme="dark"] .nx-lic-expired { color: #fde68a; }
+
+.nx-pulse-dot {
+  display: inline-block; width: 7px; height: 7px; border-radius: 50%;
+  background: #ef4444; box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.25);
+  margin-left: 3px; vertical-align: middle;
+}
+
+.nx-expert-grid {
+  display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px;
+}
+.nx-expert-item {
+  display: flex; gap: 8px; align-items: flex-start; padding: 9px 10px;
+  border: 1px solid var(--border); border-radius: 10px; background: var(--bg); cursor: pointer;
+}
+.nx-expert-item.on { border-color: rgba(79, 70, 229, 0.45); background: rgba(79, 70, 229, 0.04); }
+.nx-license-wall {
+  max-width: 560px; margin: 36px auto; padding: 26px 24px; border-radius: 16px;
+  background: var(--surface); border: 1px solid rgba(225, 29, 72, 0.4);
+  box-shadow: var(--shadow); text-align: center;
+}
+@media (max-width: 720px) {
+  .nx-adm-kpi4 { grid-template-columns: repeat(2, 1fr); }
+  .nx-expert-grid { grid-template-columns: 1fr; }
+}

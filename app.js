@@ -4061,9 +4061,11 @@ function openBidReviewReport(o) {
       #nxA4Sheet .sign{display:grid;grid-template-columns:1fr 220px;gap:12px;margin-top:12px;align-items:end}
       #nxA4Sheet .sign table th,#nxA4Sheet .sign table td{text-align:center;width:auto}
       @media print{
-        body > *:not(#nxA4ReviewOverlay){display:none!important}
-        #nxA4ReviewOverlay{position:static!important;background:#fff!important;padding:0!important;overflow:visible!important}
-        #nxA4Sheet{box-shadow:none!important;border-radius:0!important;max-width:none!important;padding:0!important}
+        @page{size:A4 portrait;margin:10mm}
+        html,body{background:#fff!important;height:auto!important;overflow:visible!important;margin:0!important;padding:0!important}
+        body.nx-a4-printing > *:not(#nxA4ReviewOverlay){display:none!important}
+        body.nx-a4-printing #nxA4ReviewOverlay{display:block!important;position:static!important;inset:auto!important;width:100%!important;height:auto!important;background:#fff!important;padding:0!important;overflow:visible!important}
+        #nxA4Sheet{display:block!important;box-shadow:none!important;border-radius:0!important;max-width:none!important;width:100%!important;padding:0!important;-webkit-print-color-adjust:exact;print-color-adjust:exact}
         #nxA4Sheet .no-print{display:none!important}
       }
     </style>
@@ -4127,10 +4129,18 @@ function openBidReviewReport(o) {
         <table><tr><th>담당</th><th>팀장</th><th>임원</th></tr><tr style="height:36px"><td></td><td></td><td></td></tr></table>
       </div>
     </div>`;
+  document.body.classList.add('nx-a4-printing');
   document.body.appendChild(wrap);
-  wrap.addEventListener('click', (e) => { if (e.target === wrap) wrap.remove(); });
-  $('nxA4CloseBtn')?.addEventListener('click', () => wrap.remove());
-  $('nxA4PrintBtn')?.addEventListener('click', () => window.print());
+  const closeA4 = () => {
+    document.body.classList.remove('nx-a4-printing');
+    wrap.remove();
+  };
+  wrap.addEventListener('click', (e) => { if (e.target === wrap) closeA4(); });
+  $('nxA4CloseBtn')?.addEventListener('click', closeA4);
+  $('nxA4PrintBtn')?.addEventListener('click', () => {
+    document.body.classList.add('nx-a4-printing');
+    window.print();
+  });
 }
 
 function openOppDrawer(o) {

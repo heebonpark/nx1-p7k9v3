@@ -668,9 +668,17 @@ table.data-table tbody tr:hover { background: var(--surface-2); }
 }
 
 /* Clean A4 PDF Print Styles */
+@page { size: A4 portrait; margin: 10mm; }
 @media print {
-  body > *:not(#reportBackdrop) { display: none !important; }
-  #reportBackdrop {
+  html, body { background: #fff !important; height: auto !important; overflow: visible !important; margin: 0 !important; padding: 0 !important; }
+  body:not(.nx-a4-printing) > *:not(#reportBackdrop) { display: none !important; }
+  body.nx-a4-printing > *:not(#nxA4ReviewOverlay) { display: none !important; }
+  body.nx-a4-printing #nxA4ReviewOverlay {
+    display: block !important; position: static !important; inset: auto !important;
+    width: 100% !important; height: auto !important; background: #fff !important;
+    padding: 0 !important; overflow: visible !important;
+  }
+  body:not(.nx-a4-printing) #reportBackdrop {
     position: static !important; background: #fff !important; padding: 0 !important;
     display: block !important; backdrop-filter: none !important;
   }
@@ -680,7 +688,7 @@ table.data-table tbody tr:hover { background: var(--surface-2); }
   }
   .drawer-head, .drawer-foot { display: none !important; }
   .report-paper { overflow: visible !important; padding: 0 !important; }
-  .rep-banner { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  .rep-banner, #nxA4Sheet * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
 }
 
 /* ===== V6 SPLIT-VIEW GIS MAP + LIVE LIST & YYYYMM TIMELINE ===== */

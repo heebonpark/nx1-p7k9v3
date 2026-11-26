@@ -2628,11 +2628,14 @@ async function fetchLiveG2bAndPrespec({ silent = false } = {}) {
   S.bidSync.syncing = true;
   if (!silent) toast('🔄 카톡 알림봇 동일 소스(오늘 00시~현재 전수 + 어제 최신 입찰·사전규격·청약홈) 동기화 중…');
 
-  const now = new Date();
-  const yest = new Date(now.getTime() - 24 * 3600000);
-  const fmtYmd = (d) => `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
-  const fmtDt = (d) => `${fmtYmd(d)}${String(d.getHours()).padStart(2, '0')}${String(d.getMinutes()).padStart(2, '0')}`;
-  const todayBgnDt = `${fmtYmd(now)}0000`, yestBgnDt = `${fmtYmd(yest)}0000`, endDt = fmtDt(now);
+  const nowMs = Date.now();
+  const kst = (ms) => {
+    const d = new Date(ms + 9 * 3600000);
+    const pad = (n) => String(n).padStart(2, '0');
+    const ymd = `${d.getUTCFullYear()}${pad(d.getUTCMonth() + 1)}${pad(d.getUTCDate())}`;
+    return { ymd, dt: `${ymd}${pad(d.getUTCHours())}${pad(d.getUTCMinutes())}` };
+  };
+  const todayBgnDt = `${kst(nowMs).ymd}0000`, yestBgnDt = `${kst(nowMs - 24 * 3600000).ymd}0000`, endDt = kst(nowMs + 10 * 60000).dt;
 
   const g2bUrls = [
     ['bid', `https://apis.data.go.kr/1230000/ad/BidPublicInfoService02/getBidPblancListInfoServc02?serviceKey=${dataGoEnc}`],

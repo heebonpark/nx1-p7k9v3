@@ -575,7 +575,8 @@ const S = {
   rankSort: 'total',
 
   // Corp filters
-  corpQ: '', corpSd: '', corpType: '', corpTag: '', corpStatus: '', corpSort: 'rev', corpPage: 1,
+  corpQ: '', corpSd: '', corpType: '', corpTag: '', corpStatus: '', corpRevMin: '', corpSort: 'rev', corpPage: 1,
+  corpIndMult: new Map(),
   // Bid filters & v8~v15 Early-Detection Radar GIS Map + Practical Suite state
   bidSub: 'map', bidQ: '', bidStage: '', bidField: '', bidUrgency: '', bidBudgetMin: 0, bidSd: '', bidPage: 1,
   bidHideCancelled: true, bidMyKwOnly: false, bidMyBizOnly: false,
@@ -1349,6 +1350,30 @@ async function ensureCorpLoaded(onProgress) {
       id, label: obj.label, set: new Set(obj.b || []),
     }));
     S.corpStatusBytes = status.codesB64 ? b64ToBytes(status.codesB64) : null;
+    // Calibrate empirical Revenue-to-Payroll multiplier per industry from DART-disclosed corps
+    const indRatios = new Map();
+    for (let i = 0; i < S.corps.length; i++) {
+      const r = S.corps[i];
+      const biz = String(r[6] || '').replace(/\D/g, '');
+      const e = S.corpEnrichMap.get(biz);
+      if (e && e[0] > 0 && (e[12] || e[9]) >= 5 && e[15] > 1000000) {
+        const ratio = e[0] / ((e[12] || e[9]) * e[15] * 12);
+        if (ratio >= 0.8 && ratio <= 30) {
+          const indId = r[12];
+          if (!indRatios.has(indId)) indRatios.set(indId, []);
+          indRatios.get(indId).push(ratio);
+        }
+      }
+    }
+    const multMap = new Map();
+    for (const [indId, arr] of indRatios.entries()) {
+      if (arr.length >= 3) {
+        arr.sort((a, b) => a - b);
+        const med = arr[Math.floor(arr.length / 2)];
+        multMap.set(indId, Math.max(1.8, Math.min(10.5, Number((med * 0.72).toFixed(2)))));
+      }
+    }
+    S.corpIndMult = multMap;
     S.corpLoaded = true;
     onProgress?.(100, '완료!');
     return true;
@@ -2214,13 +2239,50 @@ function wireSpotlightButtons(r, cmpReg) {
 // =========================================================================
 // TAB 2: 🏢 기업분석 PRO (120,028개 법인 + 재무·국민연금·국세청)
 // =========================================================================
+function fallbackSectorMult(indName) {
+  const s = String(indName || '');
+  if (/도매|중개|무역|유통|상품/.test(s)) return 7.2;
+  if (/건설|토목|건축|부동산|시공/.test(s)) return 5.4;
+  if (/제조|기계|전자|반도체|화학|금속|자동차|식품/.test(s)) return 4.8;
+  if (/운수|물류|창고|운송/.test(s)) return 4.4;
+  if (/소프트웨어|정보|통신|컴퓨터|프로그래밍|연구|엔지니어링|전문/.test(s)) return 3.0;
+  if (/경비|청소|시설|인력|파견|용역|미화/.test(s)) return 1.9;
+  return 4.0;
+}
+
+function resolveCorpRevenue(r, enr, inds) {
+  if (!enr) return { won: 0, kind: 'none', label: '', mult: 0, payroll: 0, emp: 0, wage: 0 };
+  const dartWon = enr[0] || enr[1] || enr[2] || 0;
+  if (dartWon > 0) {
+    return { won: dartWon, kind: 'dart', label: '공시', mult: 0, payroll: 0, emp: enr[12] || enr[9] || 0, wage: enr[15] || 0 };
+  }
+  const emp = enr[12] || enr[9] || 0;
+  if (emp > 0) {
+    const wage = enr[15] > 500000 ? enr[15] : (enr[10] > 6000000 ? Math.round(enr[10] / 12) : 3400000);
+    const mult = S.corpIndMult?.get(r[12]) || fallbackSectorMult(inds[r[12]] || '');
+    const payroll = emp * wage * 12;
+    const estWon = Math.round(payroll * mult);
+    return { won: estWon, kind: 'est', label: '추정', mult, payroll, emp, wage };
+  }
+  return { won: 0, kind: 'none', label: '', mult: 0, payroll: 0, emp: 0, wage: 0 };
+}
+
+function fmtRevEok(won) {
+  if (!won || won <= 0) return '-';
+  const eok = won / 1e8;
+  if (eok >= 10000) return `${fmtDec(eok / 10000, 1)}조`;
+  if (eok >= 100) return `${fmt(Math.round(eok))}억`;
+  if (eok >= 1) return `${fmtDec(eok, 1)}억`;
+  return `${fmt(Math.round(won / 1e4))}만`;
+}
+
 function renderCorpTab() {
   if (!S.corpLoaded) {
     $('mainStage').innerHTML = `
       <div class="card" style="max-width:560px;margin:24px auto;text-align:center;padding:28px">
         <div style="font-size:36px;margin-bottom:8px">🏢</div>
         <h2 style="margin:0 0 6px">전국 법인 120,028사 암호화 DB 복호화</h2>
-        <p style="color:var(--muted);font-size:13px;margin:0 0 14px">DART 개황 · 3개년 재무 · 국민연금 · 국세청 상태 (9.5 MB)를 브라우저 메모리로 안전하게 로드합니다.</p>
+        <p style="color:var(--muted);font-size:13px;margin:0 0 14px">DART 개황 · 3개년 재무 · 국민연금 고용·급여 · 국세청 상태 (9.5 MB)를 브라우저 메모리로 안전하게 로드합니다.</p>
         <div class="progress-bar"><div id="corpProgFill" class="progress-fill" style="width:10%"></div></div>
         <div id="corpProgMsg" style="font-size:12px;color:var(--muted)">준비 중…</div>
       </div>
@@ -2241,9 +2303,13 @@ function renderCorpTab() {
   const tagObj = S.corpTag ? S.corpTags.find((t) => t.id === S.corpTag) : null;
 
   const filtered = [];
+  let dartCnt = 0, estCnt = 0, totalRevEok = 0;
   for (let i = 0; i < S.corps.length; i++) {
     const r = S.corps[i];
-    if (S.corpSd && String(r[16]) !== S.corpSd) continue;
+    if (S.corpSd) {
+      const rowSd = S.fusionByRid.get(r[15])?.sd || sidos[r[16]]?.sd || '';
+      if (rowSd !== S.corpSd) continue;
+    }
     if (S.corpType !== '' && String(r[5]) !== S.corpType) continue;
     const bizClean = String(r[6] || '').replace(/\D/g, '');
     if (tagObj && !tagObj.set.has(bizClean)) continue;
@@ -2254,10 +2320,20 @@ function renderCorpTab() {
       if (!hay.includes(q)) continue;
     }
     const enr = S.corpEnrichMap.get(bizClean);
-    filtered.push({ i, r, bizClean, enr, stCode });
+    const revInfo = resolveCorpRevenue(r, enr, inds);
+    if (S.corpRevMin === 'dart' && revInfo.kind !== 'dart') continue;
+    else if (S.corpRevMin === 'any' && revInfo.won <= 0) continue;
+    else if (S.corpRevMin && !isNaN(Number(S.corpRevMin))) {
+      if (revInfo.won < Number(S.corpRevMin) * 1e8) continue;
+    }
+    if (revInfo.kind === 'dart') dartCnt++;
+    else if (revInfo.kind === 'est') estCnt++;
+    if (revInfo.won > 0) totalRevEok += revInfo.won / 1e8;
+    filtered.push({ i, r, bizClean, enr, stCode, revInfo });
   }
 
-  if (S.corpSort === 'rev') filtered.sort((a, b) => (b.enr?.[0] || 0) - (a.enr?.[0] || 0));
+  if (S.corpSort === 'rev') filtered.sort((a, b) => (b.revInfo.won || 0) - (a.revInfo.won || 0));
+  else if (S.corpSort === 'dartRev') filtered.sort((a, b) => (b.enr?.[0] || 0) - (a.enr?.[0] || 0));
   else if (S.corpSort === 'emp') filtered.sort((a, b) => (b.enr?.[12] || b.enr?.[9] || 0) - (a.enr?.[12] || a.enr?.[9] || 0));
   else if (S.corpSort === 'net') filtered.sort((a, b) => ((b.enr?.[13] || 0) - (b.enr?.[14] || 0)) - ((a.enr?.[13] || 0) - (a.enr?.[14] || 0)));
   else if (S.corpSort === 'est') filtered.sort((a, b) => (b.r[13] || 0) - (a.r[13] || 0));
@@ -2273,9 +2349,19 @@ function renderCorpTab() {
       <div class="card-head">
         <div>
           <h2 class="card-title">🏢 전국 기업분석 PRO <span class="tag tag-corp">${fmt(filtered.length)}사</span></h2>
-          <p class="card-sub">DART 법인 120,028사 · 3개년 재무 · 국민연금 고용·급여 · 국세청 사업자상태 통합 조회</p>
+          <p class="card-sub">DART 공시매출 (${fmt(dartCnt)}사) + 국민연금 실급여·업종보정 추정매출 (${fmt(estCnt)}사) · 총 ${fmt(dartCnt + estCnt)}사 매출 분석 지원</p>
         </div>
-        <button id="btnCorpReset" class="btn btn-sm" type="button">초기화</button>
+        <div style="display:flex;gap:6px;flex-wrap:wrap">
+          <button id="btnCorpCsv" class="btn btn-emerald btn-sm" type="button">📥 조건결과 CSV</button>
+          <button id="btnCorpReset" class="btn btn-sm" type="button">초기화</button>
+        </div>
+      </div>
+
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;margin-bottom:10px">
+        <div class="domain-box" style="padding:8px 10px"><div style="font-size:11px;color:var(--muted)">조회 법인</div><b style="font-size:15px">${fmt(filtered.length)}사</b></div>
+        <div class="domain-box" style="padding:8px 10px"><div style="font-size:11px;color:var(--muted)">DART 공시매출</div><b style="font-size:15px;color:#059669">${fmt(dartCnt)}사</b></div>
+        <div class="domain-box" style="padding:8px 10px"><div style="font-size:11px;color:var(--muted)">국민연금 추정매출</div><b style="font-size:15px;color:#4f46e5">${fmt(estCnt)}사</b></div>
+        <div class="domain-box" style="padding:8px 10px"><div style="font-size:11px;color:var(--muted)">합산 매출 규모</div><b style="font-size:15px">${totalRevEok >= 10000 ? `${fmtDec(totalRevEok / 10000, 1)}조원` : `${fmt(Math.round(totalRevEok))}억원`}</b></div>
       </div>
 
       <div class="toolbar">
@@ -2283,6 +2369,16 @@ function renderCorpTab() {
         <select id="fCorpSd" class="select">
           <option value="">전국 시도</option>
           ${sidos.map((s) => `<option value="${s.sd}" ${S.corpSd === s.sd ? 'selected' : ''}>${esc(s.n)}</option>`).join('')}
+        </select>
+        <select id="fCorpRev" class="select">
+          <option value="" ${S.corpRevMin === '' ? 'selected' : ''}>전체 매출</option>
+          <option value="dart" ${S.corpRevMin === 'dart' ? 'selected' : ''}>💰 DART 공시매출만</option>
+          <option value="any" ${S.corpRevMin === 'any' ? 'selected' : ''}>📊 공시+추정 매출 보유</option>
+          <option value="10" ${S.corpRevMin === '10' ? 'selected' : ''}>10억 이상</option>
+          <option value="50" ${S.corpRevMin === '50' ? 'selected' : ''}>50억 이상</option>
+          <option value="100" ${S.corpRevMin === '100' ? 'selected' : ''}>100억 이상</option>
+          <option value="500" ${S.corpRevMin === '500' ? 'selected' : ''}>500억 이상</option>
+          <option value="1000" ${S.corpRevMin === '1000' ? 'selected' : ''}>1,000억 이상</option>
         </select>
         <select id="fCorpType" class="select">
           <option value="">전체 시장</option>
@@ -2299,7 +2395,8 @@ function renderCorpTab() {
           <option value="3" ${S.corpStatus === '3' ? 'selected' : ''}>폐업자</option>
         </select>
         <select id="fCorpSort" class="select">
-          <option value="rev" ${S.corpSort === 'rev' ? 'selected' : ''}>매출 높은순</option>
+          <option value="rev" ${S.corpSort === 'rev' ? 'selected' : ''}>매출 높은순 (공시+추정)</option>
+          <option value="dartRev" ${S.corpSort === 'dartRev' ? 'selected' : ''}>DART 공시매출순</option>
           <option value="emp" ${S.corpSort === 'emp' ? 'selected' : ''}>국민연금 인원순</option>
           <option value="net" ${S.corpSort === 'net' ? 'selected' : ''}>최근 순증(채용)순</option>
           <option value="est" ${S.corpSort === 'est' ? 'selected' : ''}>최근 설립순</option>
@@ -2310,12 +2407,17 @@ function renderCorpTab() {
         <table class="data-table">
           <thead>
             <tr>
-              <th>기업명</th><th>시장</th><th>대표자</th><th>업종</th><th>매출액</th><th>국민연금(순증)</th><th>국세청</th><th>소재지</th>
+              <th>기업명</th><th>시장</th><th>대표자</th><th>업종</th><th>매출액 (공시/추정)</th><th>국민연금(순증)</th><th>국세청</th><th>소재지</th>
             </tr>
           </thead>
           <tbody>
             ${pageRows.map((x) => {
-              const rev = x.enr?.[0] ? `${fmtDec(x.enr[0] / 1e8, 1)}억` : '-';
+              const ri = x.revInfo;
+              const revHtml = ri.kind === 'dart'
+                ? `<b style="color:#059669">${fmtRevEok(ri.won)}</b> <span style="font-size:10px;padding:1px 5px;border-radius:4px;background:rgba(16,185,129,.14);color:#047857;font-weight:700">공시</span>`
+                : (ri.kind === 'est'
+                  ? `<b style="color:#4f46e5" title="국민연금 ${fmt(ri.emp)}명 × 월 ${fmtDec(ri.wage / 1e4, 0)}만 × 12 × 업종배수 ${ri.mult}x">~${fmtRevEok(ri.won)}</b> <span style="font-size:10px;padding:1px 5px;border-radius:4px;background:rgba(79,70,229,.12);color:#4f46e5;font-weight:700">추정</span>`
+                  : '<span style="color:var(--muted)">-</span>');
               const emp = x.enr?.[12] || x.enr?.[9] || 0;
               const net = (x.enr?.[13] || 0) - (x.enr?.[14] || 0);
               return `
@@ -2324,7 +2426,7 @@ function renderCorpTab() {
                   <td><span class="tag ${x.r[5] <= 1 ? 'tag-corp' : 'tag-gray'}">${esc(corpTypes[x.r[5]] || '기타')}</span></td>
                   <td>${esc(x.r[4] || '-')}</td>
                   <td style="max-width:170px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(inds[x.r[12]] || '-')}</td>
-                  <td><b>${rev}</b></td>
+                  <td style="white-space:nowrap">${revHtml}</td>
                   <td>${emp ? `${fmt(emp)}명` : '-'}${net ? ` <span style="color:${net > 0 ? 'var(--c-sbiz)' : 'var(--c-re)'}">(${net > 0 ? '+' : ''}${net})</span>` : ''}</td>
                   <td>${stLabel(x.stCode)}</td>
                   <td style="max-width:210px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--muted)">${esc(x.r[7] || '-')}</td>
@@ -2347,11 +2449,24 @@ function renderCorpTab() {
   let timer = null;
   $('fCorpQ').addEventListener('input', (e) => { clearTimeout(timer); timer = setTimeout(() => { S.corpQ = e.target.value; S.corpPage = 1; renderCorpTab(); }, 220); });
   $('fCorpSd').addEventListener('change', (e) => { S.corpSd = e.target.value; S.corpPage = 1; renderCorpTab(); });
+  $('fCorpRev').addEventListener('change', (e) => { S.corpRevMin = e.target.value; S.corpPage = 1; renderCorpTab(); });
   $('fCorpType').addEventListener('change', (e) => { S.corpType = e.target.value; S.corpPage = 1; renderCorpTab(); });
   $('fCorpTag').addEventListener('change', (e) => { S.corpTag = e.target.value; S.corpPage = 1; renderCorpTab(); });
   $('fCorpStatus').addEventListener('change', (e) => { S.corpStatus = e.target.value; S.corpPage = 1; renderCorpTab(); });
   $('fCorpSort').addEventListener('change', (e) => { S.corpSort = e.target.value; S.corpPage = 1; renderCorpTab(); });
-  $('btnCorpReset').addEventListener('click', () => { S.corpQ = ''; S.corpSd = ''; S.corpType = ''; S.corpTag = ''; S.corpStatus = ''; S.corpPage = 1; renderCorpTab(); });
+  $('btnCorpReset').addEventListener('click', () => { S.corpQ = ''; S.corpSd = ''; S.corpRevMin = ''; S.corpType = ''; S.corpTag = ''; S.corpStatus = ''; S.corpPage = 1; renderCorpTab(); });
+  $('btnCorpCsv').addEventListener('click', () => {
+    downloadCsv(
+      `기업분석_${getTodayKstIso()}.csv`,
+      ['기업명', '시장', '대표자', '사업자번호', '업종', '매출액(억)', '매출구분', '국민연금인원', '전화번호', '주소'],
+      filtered.slice(0, 5000).map((x) => [
+        x.r[0], corpTypes[x.r[5]] || '기타', x.r[4] || '', x.r[6] || '', inds[x.r[12]] || '',
+        x.revInfo.won > 0 ? Number((x.revInfo.won / 1e8).toFixed(1)) : '', x.revInfo.label || '-',
+        x.enr?.[12] || x.enr?.[9] || 0, x.r[8] || '', x.r[7] || '',
+      ])
+    );
+    toast(`📥 기업분석 조건결과 ${fmt(Math.min(filtered.length, 5000))}사 CSV 다운로드 완료`);
+  });
   $('corpPrev').addEventListener('click', () => { if (S.corpPage > 1) { S.corpPage--; renderCorpTab(); } });
   $('corpNext').addEventListener('click', () => { if (S.corpPage < maxPage) { S.corpPage++; renderCorpTab(); } });
   $('mainStage').querySelectorAll('tr[data-corp-idx]').forEach((tr) => {
@@ -2368,9 +2483,10 @@ function openCorpDrawer(idx) {
   const corpTypes = S.core.corpMeta.corp || [];
   const tags = S.corpTags.filter((t) => t.set.has(bizClean)).map((t) => t.label);
   const reg = S.fusionByRid.get(r[15]);
+  const revInfo = resolveCorpRevenue(r, enr, inds);
 
-  // 3-year revenue SVG bars
-  let chartHtml = '<div style="font-size:12px;color:var(--muted)">재무 데이터 미수록 법인</div>';
+  // 3-year DART revenue SVG bars OR NPS Payroll-Calibrated Estimated Revenue card
+  let chartHtml = '<div style="font-size:12px;color:var(--muted)">DART 공시 및 국민연금 급여 데이터 미수록 법인</div>';
   if (enr && (enr[0] || enr[1] || enr[2])) {
     const vals = [
       { yr: '전전기', rev: (enr[2] || 0) / 1e8, op: (enr[5] || 0) / 1e8 },
@@ -2390,6 +2506,18 @@ function openCorpDrawer(idx) {
         }).join('')}
       </div>
     `;
+  } else if (revInfo.kind === 'est') {
+    chartHtml = `
+      <div class="domain-box" style="border-color:#c7d2fe;background:rgba(79,70,229,.05)">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+          <span style="font-size:12px;font-weight:800;color:#4f46e5">📊 국민연금 실급여 기반 추정 연매출</span>
+          <b style="font-size:16px;color:#4f46e5">약 ${fmtRevEok(revInfo.won)}원</b>
+        </div>
+        <div style="font-size:11.5px;color:var(--muted);line-height:1.55">
+          • 산출 근거: 국민연금 <b>${fmt(revInfo.emp)}명</b> × 월평균급여 <b>${fmtDec(revInfo.wage / 1e4, 0)}만원</b> × 12개월 (연 인건비 약 ${fmtRevEok(revInfo.payroll)}원) × 동종업계 DART 실측 배수 <b>${revInfo.mult}x</b><br/>
+          • 비상장·비외감 법인의 영업 규모 가늠용 실측 보정 추정치입니다.
+        </div>
+      </div>`;
   }
 
   openDrawer({
@@ -2408,17 +2536,18 @@ function openCorpDrawer(idx) {
         <div class="domain-stat-row"><span>전화 / 홈페이지</span><b>${esc(r[8] || '-')} ${r[10] ? `· <a href="https://${esc(r[10].replace(/^https?:\/\//, ''))}" target="_blank" rel="noopener">웹사이트</a>` : ''}</b></div>
       </div>
 
-      <h4 style="margin:12px 0 6px;font-size:13px">📊 3개년 매출 추이 (DART)</h4>
+      <h4 style="margin:12px 0 6px;font-size:13px">📊 매출 분석 (${revInfo.kind === 'dart' ? 'DART 3개년 공시' : (revInfo.kind === 'est' ? '국민연금 실급여 추정' : '미수록')})</h4>
       ${chartHtml}
 
       ${enr ? `<div class="domain-box" style="margin-top:12px">
-        <div class="domain-stat-row"><span>당기 영업이익 / 순이익</span><b>${enr[3] ? fmtDec(enr[3] / 1e8, 1) + '억' : '-'} / ${enr[6] ? fmtDec(enr[6] / 1e8, 1) + '억' : '-'}</b></div>
+        <div class="domain-stat-row"><span>매출액 (${revInfo.label || '미수록'})</span><b style="color:${revInfo.kind === 'dart' ? '#059669' : '#4f46e5'}">${revInfo.won > 0 ? `${revInfo.kind === 'est' ? '~' : ''}${fmtRevEok(revInfo.won)}원` : '-'}${revInfo.won > 0 && (enr[12] || enr[9]) > 0 ? ` (1인당 ${fmtDec((revInfo.won / (enr[12] || enr[9])) / 1e8, 1)}억)` : ''}</b></div>
+        <div class="domain-stat-row"><span>당기 영업이익 / 순이익</span><b>${enr[3] ? `${fmtDec(enr[3] / 1e8, 1)}억${enr[0] > 0 ? ` (${(enr[3] / enr[0] * 100).toFixed(1)}%)` : ''}` : '-'} / ${enr[6] ? fmtDec(enr[6] / 1e8, 1) + '억' : '-'}</b></div>
         <div class="domain-stat-row"><span>국민연금 가입자</span><b>${fmt(enr[12] || enr[9] || 0)}명 (신규 +${fmt(enr[13] || 0)} / 퇴사 -${fmt(enr[14] || 0)})</b></div>
-        <div class="domain-stat-row"><span>추정 평균연봉 / 월급</span><b>${enr[10] ? fmtDec(enr[10] / 1e4, 0) + '만원' : (enr[15] ? `월 ${fmtDec(enr[15] / 1e4, 0)}만원` : '-')}</b></div>
+        <div class="domain-stat-row"><span>추정 평균연봉 / 월급</span><b>${enr[10] ? fmtDec(enr[10] / 1e4, 0) + '만원' : (enr[15] ? `월 ${fmtDec(enr[15] / 1e4, 0)}만원 (연 ${fmtDec(enr[15] * 12 / 1e4, 0)}만원)` : '-')}</b></div>
       </div>` : ''}
 
       ${(() => {
-        const revNow = enr?.[0] || 0, revPrev = enr?.[1] || 0;
+        const revNow = revInfo.won || 0, revPrev = enr?.[1] || 0;
         const yoy = revPrev > 0 ? Math.round(((revNow - revPrev) / revPrev) * 1000) / 10 : null;
         const emp = enr?.[12] || enr?.[9] || 0;
         const netHire = (enr?.[13] || 0) - (enr?.[14] || 0);

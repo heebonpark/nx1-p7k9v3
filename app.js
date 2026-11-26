@@ -184,6 +184,7 @@ const S = {
   bidMapMode: 'cluster', bidMapBase: 'vbase', bidWms: { cadastral: false, zoning: false },
   bidLeafletMap: null, bidLeafletLayer: null, bidLeafletTile: null, bidLeafletHybrid: null, bidLeafletWms: {},
   bidSync: { syncing: false, lastAt: '', added: 0, liveTotal: 0 },
+  awardCache: { loading: false, loaded: false, list: [] },
   bldQ: '', bldSector: '', bldPage: 1,
   // Sbiz filters & v6 Split-View / YYYYMM state
   sbizQ: '', sbizSgg: '', sbizL1: '', sbizOnly2026: false, sbizView: 'stores', sbizPage: 1,
@@ -3067,6 +3068,203 @@ function wireBidPriceSim() {
   calc();
 }
 
+async function ensureAwardHistoryLoaded() {
+  if (S.awardCache.loaded) return S.awardCache.list;
+  if (S.awardCache.loading) {
+    for (let i = 0; i < 40 && S.awardCache.loading; i++) await new Promise((r) => setTimeout(r, 150));
+    return S.awardCache.list;
+  }
+  const { dataGoEnc } = getApiKeys();
+  if (!dataGoEnc) return [];
+  S.awardCache.loading = true;
+  try {
+    const nowMs = Date.now();
+    const kst = (ms) => {
+      const d = new Date(ms + 9 * 3600000);
+      const p = (n) => String(n).padStart(2, '0');
+      const ymd = `${d.getUTCFullYear()}${p(d.getUTCMonth() + 1)}${p(d.getUTCDate())}`;
+      return { ymd, dt: `${ymd}${p(d.getUTCHours())}${p(d.getUTCMinutes())}` };
+    };
+    const bgnDt = `${kst(nowMs - 14 * 86400000).ymd}0000`;
+    const endDt = kst(nowMs).dt;
+    const ops = [
+      ['용역', 'getScsbidListSttusServc'],
+      ['공사', 'getScsbidListSttusCnstwk'],
+      ['물품', 'getScsbidListSttusThng'],
+    ];
+    const all = [];
+    await Promise.all(ops.map(async ([div, op]) => {
+      try {
+        const u = `https://apis.data.go.kr/1230000/as/ScsbidInfoService/${op}?serviceKey=${dataGoEnc}&inqryDiv=1&inqryBgnDt=${bgnDt}&inqryEndDt=${endDt}&pageNo=1&numOfRows=500&type=json`;
+        const r = await fetch(u);
+        if (!r.ok) return;
+        const j = await r.json();
+        const raw = j?.response?.body?.items;
+        const arr = Array.isArray(raw) ? raw : (raw?.item ? (Array.isArray(raw.item) ? raw.item : [raw.item]) : []);
+        for (const x of arr) {
+          const rate = parseFloat(x.sucsfbidRate);
+          if (!x.bidwinnrNm && !rate) continue;
+          all.push({
+            div,
+            bidNo: x.bidNtceNo || '',
+            title: x.bidNtceNm || '',
+            org: x.dminsttNm || '',
+            winner: x.bidwinnrNm || '-',
+            ceo: x.bidwinnrCeoNm || '',
+            tel: x.bidwinnrTelNo || '',
+            amt: Number(x.sucsfbidAmt || 0) || 0,
+            rate: Number.isFinite(rate) ? rate : null,
+            bidders: Number(x.prtcptCnum || 0) || 0,
+            date: String(x.fnlSucsfDate || x.rlOpengDt || '').slice(0, 10),
+          });
+        }
+      } catch {}
+    }));
+    all.sort((a, b) => String(b.date).localeCompare(String(a.date)));
+    S.awardCache.list = all;
+    S.awardCache.loaded = true;
+    return all;
+  } finally {
+    S.awardCache.loading = false;
+  }
+}
+
+function matchAwardBenchmarks(o, awards) {
+  if (!awards?.length) return { sameOrg: [], similar: [], avgRate: null, avgBidders: null };
+  const normOrg = (s) => String(s || '').replace(/\s+/g, '').replace(/(주식회사|\(주\)|특별자치시|특별자치도|광역시|특별시)/g, '').toLowerCase();
+  const oOrg = normOrg(o.org);
+  const orgTokens = String(o.org || '').split(/\s+/).filter((t) => t.length >= 2);
+  const sameOrg = awards.filter((a) => {
+    const aOrg = normOrg(a.org);
+    if (!aOrg || !oOrg) return false;
+    return aOrg === oOrg || (oOrg.length >= 4 && (aOrg.includes(oOrg) || oOrg.includes(aOrg))) || (orgTokens.length >= 2 && orgTokens.every((t) => a.org.includes(t)));
+  });
+  const titleKws = String(`${o.title || ''} ${o.field || ''}`).match(/[가-힣A-Za-z0-9]{2,}/g) || [];
+  const stop = new Set(['2026', '2026년', '2027', '2027년', '공사', '용역', '물품', '구매', '입찰', '공고', '긴급', '사업', '설치', '교체', '유지', '관리', '위탁']);
+  const kws = [...new Set(titleKws.filter((w) => !stop.has(w) && w.length >= 2))].slice(0, 6);
+  const similar = awards.filter((a) => {
+    if (sameOrg.includes(a)) return false;
+    const hay = `${a.title} ${a.org}`;
+    return kws.some((k) => hay.includes(k));
+  });
+  const pool = [...sameOrg.slice(0, 8), ...similar.slice(0, Math.max(0, 8 - sameOrg.length))];
+  const rates = pool.map((x) => x.rate).filter((v) => v !== null && v > 20 && v <= 105);
+  const bids = pool.map((x) => x.bidders).filter((v) => v > 0);
+  const avgRate = rates.length ? (rates.reduce((s, v) => s + v, 0) / rates.length) : null;
+  const avgBidders = bids.length ? (bids.reduce((s, v) => s + v, 0) / bids.length) : null;
+  return { sameOrg: sameOrg.slice(0, 5), similar: similar.slice(0, 5), pool: pool.slice(0, 5), avgRate, avgBidders, totalScanned: awards.length };
+}
+
+async function jumpOppTo1kmCatchment(o) {
+  const reg = S.fusionByRid.get(o._fusionRid ?? o.rid);
+  const lat = o.lat || (reg ? regionCentroidLatLon(reg.rid)[0] : 37.5665);
+  const lon = o.lon || (reg ? regionCentroidLatLon(reg.rid)[1] : 126.9780);
+  closeDrawer();
+  S.gisRadius = 1000;
+  S.sbizView = 'map';
+  switchTab('sbiz');
+  if (reg?.sidoSlug && S.sbizActiveSlug !== reg.sidoSlug) {
+    try { await loadSbizSido(reg.sidoSlug); } catch {}
+  }
+  setTimeout(() => {
+    const active = S.sbizCache.get(S.sbizActiveSlug) || null;
+    if (S.leafletMap) S.leafletMap.setView([lat, lon], 15);
+    runRadiusCatchment(lat, lon, active, `${o.org || o.title} (입찰현장)`);
+    toast(`🗺️ ${o.org || '현장'} 반경 1km 주변 상권·필지·영업처 분석 완료!`);
+  }, 380);
+}
+
+function openBidReviewReport(o) {
+  const dt = o.detail || {};
+  const files = o.attachments || [];
+  const partners = findBidPartnerBuilders(o, 5);
+  const bm = S.awardCache.loaded ? matchAwardBenchmarks(o, S.awardCache.list) : null;
+  const baseWon = dt.asignWon || dt.presmptWon || (o.budgetMan > 0 ? o.budgetMan * 10000 : 0);
+  const lwlt = parseFloat(String(dt.awardRate || '').replace('%', '')) || 87.745;
+  const simRows = baseWon > 0 ? [-2.0, -1.0, 0.0, 0.5, 1.0, 2.0].map((s) => {
+    const est = Math.round(baseWon * (1 + s / 100));
+    const bid = Math.ceil((est * (lwlt / 100)) / 1000) * 1000;
+    return `<tr><td>${s >= 0 ? '+' : ''}${s.toFixed(1)}%</td><td>${fmt(est)}원</td><td><b>${fmt(bid)}원</b></td><td>${fmtDec(bid / 1e8, 2)}억</td></tr>`;
+  }).join('') : '';
+  const todayStr = getTodayKstIso();
+  const html = `<!doctype html><html lang="ko"><head><meta charset="utf-8"><title>수주 검토서 - ${esc(o.title)}</title>
+  <style>
+    @page{size:A4;margin:11mm}
+    body{font-family:-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic',sans-serif;color:#0f172a;margin:0;padding:18px;font-size:11.5px;line-height:1.45}
+    .bar{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;padding-bottom:8px;border-bottom:2px solid #1e293b}
+    .btn{padding:6px 14px;border:none;border-radius:7px;background:#4f46e5;color:#fff;font-weight:700;cursor:pointer;font-size:12px}
+    .kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin:10px 0}
+    .kpi{border:1px solid #cbd5e1;border-radius:8px;padding:8px 10px;background:#f8fafc}
+    .kpi .l{font-size:10px;color:#64748b}.kpi .v{font-size:14px;font-weight:800;color:#0f172a;margin-top:2px}
+    h3{font-size:12.5px;margin:12px 0 5px;padding-left:7px;border-left:3.5px solid #4f46e5}
+    table{width:100%;border-collapse:collapse;font-size:11px;margin-bottom:6px}
+    th,td{border:1px solid #cbd5e1;padding:4px 7px;text-align:left}
+    th{background:#f1f5f9;font-weight:700;width:18%}
+    .grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+    .sign{display:grid;grid-template-columns:1fr 220px;gap:12px;margin-top:12px;align-items:end}
+    .sign table th,.sign table td{text-align:center;width:auto}
+    @media print{.no-print{display:none!important}body{padding:0}}
+  </style></head><body>
+  <div class="bar">
+    <div>
+      <div style="font-size:10px;color:#4f46e5;font-weight:800">NEXUSONE PRO · 입찰 수주 검토 보고서 (1P Executive Brief)</div>
+      <h1 style="font-size:16px;margin:2px 0 0">${esc(o.title)}</h1>
+    </div>
+    <div style="text-align:right">
+      <div style="font-size:10.5px;color:#475569">작성일: ${todayStr}</div>
+      <button class="btn no-print" onclick="window.print()" style="margin-top:4px">🖨️ A4 인쇄 / PDF 저장</button>
+    </div>
+  </div>
+  <div class="kpis">
+    <div class="kpi"><div class="l">배정예산 / 추정가격</div><div class="v">${baseWon > 0 ? fmtDec(baseWon / 1e8, 2) + '억' : '미기재'}</div></div>
+    <div class="kpi"><div class="l">입찰마감 (D-Day)</div><div class="v">${esc(o.closeDate || '-')}${o.dday !== null && o.dday >= 0 ? ` (D-${o.dday})` : ''}</div></div>
+    <div class="kpi"><div class="l">낙찰하한율 / ICP</div><div class="v">${esc(dt.awardRate || `${lwlt}%`)} · ${o.icpScore}점</div></div>
+    <div class="kpi"><div class="l">첨부서류 / 공고구분</div><div class="v">${files.length}건 · ${esc(dt.ntceKind || '등록공고')}</div></div>
+  </div>
+  <h3>1. 입찰 공고 상세내역 및 일정</h3>
+  <table>
+    <tr><th>발주/수요기관</th><td>${esc(o.org || '-')}</td><th>공고번호/차수</th><td>${esc(dt.bidNo || o.id)}</td></tr>
+    <tr><th>지역 / 분야</th><td>${esc(o._regionFull || o.region || '전국')} · ${esc(o.field)}</td><th>계약/낙찰방법</th><td>${esc([dt.contractMethod, dt.awardMethod].filter(Boolean).join(' / ') || o.method || '-')}</td></tr>
+    <tr><th>공고 / 개시일시</th><td>${esc(o.pubDateTime || o.pubDate || '-')} / ${esc(dt.bidBeginDt || '-')}</td><th>마감 / 개찰일시</th><td>${esc(dt.bidClseDt || o.closeDate || '-')} / ${esc(dt.opengDt || '-')}</td></tr>
+    <tr><th>예가방식 / 공동도급</th><td>${esc(dt.priceMethod || '-')} · ${esc(dt.jointMethod || '-')}</td><th>담당자 / 업종제한</th><td>${esc([dt.ofclNm, dt.ofclTel, dt.ofclEmail].filter(Boolean).join(' · ') || '-')} / ${esc(dt.industryLimit || '-')}</td></tr>
+  </table>
+  <div class="grid2">
+    <div>
+      <h3>2. 사정률별 투찰가 시뮬레이션 (하한율 ${lwlt}%)</h3>
+      ${simRows ? `<table><tr><th>사정률</th><th>예상 예정가격</th><th>권장 투찰 하한가</th><th>억 환산</th></tr>${simRows}</table>` : '<p>예산 미기재 공고입니다.</p>'}
+    </div>
+    <div>
+      <h3>3. 과거 낙찰·경쟁사 벤치마크 (최근 14일)</h3>
+      ${bm && bm.pool.length ? `
+        <div style="font-size:11px;margin-bottom:4px">평균 낙찰률: <b>${bm.avgRate ? bm.avgRate.toFixed(2) + '%' : '-'}</b> · 평균 경쟁사: <b>${bm.avgBidders ? bm.avgBidders.toFixed(1) + '개사' : '-'}</b></div>
+        <table><tr><th>낙찰사</th><th>낙찰률</th><th>참가</th><th>일자</th></tr>
+        ${bm.pool.slice(0, 4).map((x) => `<tr><td>${esc(x.winner)}</td><td>${x.rate ? x.rate.toFixed(2) + '%' : '-'}</td><td>${x.bidders}사</td><td>${esc(x.date)}</td></tr>`).join('')}
+        </table>` : '<p style="color:#64748b">상세 서랍에서 "최근 낙찰·경쟁사 분석" 조회 후 출력하면 실측 낙찰 데이터가 함께 반영됩니다.</p>'}
+    </div>
+  </div>
+  <div class="grid2">
+    <div>
+      <h3>4. 공고 첨부서류 (${files.length}건)</h3>
+      ${files.length ? `<ul style="margin:4px 0 0 16px;padding:0">${files.map((f) => `<li>${esc(f.name)}</li>`).join('')}</ul>` : '<p style="color:#64748b">원문 공고 링크 참조</p>'}
+    </div>
+    <div>
+      <h3>5. 지역 추천 협력 파트너 TOP 5</h3>
+      ${partners.length ? `<table><tr><th>업체명</th><th>업종</th><th>매출</th><th>연락처</th></tr>${partners.map(({ r, ind }) => `<tr><td>${esc(r[0])}</td><td>${esc(ind)}</td><td>${r[14] > 0 ? fmt(Math.round(r[14])) + '억' : '-'}</td><td>${esc(r[6] || '-')}</td></tr>`).join('')}</table>` : '<p style="color:#64748b">전국/미지정 공고</p>'}
+    </div>
+  </div>
+  <div class="sign">
+    <div style="border:1px solid #cbd5e1;border-radius:8px;padding:8px 10px;background:#f8fafc">
+      <b>✅ 수주 검토 체크리스트</b><br>
+      [ ] 필수 면허·실적·지역제한 확인 &nbsp; [ ] 과업지시서·내역서 원가 산출 &nbsp; [ ] 공동도급/협력사 협의 &nbsp; [ ] 참가자격등록 및 투찰 마감 확인
+    </div>
+    <table><tr><th>담당</th><th>팀장</th><th>임원</th></tr><tr style="height:36px"><td></td><td></td><td></td></tr></table>
+  </div>
+  </body></html>`;
+  const w = window.open('', '_blank', 'width=900,height=1050');
+  if (!w) { toast('팝업이 차단되었습니다. 브라우저 팝업 허용 후 다시 눌러주세요.'); return; }
+  w.document.open(); w.document.write(html); w.document.close();
+}
+
 function openOppDrawer(o) {
   const reg = S.fusionByRid.get(o._fusionRid ?? o.rid);
   const dt = o.detail || null;
@@ -3144,6 +3342,14 @@ function openOppDrawer(o) {
       ${buildBidPriceSimHtml(o)}
 
       <div class="domain-box" style="margin-top:10px">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:6px">
+          <h4 style="margin:0">📊 과거 낙찰결과 · 경쟁사 투찰률 분석</h4>
+          <button id="dwLoadAwards" class="btn btn-sm btn-primary" type="button">${S.awardCache.loaded ? '🔄 재분석' : '🔍 실시간 낙찰 분석'}</button>
+        </div>
+        <div id="dwAwardBox" style="font-size:12px;color:var(--muted)">나라장터 낙찰정보 API(최근 14일 용역·공사·물품)에서 동일 발주처·유사 공고의 평균 낙찰률과 주요 낙찰사를 분석합니다.</div>
+      </div>
+
+      <div class="domain-box" style="margin-top:10px">
         <h4 style="margin:0 0 6px">🤝 지역 · 업종 추천 협력 파트너 TOP 5 (12,198사 DB)</h4>
         <div id="dwPartnerBox" style="font-size:12px;color:var(--muted)">🔍 지역·업종 적합 건설·시설사 매칭 중…</div>
       </div>
@@ -3164,16 +3370,62 @@ function openOppDrawer(o) {
     `,
     foot: `
       <button id="dwOppPipe" class="btn btn-primary btn-sm">💼 파이프라인 담기</button>
+      <button id="dwOppReport" class="btn btn-sm">📑 A4 검토서</button>
       <button id="dwOppIcs" class="btn btn-emerald btn-sm">📅 캘린더(.ics)</button>
-      ${o.url ? `<a class="btn btn-amber btn-sm" href="${esc(o.url)}" target="_blank" rel="noopener">🔗 원문 공고 열기</a>` : ''}
-      ${reg ? `<button id="dwOpp360" class="btn btn-sm">⚡ ${esc(reg.name)} 360° 보기</button>` : ''}
+      <button id="dwOpp1km" class="btn btn-sm">🗺️ 반경 1km 영업처</button>
+      ${o.url ? `<a class="btn btn-amber btn-sm" href="${esc(o.url)}" target="_blank" rel="noopener">🔗 원문</a>` : ''}
+      ${reg ? `<button id="dwOpp360" class="btn btn-sm">⚡ ${esc(reg.name)} 360°</button>` : ''}
     `,
     onMount: () => {
       wireBidPriceSim();
+      const renderAwardBox = (awards) => {
+        const box = $('dwAwardBox');
+        if (!box) return;
+        const bm = matchAwardBenchmarks(o, awards);
+        if (!bm.pool.length) {
+          box.innerHTML = `<span>최근 14일 낙찰 ${fmt(bm.totalScanned)}건 중 동일 기관/유사 공고 이력이 없습니다.</span>`;
+          return;
+        }
+        box.innerHTML = `
+          <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:8px;text-align:center">
+            <div style="padding:6px;border-radius:7px;background:var(--bg);border:1px solid var(--border)"><div style="font-size:10.5px;color:var(--muted)">평균 낙찰률</div><b style="font-size:13.5px;color:#4f46e5">${bm.avgRate ? bm.avgRate.toFixed(2) + '%' : '-'}</b></div>
+            <div style="padding:6px;border-radius:7px;background:var(--bg);border:1px solid var(--border)"><div style="font-size:10.5px;color:var(--muted)">평균 경쟁률</div><b style="font-size:13.5px;color:#059669">${bm.avgBidders ? bm.avgBidders.toFixed(1) + '개사' : '-'}</b></div>
+            <div style="padding:6px;border-radius:7px;background:var(--bg);border:1px solid var(--border)"><div style="font-size:10.5px;color:var(--muted)">동일기관/유사</div><b style="font-size:13.5px">${bm.sameOrg.length} / ${bm.similar.length}건</b></div>
+          </div>
+          ${bm.avgRate ? `<button id="dwApplyAvgRate" type="button" class="btn btn-sm" style="width:100%;margin-bottom:8px">🎯 평균 낙찰률(${bm.avgRate.toFixed(2)}%)을 투찰 시뮬레이터에 반영</button>` : ''}
+          <div style="display:flex;flex-direction:column;gap:5px">
+            ${bm.pool.map((x) => `
+              <div style="padding:6px 8px;border:1px solid var(--border);border-radius:7px;background:var(--bg);font-size:11.5px">
+                <div style="font-weight:700;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(x.title)}</div>
+                <div style="display:flex;justify-content:space-between;gap:6px;margin-top:2px;font-size:11px;color:var(--muted)">
+                  <span>🏆 <b>${esc(x.winner)}</b> (${esc(x.org)})</span>
+                  <span style="white-space:nowrap;color:#4f46e5;font-weight:800">${x.rate ? x.rate.toFixed(2) + '%' : '-'} · ${x.bidders}사 · ${x.amt > 0 ? fmtDec(x.amt / 1e8, 2) + '억' : '-'}</span>
+                </div>
+              </div>`).join('')}
+          </div>`;
+        $('dwApplyAvgRate')?.addEventListener('click', () => {
+          const rEl = $('simLwltRate');
+          if (rEl && bm.avgRate) {
+            rEl.value = bm.avgRate.toFixed(3);
+            rEl.dispatchEvent(new Event('input'));
+            toast(`🎯 과거 평균 낙찰률 ${bm.avgRate.toFixed(2)}% 시뮬레이터 반영 완료`);
+          }
+        });
+      };
+      if (S.awardCache.loaded) renderAwardBox(S.awardCache.list);
+      $('dwLoadAwards')?.addEventListener('click', async (e) => {
+        const btn = e.currentTarget;
+        btn.disabled = true; btn.textContent = '분석 중…';
+        const awards = await ensureAwardHistoryLoaded();
+        btn.disabled = false; btn.textContent = '🔄 재분석';
+        renderAwardBox(awards);
+      });
       $('dwOppPipe')?.addEventListener('click', () => addToPipeline({
         id: `opp:${o.id}`, domain: 'bid', title: o.title, sub: `${o.org} · ${o.field}`, region: o.region, valueMan: o.budgetMan,
       }));
+      $('dwOppReport')?.addEventListener('click', () => openBidReviewReport(o));
       $('dwOppIcs')?.addEventListener('click', () => downloadOppIcs(o));
+      $('dwOpp1km')?.addEventListener('click', () => jumpOppTo1kmCatchment(o));
       $('dwOpp360')?.addEventListener('click', () => { closeDrawer(); S.selectedRid = reg.rid; switchTab('overview'); });
       ensureBuildersLoaded().then(() => {
         const box = $('dwPartnerBox');

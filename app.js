@@ -126,6 +126,288 @@ function saveOpts() {
   localStorage.setItem(OPT_KEY, JSON.stringify(S.opts));
 }
 
+// ===== ADMIN SALES / LICENSE FEATURE-FLAG CONFIGURATOR (v18) =====
+const ADMIN_KEY = 'nx1_admin_sales_v1';
+const SALES_PACKAGES = {
+  standard: {
+    label: '🟢 STANDARD',
+    sub: '입찰 실무형 (크몽 29만원)',
+    tabs: { overview: false, corp: false, bid: true, sbiz: false, realestate: false, hub: true },
+    features: { bidDetail: true, bidSim: true, bidAwards: false, bidPartners: false, bidA4: false, bid1km: false },
+  },
+  deluxe: {
+    label: '🔵 DELUXE',
+    sub: '입찰+기업 통합형 (크몽 59만원)',
+    tabs: { overview: true, corp: true, bid: true, sbiz: false, realestate: false, hub: true },
+    features: { bidDetail: true, bidSim: true, bidAwards: true, bidPartners: true, bidA4: true, bid1km: false },
+  },
+  premium: {
+    label: '🟣 PREMIUM',
+    sub: '4대 도메인 전체 (크몽 119만원)',
+    tabs: { overview: true, corp: true, bid: true, sbiz: true, realestate: true, hub: true },
+    features: { bidDetail: true, bidSim: true, bidAwards: true, bidPartners: true, bidA4: true, bid1km: true },
+  },
+  enterprise: {
+    label: '👑 ENTERPRISE',
+    sub: '화이트라벨 B2B (250만원+)',
+    tabs: { overview: true, corp: true, bid: true, sbiz: true, realestate: true, hub: true },
+    features: { bidDetail: true, bidSim: true, bidAwards: true, bidPartners: true, bidA4: true, bid1km: true },
+  },
+};
+
+function defaultAdminConfig() {
+  return {
+    pkg: 'premium',
+    brandTitle: '넥서스원',
+    brandBadge: 'PRO',
+    brandSub: '',
+    hideAdminBtn: false,
+    tabs: { ...SALES_PACKAGES.premium.tabs },
+    features: { ...SALES_PACKAGES.premium.features },
+  };
+}
+
+function encodeAdminCfg(cfg) {
+  const compact = {
+    p: cfg.pkg,
+    bt: cfg.brandTitle,
+    bb: cfg.brandBadge,
+    bs: cfg.brandSub,
+    ha: cfg.hideAdminBtn ? 1 : 0,
+    t: Object.entries(cfg.tabs).filter(([, v]) => v).map(([k]) => k),
+    f: Object.entries(cfg.features).filter(([, v]) => v).map(([k]) => k),
+  };
+  const bytes = new TextEncoder().encode(JSON.stringify(compact));
+  let bin = '';
+  bytes.forEach((b) => { bin += String.fromCharCode(b); });
+  return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+function decodeAdminCfg(b64) {
+  try {
+    const pad = b64.replace(/-/g, '+').replace(/_/g, '/') + '==='.slice((b64.length + 3) % 4);
+    const bin = atob(pad);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    const c = JSON.parse(new TextDecoder().decode(bytes));
+    const base = defaultAdminConfig();
+    if (c.p) base.pkg = c.p;
+    if (typeof c.bt === 'string' && c.bt) base.brandTitle = c.bt;
+    if (typeof c.bb === 'string') base.brandBadge = c.bb;
+    if (typeof c.bs === 'string') base.brandSub = c.bs;
+    if (c.ha !== undefined) base.hideAdminBtn = Boolean(c.ha);
+    if (Array.isArray(c.t)) Object.keys(base.tabs).forEach((k) => { base.tabs[k] = c.t.includes(k); });
+    if (Array.isArray(c.f)) Object.keys(base.features).forEach((k) => { base.features[k] = c.f.includes(k); });
+    return base;
+  } catch { return null; }
+}
+
+function loadAdminConfig() {
+  const params = new URLSearchParams(location.search);
+  const urlCfg = params.get('cfg');
+  if (urlCfg) {
+    const dec = decodeAdminCfg(urlCfg);
+    if (dec) {
+      if (params.get('admin') === '1') dec.hideAdminBtn = false;
+      try { localStorage.setItem(ADMIN_KEY, JSON.stringify(dec)); } catch {}
+      return dec;
+    }
+  }
+  const urlPkg = params.get('pkg');
+  if (urlPkg && SALES_PACKAGES[urlPkg]) {
+    const base = defaultAdminConfig();
+    base.pkg = urlPkg;
+    base.tabs = { ...SALES_PACKAGES[urlPkg].tabs };
+    base.features = { ...SALES_PACKAGES[urlPkg].features };
+    return base;
+  }
+  try {
+    const saved = JSON.parse(localStorage.getItem(ADMIN_KEY) || 'null');
+    if (saved) {
+      const base = defaultAdminConfig();
+      const merged = {
+        ...base, ...saved,
+        tabs: { ...base.tabs, ...(saved.tabs || {}) },
+        features: { ...base.features, ...(saved.features || {}) },
+      };
+      if (params.get('admin') === '1') merged.hideAdminBtn = false;
+      return merged;
+    }
+  } catch {}
+  return defaultAdminConfig();
+}
+
+function saveAdminConfig() {
+  try { localStorage.setItem(ADMIN_KEY, JSON.stringify(S.admin)); } catch {}
+}
+
+function applyAdminConfig(rerender = false) {
+  const cfg = S.admin || defaultAdminConfig();
+  const enabledTabs = Object.keys(cfg.tabs).filter((k) => cfg.tabs[k]);
+  if (!enabledTabs.length) { cfg.tabs.bid = true; enabledTabs.push('bid'); }
+
+  document.querySelectorAll('[data-tab]').forEach((el) => {
+    const k = el.dataset.tab;
+    el.classList.toggle('hidden', !cfg.tabs[k]);
+  });
+
+  const btEl = $('brandTitleEl');
+  if (btEl) {
+    btEl.innerHTML = `${esc(cfg.brandTitle || '넥서스원')}${cfg.brandBadge ? ` <span class="pro-chip">${esc(cfg.brandBadge)}</span>` : ''}`;
+  }
+  if (cfg.brandSub && $('brandMeta')) {
+    $('brandMeta').textContent = cfg.brandSub;
+  } else if (S.core && S.re && $('brandMeta')) {
+    $('brandMeta').textContent = `법인 ${fmt(S.core.stats.corpCount)} · 상가 ${fmt(S.core.stats.sbizCount)} · 입찰 ${fmt(S.opps.length)} · 청약 ${fmt(S.re.listings?.length || 0)}`;
+  }
+  document.title = `${cfg.brandTitle || '넥서스원'} ${cfg.brandBadge || 'PRO'} — 통합 영업 인텔리전스`;
+  $('btnAdminSales')?.classList.toggle('hidden', Boolean(cfg.hideAdminBtn));
+
+  if (!cfg.tabs[S.tab]) {
+    S.tab = enabledTabs[0];
+    document.querySelectorAll('[data-tab]').forEach((el) => el.classList.toggle('active', el.dataset.tab === S.tab));
+    if (rerender) renderCurrentTab();
+  } else if (rerender) {
+    renderCurrentTab();
+  }
+}
+
+function openAdminSalesModal() {
+  const cfg = S.admin;
+  const tabMeta = [
+    ['overview', '⚡ 통합 360° 커맨드', '229 시군구 융합지도·BCG·전략가중치'],
+    ['corp', '🏢 기업분석 (12만사)', '재무·매출·고용·업종 필터링 DB'],
+    ['bid', '🎯 입찰·사전규격·레이더', '실시간 나라장터·당일·건설사 1.2만'],
+    ['sbiz', '🏪 상권지도 (275만)', '브이월드 GIS·지적도·반경 상권진단'],
+    ['realestate', '🏠 청약·착공·인허가', '신축분양·건축인허가·K-apt 단지'],
+    ['hub', '🔌 API진단 · CRM', '파이프라인 관리·라이브 API 진단'],
+  ];
+  const featMeta = [
+    ['bidDetail', '📎 입찰 상세내역 · 첨부서류 다운로드', '공고문/과업지시서/내역서 직링크 + 상세표'],
+    ['bidSim', '🎯 투찰가 · 사정률 자동 시뮬레이터', '낙찰하한율 연동 사정률별 투찰 하한가'],
+    ['bidAwards', '📊 과거 낙찰결과 · 경쟁사 분석', 'ScsbidInfoService 평균 낙찰률·경쟁률'],
+    ['bidPartners', '🤝 지역 추천 협력 파트너 TOP 5', '12,198 건설·시설사 자동 매칭'],
+    ['bidA4', '📑 A4 수주 검토서 & 캘린더(.ics)', '인앱 1P 인쇄/PDF + 마감 일정 캘린더'],
+    ['bid1km', '🗺️ 현장 반경 1km 주변 영업처 점프', '입찰 현장 → 상권·필지·공시지가 즉시 이동'],
+  ];
+
+  $('adminBody').innerHTML = `
+    <div class="domain-box" style="margin-bottom:10px">
+      <h4 style="margin:0 0 8px">1. 크몽 · B2B 판매 패키지 원클릭 프리셋</h4>
+      <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:6px">
+        ${Object.entries(SALES_PACKAGES).map(([k, p]) => `
+          <button type="button" data-adm-pkg="${k}" class="btn btn-sm ${cfg.pkg === k ? 'btn-primary' : ''}" style="justify-content:flex-start;flex-direction:column;align-items:flex-start;padding:8px 10px;height:auto;text-align:left">
+            <span style="font-weight:800;font-size:12.5px">${p.label}</span>
+            <span style="font-size:11px;opacity:.85">${p.sub}</span>
+          </button>`).join('')}
+      </div>
+    </div>
+
+    <div class="domain-box" style="margin-bottom:10px">
+      <h4 style="margin:0 0 8px">2. 도메인 메뉴(탭) 노출 제어</h4>
+      <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:6px">
+        ${tabMeta.map(([k, lb, desc]) => `
+          <label style="display:flex;gap:7px;align-items:flex-start;padding:7px 8px;border:1px solid var(--border);border-radius:8px;cursor:pointer;background:var(--bg)">
+            <input type="checkbox" data-adm-tab="${k}" ${cfg.tabs[k] ? 'checked' : ''} style="margin-top:2px" />
+            <span><b style="font-size:12px;display:block">${lb}</b><span style="font-size:10.5px;color:var(--muted)">${desc}</span></span>
+          </label>`).join('')}
+      </div>
+    </div>
+
+    <div class="domain-box" style="margin-bottom:10px">
+      <h4 style="margin:0 0 8px">3. 입찰·영업 프리미엄 기능 노출 제어</h4>
+      <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:6px">
+        ${featMeta.map(([k, lb, desc]) => `
+          <label style="display:flex;gap:7px;align-items:flex-start;padding:7px 8px;border:1px solid var(--border);border-radius:8px;cursor:pointer;background:var(--bg)">
+            <input type="checkbox" data-adm-feat="${k}" ${cfg.features[k] ? 'checked' : ''} style="margin-top:2px" />
+            <span><b style="font-size:12px;display:block">${lb}</b><span style="font-size:10.5px;color:var(--muted)">${desc}</span></span>
+          </label>`).join('')}
+      </div>
+    </div>
+
+    <div class="domain-box">
+      <h4 style="margin:0 0 8px">4. 화이트라벨(구매사 브랜딩) & 납품 잠금</h4>
+      <div style="display:grid;grid-template-columns:1fr 90px;gap:6px;margin-bottom:6px">
+        <label style="font-size:11px;color:var(--muted)">서비스 브랜드명
+          <input id="admBrandTitle" class="input" value="${esc(cfg.brandTitle)}" placeholder="예: 한국보안 입찰인텔리전스" style="width:100%;margin-top:2px;padding:6px 8px;font-size:12px" />
+        </label>
+        <label style="font-size:11px;color:var(--muted)">배지
+          <input id="admBrandBadge" class="input" value="${esc(cfg.brandBadge)}" placeholder="PRO" style="width:100%;margin-top:2px;padding:6px 8px;font-size:12px" />
+        </label>
+      </div>
+      <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:8px">상단 서브타이틀 (비워두면 실시간 데이터 요약 자동 표시)
+        <input id="admBrandSub" class="input" value="${esc(cfg.brandSub)}" placeholder="예: ㈜OO건설 전용 공공입찰·영업기회 플랫폼" style="width:100%;margin-top:2px;padding:6px 8px;font-size:12px" />
+      </label>
+      <label style="display:flex;align-items:center;gap:7px;font-size:12px;cursor:pointer">
+        <input id="admHideBtn" type="checkbox" ${cfg.hideAdminBtn ? 'checked' : ''} />
+        <span><b>🔒 고객 납품 시 상단 '관리자' 버튼 숨기기</b> <span style="color:var(--muted)">(재진입: Ctrl+Shift+A 또는 ?admin=1)</span></span>
+      </label>
+    </div>
+  `;
+
+  $('adminFoot').innerHTML = `
+    <button id="admCopyUrl" class="btn btn-emerald btn-sm" type="button">🔗 고객 납품 URL 복사</button>
+    <button id="admCopyJson" class="btn btn-sm" type="button">📋 설정 JSON 복사</button>
+    <button id="admReset" class="btn btn-sm" type="button">🔄 마스터 풀모드 복원</button>
+    <button id="admSave" class="btn btn-primary btn-sm" type="button">✅ 즉시 적용</button>
+  `;
+
+  const syncFromForm = () => {
+    $('adminBody').querySelectorAll('[data-adm-tab]').forEach((el) => { S.admin.tabs[el.dataset.admTab] = el.checked; });
+    $('adminBody').querySelectorAll('[data-adm-feat]').forEach((el) => { S.admin.features[el.dataset.admFeat] = el.checked; });
+    S.admin.brandTitle = $('admBrandTitle')?.value.trim() || '넥서스원';
+    S.admin.brandBadge = $('admBrandBadge')?.value.trim() || '';
+    S.admin.brandSub = $('admBrandSub')?.value.trim() || '';
+    S.admin.hideAdminBtn = Boolean($('admHideBtn')?.checked);
+  };
+
+  $('adminBody').querySelectorAll('[data-adm-pkg]').forEach((b) => {
+    b.addEventListener('click', () => {
+      const k = b.dataset.admPkg;
+      S.admin.pkg = k;
+      S.admin.tabs = { ...SALES_PACKAGES[k].tabs };
+      S.admin.features = { ...SALES_PACKAGES[k].features };
+      saveAdminConfig();
+      applyAdminConfig(true);
+      openAdminSalesModal();
+      toast(`🛡️ ${SALES_PACKAGES[k].label} 패키지 구성 적용 완료`);
+    });
+  });
+
+  $('admSave')?.addEventListener('click', () => {
+    syncFromForm();
+    saveAdminConfig();
+    applyAdminConfig(true);
+    $('adminBackdrop')?.classList.add('hidden');
+    toast('✅ 판매 노출 서비스 설정이 즉시 반영되었습니다.');
+  });
+
+  $('admCopyUrl')?.addEventListener('click', () => {
+    syncFromForm();
+    const deliveryCfg = { ...S.admin, hideAdminBtn: true };
+    const base = `${location.origin}${location.pathname}`;
+    const url = `${base}?cfg=${encodeAdminCfg(deliveryCfg)}`;
+    navigator.clipboard?.writeText(url);
+    toast('🔗 고객 납품 전용 URL 복사 완료! (관리자 버튼 자동 숨김 적용)');
+  });
+
+  $('admCopyJson')?.addEventListener('click', () => {
+    syncFromForm();
+    navigator.clipboard?.writeText(JSON.stringify(S.admin, null, 2));
+    toast('📋 현재 판매 설정 JSON 복사 완료');
+  });
+
+  $('admReset')?.addEventListener('click', () => {
+    S.admin = defaultAdminConfig();
+    saveAdminConfig();
+    applyAdminConfig(true);
+    openAdminSalesModal();
+    toast('🔄 마스터 풀모드(전체 서비스 노출)로 복원되었습니다.');
+  });
+
+  $('adminBackdrop')?.classList.remove('hidden');
+}
+
 // ===== GLOBAL APPLICATION STATE =====
 const S = {
   vault: null,
@@ -164,8 +446,9 @@ const S = {
   catchment: null,      // { lat, lon, radius, stores, stats, vworld }
   lastSbizMatchedIdx: [],
 
-  // UI Navigation, Pro Options & Expert State
+  // UI Navigation, Pro Options, Admin Sales Config & Expert State
   opts: loadOpts(),
+  admin: loadAdminConfig(),
   tab: 'overview',
   selectedRid: -1,
   compareRid: -1,
@@ -808,6 +1091,7 @@ async function unlockAndBoot(key) {
 
   $('lockScreen').classList.add('hidden');
   $('appShell').classList.remove('hidden');
+  applyAdminConfig(false);
   renderCurrentTab();
 
   // Auto background real-time sync (same live APIs as KakaoTalk Alert Bot!)
@@ -3321,6 +3605,7 @@ function openOppDrawer(o) {
     ['발주 담당자', [dt.ofclNm, dt.ofclTel, dt.ofclEmail].filter(Boolean).join(' · ')],
   ].filter(([, v]) => v) : [];
 
+  const feat = S.admin?.features || SALES_PACKAGES.premium.features;
   openDrawer({
     title: o.title,
     sub: `${o.source} · ${o.field}`,
@@ -3329,7 +3614,7 @@ function openOppDrawer(o) {
         <span class="tag tag-sbiz">ICP 적합도 ${o.icpScore}점</span>
         <span class="tag tag-bid">${o.budgetMan > 0 ? `예산 ${fmtDec(o.budgetMan / 10000, 1)}억 (${fmt(o.budgetMan)}만원)` : '예산 미기재'}</span>
         ${dt?.ntceKind ? `<span class="tag ${/취소/.test(dt.ntceKind) ? 'tag-re' : 'tag-corp'}">${esc(dt.ntceKind)}</span>` : ''}
-        ${files.length ? `<span class="tag tag-corp">📎 첨부서류 ${files.length}건</span>` : ''}
+        ${feat.bidDetail && files.length ? `<span class="tag tag-corp">📎 첨부서류 ${files.length}건</span>` : ''}
         ${o.dday !== null && o.dday >= 0 ? `<span class="tag tag-re">마감 D-${o.dday}</span>` : ''}
       </div>
       <div class="domain-box">
@@ -3339,6 +3624,7 @@ function openOppDrawer(o) {
         <div class="domain-stat-row"><span>공고일시 / 마감일</span><b>${esc(o.pubDateTime || o.pubDate || '-')} / ${esc(o.closeDate || '-')}</b></div>
       </div>
 
+      ${feat.bidDetail ? `
       <div class="domain-box" style="margin-top:10px">
         <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:6px">
           <h4 style="margin:0">📎 첨부서류 · 공고문 · 과업지시서 (${files.length}건)</h4>
@@ -3361,22 +3647,24 @@ function openOppDrawer(o) {
           <h4 style="margin:0 0 6px">📋 입찰 상세내역 · 일정 · 낙찰조건 · 담당자</h4>
           ${detailRows.map(([k, v]) => `<div class="domain-stat-row"><span>${esc(k)}</span><b style="text-align:right;max-width:65%;word-break:break-word">${esc(v)}</b></div>`).join('')}
         </div>
-      ` : ''}
+      ` : ''}` : ''}
 
-      ${buildBidPriceSimHtml(o)}
+      ${feat.bidSim ? buildBidPriceSimHtml(o) : ''}
 
+      ${feat.bidAwards ? `
       <div class="domain-box" style="margin-top:10px">
         <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:6px">
           <h4 style="margin:0">📊 과거 낙찰결과 · 경쟁사 투찰률 분석</h4>
           <button id="dwLoadAwards" class="btn btn-sm btn-primary" type="button">${S.awardCache.loaded ? '🔄 재분석' : '🔍 실시간 낙찰 분석'}</button>
         </div>
-        <div id="dwAwardBox" style="font-size:12px;color:var(--muted)">나라장터 낙찰정보 API(최근 14일 용역·공사·물품)에서 동일 발주처·유사 공고의 평균 낙찰률과 주요 낙찰사를 분석합니다.</div>
-      </div>
+        <div id="dwAwardBox" style="font-size:12px;color:var(--muted)">나라장터 낙찰정보 API(최근 8일 용역·공사·물품)에서 동일 발주처·유사 공고의 평균 낙찰률과 주요 낙찰사를 분석합니다.</div>
+      </div>` : ''}
 
+      ${feat.bidPartners ? `
       <div class="domain-box" style="margin-top:10px">
         <h4 style="margin:0 0 6px">🤝 지역 · 업종 추천 협력 파트너 TOP 5 (12,198사 DB)</h4>
         <div id="dwPartnerBox" style="font-size:12px;color:var(--muted)">🔍 지역·업종 적합 건설·시설사 매칭 중…</div>
-      </div>
+      </div>` : ''}
 
       ${o.meta ? `<div class="domain-box" style="margin-top:10px"><h4>추가 메타정보</h4>${Object.entries(o.meta).map(([k, v]) => `<div class="domain-stat-row"><span>${esc(k)}</span><b>${esc(v)}</b></div>`).join('')}</div>` : ''}
       ${(() => {
@@ -3394,11 +3682,10 @@ function openOppDrawer(o) {
     `,
     foot: `
       <button id="dwOppPipe" class="btn btn-primary btn-sm">💼 파이프라인 담기</button>
-      <button id="dwOppReport" class="btn btn-sm">📑 A4 검토서</button>
-      <button id="dwOppIcs" class="btn btn-emerald btn-sm">📅 캘린더(.ics)</button>
-      <button id="dwOpp1km" class="btn btn-sm">🗺️ 반경 1km 영업처</button>
+      ${feat.bidA4 ? '<button id="dwOppReport" class="btn btn-sm">📑 A4 검토서</button><button id="dwOppIcs" class="btn btn-emerald btn-sm">📅 캘린더(.ics)</button>' : ''}
+      ${feat.bid1km && S.admin?.tabs?.sbiz !== false ? '<button id="dwOpp1km" class="btn btn-sm">🗺️ 반경 1km 영업처</button>' : ''}
       ${o.url ? `<a class="btn btn-amber btn-sm" href="${esc(o.url)}" target="_blank" rel="noopener">🔗 원문</a>` : ''}
-      ${reg ? `<button id="dwOpp360" class="btn btn-sm">⚡ ${esc(reg.name)} 360°</button>` : ''}
+      ${reg && S.admin?.tabs?.overview !== false ? `<button id="dwOpp360" class="btn btn-sm">⚡ ${esc(reg.name)} 360°</button>` : ''}
     `,
     onMount: () => {
       wireBidPriceSim();
@@ -5692,6 +5979,16 @@ async function init() {
   $('drawerClose').addEventListener('click', closeDrawer);
   $('drawerBackdrop').addEventListener('click', (e) => { if (e.target === $('drawerBackdrop')) closeDrawer(); });
   document.querySelectorAll('[data-tab]').forEach((b) => b.addEventListener('click', () => switchTab(b.dataset.tab)));
+
+  $('btnAdminSales')?.addEventListener('click', openAdminSalesModal);
+  $('adminClose')?.addEventListener('click', () => $('adminBackdrop')?.classList.add('hidden'));
+  $('adminBackdrop')?.addEventListener('click', (e) => { if (e.target === $('adminBackdrop')) $('adminBackdrop').classList.add('hidden'); });
+  document.addEventListener('keydown', (e) => {
+    if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 'a') {
+      e.preventDefault();
+      openAdminSalesModal();
+    }
+  });
 
   $('btnLockOut').addEventListener('click', async () => {
     await idbClearKey();

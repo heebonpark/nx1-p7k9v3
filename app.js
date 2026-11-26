@@ -3921,13 +3921,16 @@ async function jumpOppTo1kmCatchment(o) {
 
   // 1) Try exact VWorld Place/Address Geocoding for the bidding agency/site
   const cleanOrg = String(o.org || '').replace(/\([^)]*\)/g, '').trim();
-  const isGenericOrg = !cleanOrg || /^(조달청|국방부|방위사업청|한국전력공사|한국토지주택공사|대한민국)$/.test(cleanOrg);
+  const isSidoOnlyOrg = /^(서울특별시|부산광역시|대구광역시|인천광역시|광주광역시|대전광역시|울산광역시|세종특별자치시|경기도|강원특별자치도|충청북도|충청남도|전북특별자치도|전라남도|경상북도|경상남도|제주특별자치도)$/.test(cleanOrg);
+  const isGenericOrg = !cleanOrg || isSidoOnlyOrg || /^(조달청|국방부|방위사업청|한국전력공사|한국토지주택공사|대한민국)$/.test(cleanOrg);
   const queries = [];
   if (!isGenericOrg) {
     if (sidoShort && !cleanOrg.includes(sidoShort)) queries.push(`${sidoShort} ${cleanOrg}`);
     queries.push(cleanOrg);
+  } else if (isSidoOnlyOrg) {
+    queries.push(`${cleanOrg}청`);
   }
-  if (reg?.name) queries.push(`${sidoMapName || sidoShort} ${reg.name}`.trim());
+  if (reg?.name) queries.push(`${sidoMapName || sidoShort} ${reg.name}청`.trim(), `${sidoMapName || sidoShort} ${reg.name}`.trim());
 
   toast(`🔍 ${cleanOrg || reg?.name || '입찰현장'} 정밀 좌표 및 상권 동기화 중…`);
   let vwHit = null;
@@ -3935,9 +3938,11 @@ async function jumpOppTo1kmCatchment(o) {
     try {
       const hit = await searchVworldPlace(q);
       if (!hit || !(hit.lat >= 33 && hit.lat <= 39 && hit.lon >= 124 && hit.lon <= 132)) continue;
-      // If bid has a known sido, verify VWorld hit is in the SAME sido (prevent homonym mismatch!)
-      const hitSlug = resolveSidoSlugFromText(hit.addr || hit.title || '');
+      // Verify VWorld hit is in the SAME sido AND (when sigungu known) same sigungu (prevent mountain/wrong-district mismatch!)
+      const hitAddr = `${hit.addr || ''} ${hit.title || ''}`;
+      const hitSlug = resolveSidoSlugFromText(hitAddr);
       if (sidoSlug && hitSlug && hitSlug !== sidoSlug) continue;
+      if (reg?.name && hit.addr && !hit.addr.includes(reg.name) && !hit.addr.includes(reg.name.replace(/시$|군$|구$/, ''))) continue;
       vwHit = hit;
       if (!sidoSlug && hitSlug) sidoSlug = hitSlug;
       break;
@@ -3980,7 +3985,8 @@ async function jumpOppTo1kmCatchment(o) {
   }
   S.sbizSgg = exactSgg;
 
-  // Switch to Sbiz tab with exact sido & sigungu already set
+  // Switch to Sbiz tab with exact sido & sigungu already set (skip fitBounds so zoom 15 sticks cleanly!)
+  S._skipSbizFitOnce = true;
   S.tab = 'sbiz';
   document.querySelectorAll('[data-tab]').forEach((el) => {
     el.classList.toggle('active', el.dataset.tab === 'sbiz');
@@ -5234,7 +5240,15 @@ async function runRadiusCatchment(lat, lon, active, label = '') {
   const rad = S.gisRadius;
   S.leafletCatchLayer.clearLayers();
   L.circle([lat, lon], { radius: rad, color: '#059669', fillColor: '#10b981', fillOpacity: 0.14, weight: 2, dashArray: '5 4' }).addTo(S.leafletCatchLayer);
-  L.circleMarker([lat, lon], { radius: 7, color: '#fff', fillColor: '#e11d48', fillOpacity: 1, weight: 2.5 }).addTo(S.leafletCatchLayer);
+  L.marker([lat, lon], {
+    zIndexOffset: 2500,
+    icon: L.divIcon({
+      className: '',
+      html: `<div style="width:18px;height:18px;border-radius:50%;background:#e11d48;border:3px solid #fff;box-shadow:0 0 0 4px rgba(225,29,72,.35),0 3px 10px rgba(0,0,0,.4)"></div>`,
+      iconSize: [18, 18],
+      iconAnchor: [9, 9],
+    }),
+  }).bindTooltip(esc(label || '중심 기준점'), { direction: 'top', offset: [0, -10] }).addTo(S.leafletCatchLayer);
 
   const stores = [];
   const l1Map = new Map();
@@ -5548,7 +5562,9 @@ function updateSbizView(active) {
   S.lastSbizMatchedIdx = matchedIdx;
   renderSbizYmTimeline(active, baseNoDate);
 
-  if (S.leafletMap && matchedIdx.length > 0 && (S.sbizSgg || S.sbizQ)) {
+  if (S._skipSbizFitOnce) {
+    S._skipSbizFitOnce = false;
+  } else if (S.leafletMap && matchedIdx.length > 0 && (S.sbizSgg || S.sbizQ)) {
     const sampleStep = Math.max(1, Math.floor(matchedIdx.length / 400));
     const bounds = [];
     for (let k = 0; k < matchedIdx.length; k += sampleStep) {

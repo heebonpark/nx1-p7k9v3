@@ -2561,6 +2561,8 @@ function updateBidMapAndList(fitBounds = false) {
             ${todayTimeTag(o, todayIso)}
             <span class="tag tag-gray">${esc(o.field)}</span>
             ${o.isLive ? '<span class="tag tag-sbiz">🟢실시간</span>' : ''}
+            ${o.detail?.ntceKind && /취소/.test(o.detail.ntceKind) ? '<span class="tag tag-re">⛔취소공고</span>' : (o.detail?.ntceKind && /변경|정정/.test(o.detail.ntceKind) ? '<span class="tag tag-bid">📝변경</span>' : '')}
+            ${o.attachments?.length ? `<span class="tag tag-corp">📎첨부 ${o.attachments.length}</span>` : ''}
             ${o.dday !== null && o.dday >= 0 && o.dday <= 7 ? `<span class="tag tag-re">D-${o.dday}</span>` : ''}
           </div>
           <div style="font-weight:800;font-size:12.5px;margin-bottom:2px;line-height:1.35">${esc(o.title)}</div>
@@ -2607,6 +2609,8 @@ function renderBidOppsBody() {
               ${todayTimeTag(o)}
               <span class="tag tag-gray">${esc(o.field)}</span>
               ${o.isLive ? '<span class="tag tag-sbiz">🟢 카톡동일 실시간</span>' : ''}
+              ${o.detail?.ntceKind && /취소/.test(o.detail.ntceKind) ? '<span class="tag tag-re">⛔ 취소공고</span>' : (o.detail?.ntceKind && /변경|정정/.test(o.detail.ntceKind) ? '<span class="tag tag-bid">📝 변경공고</span>' : '')}
+              ${o.attachments?.length ? `<span class="tag tag-corp">📎 첨부 ${o.attachments.length}건</span>` : ''}
               ${o.dday !== null && o.dday >= 0 && o.dday <= 7 ? `<span class="tag tag-re">D-${o.dday} 긴급</span>` : ''}
             </div>
             <div class="item-card-title">${esc(o.title)}</div>
@@ -2682,6 +2686,92 @@ async function fetchG2bNewestItems(baseUrl, todayBgnDt, yestBgnDt, endDt) {
   return merged;
 }
 
+function extractG2bDetail(it, isPre) {
+  const attachments = [];
+  const seenUrl = new Set();
+  const pushFile = (name, url) => {
+    const u = String(url || '').trim();
+    if (!u || seenUrl.has(u)) return;
+    seenUrl.add(u);
+    attachments.push({ name: String(name || '첨부서류').trim(), url: u });
+  };
+  if (isPre) {
+    for (let i = 1; i <= 5; i++) {
+      if (it[`specDocFileUrl${i}`]) pushFile(`사전규격 첨부문서 #${i}`, it[`specDocFileUrl${i}`]);
+    }
+  } else {
+    for (let i = 1; i <= 10; i++) {
+      const u = it[`ntceSpecDocUrl${i}`];
+      if (u) pushFile(it[`ntceSpecFileNm${i}`] || `공고 첨부서류 #${i}`, u);
+    }
+    if (it.stdNtceDocUrl) pushFile('표준공고서', it.stdNtceDocUrl);
+  }
+  const telRaw = String(it.ntceInsttOfclTelNo || it.ofclTelNo || '').trim();
+  const telClean = telRaw && !/^\*+$/.test(telRaw) ? telRaw : '';
+  const clsPath = [it.pubPrcrmntLrgClsfcNm, it.pubPrcrmntMidClsfcNm, it.pubPrcrmntClsfcNm].filter(Boolean).join(' > ');
+  const priceMthd = it.prearngPrceDcsnMthdNm
+    ? `${it.prearngPrceDcsnMthdNm}${it.totPrdprcNum ? ` (${it.totPrdprcNum}개 중 ${it.drwtPrdprcNum || 4}개 추첨)` : ''}`
+    : '';
+  return {
+    attachments,
+    detail: {
+      bidNo: isPre ? (it.bfSpecRgstNo || '') : `${it.bidNtceNo || ''}${it.bidNtceOrd ? '-' + it.bidNtceOrd : ''}`,
+      ntceKind: isPre ? '사전규격공개' : (it.ntceKindNm || '등록공고'),
+      refNo: it.refNo || '',
+      chgRsn: it.chgNtceRsn || '',
+      contractMethod: it.cntrctCnclsMthdNm || '',
+      awardMethod: it.sucsfbidMthdNm || '',
+      awardRate: it.sucsfbidLwltRate ? `${it.sucsfbidLwltRate}%` : '',
+      priceMethod: priceMthd,
+      presmptWon: Number(it.presmptPrce || 0) || 0,
+      asignWon: Number(it.asignBdgtAmt || 0) || 0,
+      vatWon: Number(it.VAT || 0) || 0,
+      jointMethod: it.cmmnSpldmdMethdNm || '',
+      industryLimit: it.indstrytyLmtYn ? (it.indstrytyLmtYn === 'Y' ? '제한 있음 (공고문 확인)' : '제한 없음') : '',
+      rebid: it.rbidPermsnYn ? (it.rbidPermsnYn === 'Y' ? '허용' : '불가') : '',
+      categoryNm: clsPath || it.srvceDivNm || it.bsnsDivNm || '',
+      bidBeginDt: it.bidBeginDt || '',
+      bidClseDt: it.bidClseDt || it.opninRgstClseDt || '',
+      opengDt: it.opengDt || '',
+      opengPlce: it.opengPlce || '',
+      qualDt: it.bidQlfctRgstDt || '',
+      dlvrDt: it.dlvrTmlmtDt || '',
+      ofclNm: it.ntceInsttOfclNm || it.ofclNm || '',
+      ofclTel: telClean,
+      ofclEmail: it.ntceInsttOfclEmailAdrs || '',
+      bfSpecNo: it.bfSpecRgstNo || '',
+      prdctSpec: it.prdctSpecNm || '',
+    },
+  };
+}
+
+function fileIconForName(name) {
+  const s = String(name || '').toLowerCase();
+  if (s.endsWith('.pdf')) return '📄';
+  if (s.endsWith('.hwp') || s.endsWith('.hwpx') || s.endsWith('.doc') || s.endsWith('.docx')) return '📝';
+  if (s.endsWith('.xls') || s.endsWith('.xlsx') || s.endsWith('.csv')) return '📊';
+  if (s.endsWith('.zip') || s.endsWith('.7z') || s.endsWith('.rar')) return '🗜️';
+  return '📎';
+}
+
+async function fetchSingleBidDetailLive(bidNtceNo) {
+  const { dataGoEnc } = getApiKeys();
+  if (!dataGoEnc || !bidNtceNo) return null;
+  const cleanNo = String(bidNtceNo).split('-')[0].trim();
+  const ops = ['getBidPblancListInfoServc02', 'getBidPblancListInfoCnstwk02', 'getBidPblancListInfoThng02'];
+  for (const op of ops) {
+    try {
+      const r = await fetch(`https://apis.data.go.kr/1230000/ad/BidPublicInfoService02/${op}?serviceKey=${dataGoEnc}&inqryDiv=2&bidNtceNo=${encodeURIComponent(cleanNo)}&pageNo=1&numOfRows=5&type=json`);
+      if (!r.ok) continue;
+      const j = await r.json();
+      const raw = j?.response?.body?.items;
+      const arr = Array.isArray(raw) ? raw : (raw?.item ? (Array.isArray(raw.item) ? raw.item : [raw.item]) : []);
+      if (arr.length) return extractG2bDetail(arr[0], false);
+    } catch {}
+  }
+  return null;
+}
+
 async function fetchLiveG2bAndPrespec({ silent = false } = {}) {
   const { dataGoEnc } = getApiKeys();
   if (!dataGoEnc) { if (!silent) toast('공공데이터포털 키가 없습니다.'); return; }
@@ -2718,6 +2808,7 @@ async function fetchLiveG2bAndPrespec({ silent = false } = {}) {
           const isPre = st === 'prespec';
           const id = isPre ? `pre-${it.bfSpecRgstNo || it.prdctClsfcNoNm}` : `g2b-${it.bidNtceNo}-${it.bidNtceOrd || '00'}`;
           const budgetWon = Number(isPre ? it.asignBdgtAmt : (it.presmptPrce || it.asignBdgtAmt || 0)) || 0;
+          const extra = extractG2bDetail(it, isPre);
           const obj = attachOppGeo(enrichOpp({
             id,
             isLive: true,
@@ -2732,6 +2823,8 @@ async function fetchLiveG2bAndPrespec({ silent = false } = {}) {
             closeDate: String(it.bidClseDt || it.opninRgstClseDt || '').slice(0, 10),
             method: it.bidMethdNm || (isPre ? '사전규격 의견수렴' : ''),
             url: it.bidNtceDtlUrl || 'https://www.g2b.go.kr/',
+            attachments: extra.attachments,
+            detail: extra.detail,
           }));
           if (!map.has(id)) added++;
           map.set(id, obj);
@@ -2777,6 +2870,36 @@ async function fetchLiveG2bAndPrespec({ silent = false } = {}) {
 
 function openOppDrawer(o) {
   const reg = S.fusionByRid.get(o._fusionRid ?? o.rid);
+  const dt = o.detail || null;
+  const files = o.attachments || [];
+  const bidNoHint = dt?.bidNo || (String(o.id || '').startsWith('g2b-') ? String(o.id).slice(4) : '');
+  const fmtWon = (w) => w > 0 ? `${fmt(w)}원 (${fmtDec(w / 1e8, 2)}억)` : '';
+
+  const detailRows = dt ? [
+    ['공고번호 / 차수', dt.bidNo],
+    ['공고구분', dt.ntceKind],
+    ['참조번호', dt.refNo],
+    ['변경/취소 사유', dt.chgRsn],
+    ['계약방법', dt.contractMethod],
+    ['낙찰방법', dt.awardMethod],
+    ['낙찰하한율', dt.awardRate],
+    ['예정가격 결정방식', dt.priceMethod],
+    ['배정예산액', fmtWon(dt.asignWon)],
+    ['추정가격', fmtWon(dt.presmptWon)],
+    ['부가세(VAT)', dt.vatWon > 0 ? `${fmt(dt.vatWon)}원` : ''],
+    ['공동도급 방식', dt.jointMethod],
+    ['업종제한 / 재입찰', [dt.industryLimit ? `업종 ${dt.industryLimit}` : '', dt.rebid ? `재입찰 ${dt.rebid}` : ''].filter(Boolean).join(' · ')],
+    ['품목·업종 분류', dt.categoryNm],
+    ['물품규격', dt.prdctSpec],
+    ['입찰개시일시', dt.bidBeginDt],
+    ['입찰마감일시', dt.bidClseDt],
+    ['참가자격등록마감', dt.qualDt],
+    ['개찰일시 / 장소', [dt.opengDt, dt.opengPlce].filter(Boolean).join(' · ')],
+    ['납품기한', dt.dlvrDt],
+    ['연계 사전규격번호', dt.bfSpecNo],
+    ['발주 담당자', [dt.ofclNm, dt.ofclTel, dt.ofclEmail].filter(Boolean).join(' · ')],
+  ].filter(([, v]) => v) : [];
+
   openDrawer({
     title: o.title,
     sub: `${o.source} · ${o.field}`,
@@ -2784,14 +2907,41 @@ function openOppDrawer(o) {
       <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px">
         <span class="tag tag-sbiz">ICP 적합도 ${o.icpScore}점</span>
         <span class="tag tag-bid">${o.budgetMan > 0 ? `예산 ${fmtDec(o.budgetMan / 10000, 1)}억 (${fmt(o.budgetMan)}만원)` : '예산 미기재'}</span>
+        ${dt?.ntceKind ? `<span class="tag ${/취소/.test(dt.ntceKind) ? 'tag-re' : 'tag-corp'}">${esc(dt.ntceKind)}</span>` : ''}
+        ${files.length ? `<span class="tag tag-corp">📎 첨부서류 ${files.length}건</span>` : ''}
         ${o.dday !== null && o.dday >= 0 ? `<span class="tag tag-re">마감 D-${o.dday}</span>` : ''}
       </div>
       <div class="domain-box">
         <div class="domain-stat-row"><span>발주/관리기관</span><b>${esc(o.org || '-')}</b></div>
-        <div class="domain-stat-row"><span>지역</span><b>${esc(o.region || '전국')}</b></div>
+        <div class="domain-stat-row"><span>지역</span><b>${esc(o._regionFull || o.region || '전국')}</b></div>
         <div class="domain-stat-row"><span>방식/구분</span><b>${esc(o.method || '-')}</b></div>
-        <div class="domain-stat-row"><span>공고일 / 마감일</span><b>${esc(o.pubDate || '-')} / ${esc(o.closeDate || '-')}</b></div>
+        <div class="domain-stat-row"><span>공고일시 / 마감일</span><b>${esc(o.pubDateTime || o.pubDate || '-')} / ${esc(o.closeDate || '-')}</b></div>
       </div>
+
+      <div class="domain-box" style="margin-top:10px">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:6px">
+          <h4 style="margin:0">📎 첨부서류 · 공고문 · 과업지시서 (${files.length}건)</h4>
+          ${!dt && bidNoHint ? '<button id="dwLoadBidDetail" class="btn btn-sm btn-primary" type="button">🔍 실시간 상세·첨부 조회</button>' : ''}
+        </div>
+        ${files.length ? `
+          <div style="display:flex;flex-direction:column;gap:6px">
+            ${files.map((f) => `
+              <a href="${esc(f.url)}" target="_blank" rel="noopener" style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:7px 10px;border:1px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);text-decoration:none;font-size:12px">
+                <span style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600">${fileIconForName(f.name)} ${esc(f.name)}</span>
+                <span style="flex-shrink:0;padding:2px 8px;border-radius:6px;background:var(--c-corp);color:#fff;font-size:11px;font-weight:700">⬇️ 다운로드</span>
+              </a>
+            `).join('')}
+          </div>
+        ` : `<div style="font-size:12px;color:var(--muted)">${dt ? '나라장터 API에 등록된 첨부파일이 없거나 원문 공고에서 확인 가능합니다.' : (bidNoHint ? '상단 "실시간 상세·첨부 조회" 버튼을 누르면 나라장터 첨부서류와 상세조건을 즉시 불러옵니다.' : '원문 공고 링크에서 첨부서류를 확인하세요.')}</div>`}
+      </div>
+
+      ${detailRows.length ? `
+        <div class="domain-box" style="margin-top:10px">
+          <h4 style="margin:0 0 6px">📋 입찰 상세내역 · 일정 · 낙찰조건 · 담당자</h4>
+          ${detailRows.map(([k, v]) => `<div class="domain-stat-row"><span>${esc(k)}</span><b style="text-align:right;max-width:65%;word-break:break-word">${esc(v)}</b></div>`).join('')}
+        </div>
+      ` : ''}
+
       ${o.meta ? `<div class="domain-box" style="margin-top:10px"><h4>추가 메타정보</h4>${Object.entries(o.meta).map(([k, v]) => `<div class="domain-stat-row"><span>${esc(k)}</span><b>${esc(v)}</b></div>`).join('')}</div>` : ''}
       ${(() => {
         const p = BIZ_PERSONAS[S.opts.bizPersona] || BIZ_PERSONAS.security;
@@ -2816,6 +2966,22 @@ function openOppDrawer(o) {
         id: `opp:${o.id}`, domain: 'bid', title: o.title, sub: `${o.org} · ${o.field}`, region: o.region, valueMan: o.budgetMan,
       }));
       $('dwOpp360')?.addEventListener('click', () => { closeDrawer(); S.selectedRid = reg.rid; switchTab('overview'); });
+      $('dwLoadBidDetail')?.addEventListener('click', async (e) => {
+        const btn = e.currentTarget;
+        btn.disabled = true;
+        btn.textContent = '조회 중…';
+        const res = await fetchSingleBidDetailLive(bidNoHint);
+        if (res) {
+          o.attachments = res.attachments;
+          o.detail = res.detail;
+          toast(`✅ 상세내역 · 첨부서류 ${res.attachments.length}건 불러오기 완료`);
+          openOppDrawer(o);
+        } else {
+          btn.disabled = false;
+          btn.textContent = '🔍 재시도';
+          toast('나라장터 단건 조회 결과가 없습니다. 원문 공고를 확인하세요.');
+        }
+      });
     },
   });
 }

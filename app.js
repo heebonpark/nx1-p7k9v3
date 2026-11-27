@@ -318,6 +318,9 @@ function encodeSignedLicense(cfg, expertOpts = null) {
     fp: (cfg.forcePwChange !== undefined ? cfg.forcePwChange : eo.forcePwChange) ? 1 : 0,
     wm: (cfg.a4Watermark !== undefined ? cfg.a4Watermark : eo.a4Watermark) ? 1 : 0,
     rb: (cfg.rbacStrict !== undefined ? cfg.rbacStrict : eo.rbacStrict) ? 1 : 0,
+    fr: cfg.isFree ? 1 : 0,
+    ft: cfg.freeType || '',
+    sm: cfg.simpleFreeMode ? 1 : 0,
   };
   const b64 = toBase64Url(compact);
   return `${b64}.${signTokenStr(b64)}`;
@@ -341,10 +344,13 @@ function decodeSignedLicense(token, requireSig = true) {
     if (typeof c.bs === 'string') base.brandSub = c.bs;
     base.expiryDate = c.exp || '';
     base.expiryMode = c.em || 'lock';
-    base.forcePwChange = c.fp !== 0;
+    base.isFree = Boolean(c.fr);
+    base.freeType = c.ft || '';
+    base.simpleFreeMode = Boolean(c.sm);
+    base.forcePwChange = base.simpleFreeMode ? false : (c.fp !== 0);
     base.a4Watermark = c.wm !== 0;
     base.rbacStrict = c.rb !== 0;
-    base.hideAdminBtn = false; // Buyer always sees Buyer Self-Admin button!
+    base.hideAdminBtn = base.simpleFreeMode; // Simple staff/friend mode hides admin button cleanly!
     if (Array.isArray(c.t)) Object.keys(base.tabs).forEach((k) => { base.tabs[k] = c.t.includes(k); });
     if (Array.isArray(c.f)) Object.keys(base.features).forEach((k) => { base.features[k] = c.f.includes(k); });
     const showSec = Boolean(c.als);
@@ -420,6 +426,18 @@ const FACILITY_TYPES = ['건설·안전시설', '전기·통신·소방', '보�
 const PAY_STATUSES = ['입금완료', '미수(대기)', '부분입금', '환불·취소'];
 const PAY_METHODS = ['계좌이체', '크몽정산', '법인카드', '현금영수증', '후불/어음'];
 const TAX_STATUSES = ['발급완료', '미발급', '발급요청', '해당없음(크몽/카드)'];
+const FREE_RECIPIENT_TYPES = [
+  { key: 'staff', label: '👨‍💼 사내 직원', prefix: 'FREE-STF', defaultDays: 0 },
+  { key: 'friend', label: '🤝 지인 / 가족', prefix: 'FREE-VIP', defaultDays: 0 },
+  { key: 'trial', label: '🎁 무료 체험판', prefix: 'FREE-TRL', defaultDays: 14 },
+  { key: 'partner', label: '🤝 파트너 / 협력사', prefix: 'FREE-PRT', defaultDays: 90 },
+];
+
+function addDaysKstIso(days) {
+  const n = Number(days) || 0;
+  if (n <= 0) return '';
+  return new Date(Date.now() + (9 * 3600 + n * 86400) * 1000).toISOString().slice(0, 10);
+}
 
 function defaultTaxConfig() {
   return {
@@ -565,6 +583,7 @@ function defaultSellerRegistry() {
         signedUrl: `${location.origin}${location.pathname}?lic=${encodeSignedLicense(sampleCfg, defaultExpertOpts())}`,
       },
     ],
+    freeDist: [],
     revoked: [],
     expertOpts: defaultExpertOpts(),
     taxConfig: defaultTaxConfig(),
@@ -603,6 +622,7 @@ function loadSellerRegistry() {
       return {
         sellers: Array.isArray(raw.sellers) && raw.sellers.length ? raw.sellers : defaultSellerRegistry().sellers,
         sales: normalizedSales,
+        freeDist: Array.isArray(raw.freeDist) ? raw.freeDist : [],
         revoked: Array.isArray(raw.revoked) ? raw.revoked : [],
         expertOpts: { ...defaultExpertOpts(), ...(raw.expertOpts || {}) },
         taxConfig: { ...defaultTaxConfig(), ...(raw.taxConfig || {}) },
@@ -736,13 +756,14 @@ function resolveInitialContext() {
 
   const tid = adminCfg.licId || 'CLIENT-001';
 
-  // Check Revocation Guard (Kill-Switch)
+  // Check Revocation Guard (Kill-Switch: Paid Sales + Free Staff/Friend Distribution)
   if (licenseStatus.state === 'OK' && eo.revocationGuard !== false) {
     const saleRec = (reg.sales || []).find((x) => x.licId === tid);
-    if ((reg.revoked || []).includes(tid) || saleRec?.status === 'revoked') {
+    const freeRec = (reg.freeDist || []).find((x) => x.licId === tid);
+    if ((reg.revoked || []).includes(tid) || saleRec?.status === 'revoked' || freeRec?.status === 'revoked') {
       licenseStatus = {
         state: 'REVOKED',
-        msg: `라이선스(${tid})가 관리자에 의해 일시 정지되었습니다. 담당 판매자(${adminCfg.sellerName || '본사'})에게 문의해 주세요.`,
+        msg: `라이선스(${tid})가 관리자에 의해 회수(정지)되었습니다. 담당자(${adminCfg.sellerName || '본사'})에게 문의해 주세요.`,
       };
     }
   }
@@ -920,15 +941,20 @@ function applyAdminConfig(rerender = false) {
 
   const admBtn = $('btnAdminSales');
   if (admBtn) {
-    admBtn.classList.remove('hidden');
     if (S.isBuyerMode) {
-      const bSt = loadBuyerState(S.tenantId);
-      const dot = (bSt.mustChangePw && cfg.forcePwChange !== false) ? '<span class="nx-pulse-dot" title="초기 비밀번호 변경 필요"></span>' : '';
-      admBtn.innerHTML = `🏢 <span class="hide-xs">사내관리</span>${dot}`;
-      admBtn.title = '구매자 자체 관리자 · 비밀번호 변경 · 사내 공지 및 라이선스 정보';
+      if (cfg.simpleFreeMode) {
+        admBtn.classList.add('hidden');
+      } else {
+        admBtn.classList.remove('hidden');
+        const bSt = loadBuyerState(S.tenantId);
+        const dot = (bSt.mustChangePw && cfg.forcePwChange !== false) ? '<span class="nx-pulse-dot" title="초기 비밀번호 변경 필요"></span>' : '';
+        admBtn.innerHTML = `🏢 <span class="hide-xs">사내관리</span>${dot}`;
+        admBtn.title = '구매자 자체 관리자 · 비밀번호 변경 · 사내 공지 및 라이선스 정보';
+      }
     } else {
+      admBtn.classList.remove('hidden');
       admBtn.innerHTML = `🛡️ <span class="hide-xs">관리자</span>`;
-      admBtn.title = '판매자 마스터 콘솔 · 판매링크 발급 · 현황 · 비번초기화 · TOP 10 옵션 (Ctrl+Shift+A)';
+      admBtn.title = '판매자 마스터 콘솔 · 판매링크 발급 · 현황 · 무료배포 · 비번초기화 · TOP 10 옵션 (Ctrl+Shift+A)';
     }
   }
 
@@ -1430,14 +1456,16 @@ function openAdminSalesModal(tabKey = null) {
   $('adminModalSub').textContent = '마스터 기본 모드 보호 · 판매링크 발급 · 판매자/현황 CRM · 원격 비밀번호 초기화 · 전문가 기법 TOP 10';
 
   const pendingTaxCnt = reg.sales.filter((x) => x.taxStatus === '미발급' || x.taxStatus === '발급요청').length;
+  const freeCnt = (reg.freeDist || []).length;
   const tabBarHtml = `
     <div class="nx-adm-tabs">
       <button type="button" class="nx-adm-tab ${activeTab === 'issue' ? 'active' : ''}" data-adm-nav="issue">🚀 판매링크 발급</button>
       <button type="button" class="nx-adm-tab ${activeTab === 'status' ? 'active' : ''}" data-adm-nav="status">📊 납품고객·입금·세금 (${reg.sales.length})</button>
-      <button type="button" class="nx-adm-tab ${activeTab === 'tax' ? 'active' : ''}" data-adm-nav="tax">🧾 세금계산서·국세청API${pendingTaxCnt ? ` (${pendingTaxCnt})` : ''}</button>
-      <button type="button" class="nx-adm-tab ${activeTab === 'sellers' ? 'active' : ''}" data-adm-nav="sellers">🧑‍💼 판매자 관리 (${reg.sellers.length})</button>
-      <button type="button" class="nx-adm-tab ${activeTab === 'expert' ? 'active' : ''}" data-adm-nav="expert">💎 TOP 10 옵션</button>
-      <button type="button" class="nx-adm-tab ${activeTab === 'audit' ? 'active' : ''}" data-adm-nav="audit">📜 감사 로그</button>
+      <button type="button" class="nx-adm-tab ${activeTab === 'free' ? 'active' : ''}" data-adm-nav="free">🎁 무료배포·이력 (${freeCnt})</button>
+      <button type="button" class="nx-adm-tab ${activeTab === 'tax' ? 'active' : ''}" data-adm-nav="tax">🧾 세금계산서·API${pendingTaxCnt ? ` (${pendingTaxCnt})` : ''}</button>
+      <button type="button" class="nx-adm-tab ${activeTab === 'sellers' ? 'active' : ''}" data-adm-nav="sellers">🧑‍💼 판매자 (${reg.sellers.length})</button>
+      <button type="button" class="nx-adm-tab ${activeTab === 'expert' ? 'active' : ''}" data-adm-nav="expert">💎 TOP 10</button>
+      <button type="button" class="nx-adm-tab ${activeTab === 'audit' ? 'active' : ''}" data-adm-nav="audit">📜 감사로그</button>
     </div>`;
 
   // ---------- TAB 1: ISSUE SIGNED SALES LINK ----------
@@ -2274,6 +2302,403 @@ export default {
         toast(`⚠️ API 발행 실패: ${err.message}`);
       }
     }));
+  }
+
+  // ---------- TAB: FREE DISTRIBUTION (STAFF · FRIENDS · TRIALS) & HISTORY MANAGEMENT ----------
+  else if (activeTab === 'free') {
+    const todayIso = new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 10);
+    const list = reg.freeDist || [];
+    const totalFree = list.length;
+    const activeFree = list.filter((x) => x.status === 'active' && (!x.expiryDate || x.expiryDate >= todayIso)).length;
+    const expSoonOrDone = list.filter((x) => {
+      if (x.status !== 'active' || !x.expiryDate) return false;
+      const d = Math.ceil((new Date(`${x.expiryDate}T23:59:59+09:00`).getTime() - Date.now()) / 86400000);
+      return d <= 7;
+    }).length;
+    const revOrConv = list.filter((x) => x.status === 'revoked' || x.status === 'converted').length;
+
+    const fd = S.freeDraft || {
+      freeType: 'staff',
+      recipientName: '',
+      affiliation: '',
+      phone: '',
+      email: '',
+      pkg: 'premium',
+      expiryDate: '',
+      simpleFreeMode: true,
+      showAppLinks: false,
+      memo: '',
+      tabs: { ...SALES_PACKAGES.premium.tabs },
+    };
+    S.freeDraft = fd;
+    const tabLabelsShort = [['overview', '통합360°'], ['corp', '기업분석'], ['bid', '입찰'], ['sbiz', '상권지도'], ['realestate', '청약'], ['hub', '허브']];
+
+    $('adminBody').innerHTML = `${tabBarHtml}
+      <div class="nx-adm-kpi4">
+        <div class="nx-adm-kpi"><div class="l">🎁 총 무료 배포</div><div class="v">${fmt(totalFree)}건</div><div class="s">직원 · 지인 · 체험 합계</div></div>
+        <div class="nx-adm-kpi"><div class="l">✅ 활성 이용 중</div><div class="v" style="color:#059669">${fmt(activeFree)}건</div><div class="s">유료 매출과 완전 분리</div></div>
+        <div class="nx-adm-kpi"><div class="l">⏳ 만료임박 · 만료</div><div class="v" style="color:#d97706">${fmt(expSoonOrDone)}건</div><div class="s">D-7 이내 또는 기간종료</div></div>
+        <div class="nx-adm-kpi"><div class="l">🚫 회수 · 💎 유료전환</div><div class="v" style="color:var(--c-corp)">${fmt(revOrConv)}건</div><div class="s">퇴사 회수 / 구매 전환</div></div>
+      </div>
+
+      <div class="domain-box" style="margin-bottom:10px;border-color:rgba(16,185,129,.4);background:rgba(16,185,129,.04)">
+        <h4 style="margin:0 0 8px">⚡ 10초 무료 배포 링크 발급 (직원 · 지인 · 체험판 · 파트너)</h4>
+        <div style="display:grid;grid-template-columns:150px 1fr 1fr 1fr 1fr;gap:6px;margin-bottom:6px">
+          <label style="font-size:11px;color:var(--muted)">배포 대상 구분
+            <select id="fdType" class="select" style="width:100%;margin-top:2px;padding:5px 7px;font-size:12px">
+              ${FREE_RECIPIENT_TYPES.map((t) => `<option value="${t.key}" ${fd.freeType === t.key ? 'selected' : ''}>${t.label}</option>`).join('')}
+            </select>
+          </label>
+          <label style="font-size:11px;color:var(--muted)">수령인 성명 *
+            <input id="fdName" class="input" value="${esc(fd.recipientName)}" placeholder="예: 홍길동 대리 / 김지인" style="width:100%;margin-top:2px;padding:5px 7px;font-size:12px" />
+          </label>
+          <label style="font-size:11px;color:var(--muted)">소속 / 관계
+            <input id="fdAffil" class="input" value="${esc(fd.affiliation)}" placeholder="예: 영업1팀 / 대학동기" style="width:100%;margin-top:2px;padding:5px 7px;font-size:12px" />
+          </label>
+          <label style="font-size:11px;color:var(--muted)">연락처
+            <input id="fdPhone" class="input" value="${esc(fd.phone)}" placeholder="010-0000-0000" style="width:100%;margin-top:2px;padding:5px 7px;font-size:12px" />
+          </label>
+          <label style="font-size:11px;color:var(--muted)">이메일 (선택)
+            <input id="fdEmail" class="input" type="email" value="${esc(fd.email)}" placeholder="user@email.com" style="width:100%;margin-top:2px;padding:5px 7px;font-size:12px" />
+          </label>
+        </div>
+
+        <div style="display:grid;grid-template-columns:160px 1.2fr 1fr;gap:6px;margin-bottom:6px;align-items:end">
+          <label style="font-size:11px;color:var(--muted)">허용 기능 프리셋
+            <select id="fdPkg" class="select" style="width:100%;margin-top:2px;padding:5px 7px;font-size:12px">
+              <option value="premium" ${fd.pkg === 'premium' ? 'selected' : ''}>🟣 4대 도메인 전체 (추천)</option>
+              <option value="deluxe" ${fd.pkg === 'deluxe' ? 'selected' : ''}>🔵 입찰 + 기업분석</option>
+              <option value="standard" ${fd.pkg === 'standard' ? 'selected' : ''}>🟢 입찰 실무 전용</option>
+            </select>
+          </label>
+          <div>
+            <div style="font-size:11px;color:var(--muted);margin-bottom:3px">사용기간 빠른 설정 (만료일 자동계산)</div>
+            <div style="display:flex;gap:4px;flex-wrap:wrap;align-items:center">
+              <button type="button" class="btn btn-sm" data-fd-days="7">7일</button>
+              <button type="button" class="btn btn-sm" data-fd-days="14">14일</button>
+              <button type="button" class="btn btn-sm" data-fd-days="30">30일</button>
+              <button type="button" class="btn btn-sm" data-fd-days="90">90일</button>
+              <button type="button" class="btn btn-sm" data-fd-days="0">영구</button>
+              <input id="fdExpiry" class="input" type="date" value="${esc(fd.expiryDate || '')}" style="padding:4px 6px;font-size:11.5px;width:130px" />
+            </div>
+          </div>
+          <label style="font-size:11px;color:var(--muted)">배포 사유 / 메모
+            <input id="fdMemo" class="input" value="${esc(fd.memo)}" placeholder="예: 신규입사 영업지원 / 지인 무료증정" style="width:100%;margin-top:2px;padding:5px 7px;font-size:12px" />
+          </label>
+        </div>
+
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;padding-top:6px;border-top:1px dashed var(--border)">
+          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;font-size:11.5px">
+            ${tabLabelsShort.map(([k, lb]) => `<label style="display:inline-flex;align-items:center;gap:3px;cursor:pointer"><input type="checkbox" data-fd-tab="${k}" ${fd.tabs[k] ? 'checked' : ''} />${lb}</label>`).join('')}
+            <label style="display:inline-flex;align-items:center;gap:4px;cursor:pointer;color:#047857;font-weight:700"><input id="fdSimpleMode" type="checkbox" ${fd.simpleFreeMode ? 'checked' : ''} />🔓 간편모드(비번배너 숨김)</label>
+            <label style="display:inline-flex;align-items:center;gap:4px;cursor:pointer"><input id="fdAppLinks" type="checkbox" ${fd.showAppLinks ? 'checked' : ''} />개별앱 표시</label>
+          </div>
+          <div style="display:flex;gap:6px">
+            <button id="btnFdPreview" class="btn btn-sm" type="button">👁️ 미리보기</button>
+            <button id="btnFdIssue" class="btn btn-emerald btn-sm" type="button">🎁 무료 배포 등록 + 링크 복사</button>
+          </div>
+        </div>
+      </div>
+
+      <div style="display:flex;gap:6px;margin-bottom:8px;flex-wrap:wrap">
+        <input id="freeQ" class="input" placeholder="수령인 · 소속/관계 · 연락처 · 배포번호 · 메모 검색…" style="flex:1;min-width:190px;padding:6px 10px;font-size:12px" />
+        <select id="freeTypeFilter" class="select" style="font-size:11.5px;padding:6px 8px">
+          <option value="">전체 대상 구분</option>
+          ${FREE_RECIPIENT_TYPES.map((t) => `<option value="${t.key}">${t.label}</option>`).join('')}
+        </select>
+        <select id="freeStatusFilter" class="select" style="font-size:11.5px;padding:6px 8px">
+          <option value="">전체 상태</option>
+          <option value="active">활성 이용 중</option>
+          <option value="expired">만료됨</option>
+          <option value="revoked">회수(정지)</option>
+          <option value="converted">유료전환됨</option>
+        </select>
+      </div>
+
+      <div class="table-wrap" style="max-height:280px;overflow-y:auto">
+        <table class="data-table" style="font-size:11.5px">
+          <thead>
+            <tr>
+              <th>배포번호 · 구분</th>
+              <th>수령인 / 소속·관계 / 연락처</th>
+              <th>허용 범위 · 배포일 / 만료</th>
+              <th>상태 · 메모</th>
+              <th>관리 액션 (링크 · 카톡 · 연장 · 회수 · 유료전환)</th>
+            </tr>
+          </thead>
+          <tbody id="freeTableBody"></tbody>
+        </table>
+      </div>
+    `;
+
+    $('adminFoot').innerHTML = `
+      <button id="btnFreeCsv" class="btn btn-emerald btn-sm" type="button">📥 무료 배포이력 CSV 다운로드</button>
+      <button id="btnFreeToPaid" class="btn btn-sm" type="button" style="margin-left:auto">📊 유료 납품현황으로 이동</button>
+    `;
+
+    const buildFreeCfg = (obj) => ({
+      licId: obj.licId,
+      companyName: `${obj.recipientName}${obj.affiliation ? ` (${obj.affiliation})` : ''}`,
+      sellerName: '본사 무료배포 (마스터)',
+      sellerCode: 'SLR-001',
+      pkg: obj.pkg || 'premium',
+      priceMan: 0,
+      brandTitle: '넥서스원',
+      brandBadge: obj.freeType === 'trial' ? 'TRIAL' : (obj.freeType === 'staff' ? 'STAFF' : 'VIP'),
+      brandSub: `${obj.recipientName}${obj.affiliation ? ` · ${obj.affiliation}` : ''} 전용 무료배포 라이선스`,
+      expiryDate: obj.expiryDate || '',
+      expiryMode: eo.expiryMode || 'lock',
+      isFree: true,
+      freeType: obj.freeType,
+      simpleFreeMode: Boolean(obj.simpleFreeMode),
+      forcePwChange: !obj.simpleFreeMode,
+      a4Watermark: true,
+      rbacStrict: true,
+      tabs: { ...obj.tabs },
+      features: { ...(SALES_PACKAGES[obj.pkg]?.features || SALES_PACKAGES.premium.features) },
+      appLinks: obj.showAppLinks
+        ? { showSection: true, corp: true, bid: true, sbiz: true, re: true }
+        : { showSection: false, corp: false, bid: false, sbiz: false, re: false },
+    });
+
+    const syncFreeDraft = () => {
+      fd.freeType = $('fdType')?.value || 'staff';
+      fd.recipientName = $('fdName')?.value.trim() || '';
+      fd.affiliation = $('fdAffil')?.value.trim() || '';
+      fd.phone = $('fdPhone')?.value.trim() || '';
+      fd.email = $('fdEmail')?.value.trim() || '';
+      fd.pkg = $('fdPkg')?.value || 'premium';
+      fd.expiryDate = $('fdExpiry')?.value || '';
+      fd.memo = $('fdMemo')?.value.trim() || '';
+      fd.simpleFreeMode = Boolean($('fdSimpleMode')?.checked);
+      fd.showAppLinks = Boolean($('fdAppLinks')?.checked);
+      $('adminBody').querySelectorAll('[data-fd-tab]').forEach((el) => { fd.tabs[el.dataset.fdTab] = el.checked; });
+    };
+
+    $('fdType')?.addEventListener('change', () => {
+      syncFreeDraft();
+      const meta = FREE_RECIPIENT_TYPES.find((t) => t.key === fd.freeType);
+      if (meta && meta.defaultDays > 0 && !fd.expiryDate) {
+        fd.expiryDate = addDaysKstIso(meta.defaultDays);
+        if ($('fdExpiry')) $('fdExpiry').value = fd.expiryDate;
+      }
+    });
+    $('fdPkg')?.addEventListener('change', () => {
+      syncFreeDraft();
+      fd.tabs = { ...(SALES_PACKAGES[fd.pkg]?.tabs || SALES_PACKAGES.premium.tabs) };
+      $('adminBody').querySelectorAll('[data-fd-tab]').forEach((el) => { el.checked = Boolean(fd.tabs[el.dataset.fdTab]); });
+    });
+    $('adminBody').querySelectorAll('[data-fd-days]').forEach((b) => {
+      b.addEventListener('click', () => {
+        const d = Number(b.dataset.fdDays) || 0;
+        const iso = d > 0 ? addDaysKstIso(d) : '';
+        fd.expiryDate = iso;
+        if ($('fdExpiry')) $('fdExpiry').value = iso;
+        toast(d > 0 ? `📅 만료일이 ${d}일 뒤(${iso})로 설정되었습니다.` : '♾️ 영구 무료 배포로 설정되었습니다.');
+      });
+    });
+
+    $('btnFdPreview')?.addEventListener('click', () => {
+      syncFreeDraft();
+      const typeMeta = FREE_RECIPIENT_TYPES.find((t) => t.key === fd.freeType) || FREE_RECIPIENT_TYPES[0];
+      const tempCfg = buildFreeCfg({
+        ...fd,
+        recipientName: fd.recipientName || '미리보기 사용자',
+        licId: `${typeMeta.prefix}-PREVIEW`,
+      });
+      window.open(`${location.origin}${location.pathname}?lic=${encodeSignedLicense(tempCfg, eo)}`, '_blank', 'noopener');
+    });
+
+    $('btnFdIssue')?.addEventListener('click', () => {
+      syncFreeDraft();
+      if (!fd.recipientName) { toast('수령인 성명을 입력해 주세요.'); $('fdName')?.focus(); return; }
+      const typeMeta = FREE_RECIPIENT_TYPES.find((t) => t.key === fd.freeType) || FREE_RECIPIENT_TYPES[0];
+      const seq = String((reg.freeDist || []).length + 1).padStart(3, '0');
+      const licId = `${typeMeta.prefix}-${seq}`;
+      const cfg = buildFreeCfg({ ...fd, licId });
+      const signedUrl = `${location.origin}${location.pathname}?lic=${encodeSignedLicense(cfg, eo)}`;
+      const rec = {
+        licId,
+        freeType: fd.freeType,
+        freeLabel: typeMeta.label,
+        recipientName: fd.recipientName,
+        affiliation: fd.affiliation,
+        phone: fd.phone,
+        email: fd.email,
+        pkg: fd.pkg,
+        tabs: { ...fd.tabs },
+        simpleFreeMode: fd.simpleFreeMode,
+        showAppLinks: fd.showAppLinks,
+        issuedAt: todayIso,
+        expiryDate: fd.expiryDate,
+        status: 'active', // active | revoked | converted
+        memo: fd.memo,
+        cfg,
+        signedUrl,
+      };
+      if (!Array.isArray(reg.freeDist)) reg.freeDist = [];
+      reg.freeDist.unshift(rec);
+      saveSellerRegistry(reg);
+      appendAudit('FREE_DIST_ISSUED', licId, `${typeMeta.label} · ${rec.recipientName}(${rec.affiliation || '-'}) · 만료:${rec.expiryDate || '영구'}`);
+      navigator.clipboard?.writeText(signedUrl);
+      S.freeDraft = null;
+      toast(`🎁 ${rec.recipientName} 무료 배포 등록 & 서명 링크 복사 완료!`);
+      openAdminSalesModal('free');
+    });
+
+    const drawFreeRows = () => {
+      const q = ($('freeQ')?.value || '').trim().toLowerCase();
+      const tf = $('freeTypeFilter')?.value || '';
+      const sf = $('freeStatusFilter')?.value || '';
+      const filtered = (reg.freeDist || []).filter((x) => {
+        const isExp = Boolean(x.expiryDate && x.expiryDate < todayIso && x.status === 'active');
+        const effSt = isExp ? 'expired' : (x.status || 'active');
+        if (tf && x.freeType !== tf) return false;
+        if (sf && effSt !== sf) return false;
+        const hay = `${x.licId} ${x.recipientName} ${x.affiliation || ''} ${x.phone || ''} ${x.email || ''} ${x.freeLabel || ''} ${x.memo || ''}`.toLowerCase();
+        if (q && !hay.includes(q)) return false;
+        return true;
+      });
+      const tb = $('freeTableBody');
+      if (!tb) return;
+      tb.innerHTML = filtered.map((x) => {
+        const isExp = Boolean(x.expiryDate && x.expiryDate < todayIso && x.status === 'active');
+        const isRev = x.status === 'revoked';
+        const isConv = x.status === 'converted';
+        const dLeft = x.expiryDate ? Math.ceil((new Date(`${x.expiryDate}T23:59:59+09:00`).getTime() - Date.now()) / 86400000) : null;
+        const stBadge = isConv
+          ? '<span class="nx-lic-badge nx-lic-active" style="background:rgba(79,70,229,.15);color:#4f46e5">💎 유료전환</span>'
+          : (isRev ? '<span class="nx-lic-badge nx-lic-revoked">🚫 회수(정지)</span>'
+            : (isExp ? '<span class="nx-lic-badge nx-lic-expired">⏳ 만료됨</span>'
+              : '<span class="nx-lic-badge nx-lic-active">✓ 활성</span>'));
+        const typeLabel = FREE_RECIPIENT_TYPES.find((t) => t.key === x.freeType)?.label || x.freeLabel || '무료배포';
+        return `
+          <tr>
+            <td><code>${esc(x.licId)}</code><div style="font-size:10.5px;font-weight:700;margin-top:2px">${esc(typeLabel)}</div></td>
+            <td>
+              <b>${esc(x.recipientName)}</b> <span style="font-size:11px;color:var(--muted)">${esc(x.affiliation || '')}</span>
+              <div style="font-size:10.5px">${x.phone ? `<a href="tel:${esc(x.phone)}" style="color:var(--text);text-decoration:none">📞 ${esc(x.phone)}</a>` : ''}${x.email ? ` · <a href="mailto:${esc(x.email)}" style="color:var(--c-corp);text-decoration:none">✉️ ${esc(x.email)}</a>` : ''}</div>
+            </td>
+            <td>
+              <span style="font-weight:700;color:var(--c-corp)">${esc((x.pkg || 'premium').toUpperCase())}</span>${x.simpleFreeMode ? ' · <span style="font-size:10px;color:#059669">간편모드</span>' : ''}
+              <div style="font-size:10.5px;color:var(--muted)">배포 ${esc(x.issuedAt || '-')} · ${x.expiryDate ? `만료 ${esc(x.expiryDate)} (${dLeft >= 0 ? `D-${dLeft}` : '종료'})` : '♾️ 영구 무료'}</div>
+            </td>
+            <td style="max-width:150px">
+              ${stBadge}
+              <div style="font-size:10.5px;color:var(--muted);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(x.memo || '')}">${esc(x.memo || '-')}</div>
+            </td>
+            <td>
+              <div style="display:flex;gap:3px;flex-wrap:wrap">
+                <button type="button" class="btn btn-sm" data-fr-copy="${esc(x.licId)}" title="무료 배포 링크 복사">🔗</button>
+                <button type="button" class="btn btn-emerald btn-sm" data-fr-kakao="${esc(x.licId)}" title="카톡 안내문 복사">📱 카톡</button>
+                <button type="button" class="btn btn-sm" data-fr-ext="${esc(x.licId)}" title="만료일 +30일 연장 및 새 링크 복사">📅 +30일</button>
+                <button type="button" class="btn btn-sm" data-fr-rev="${esc(x.licId)}" title="${isRev ? '복구' : '접근 회수(정지)'}">${isRev ? '▶️ 복구' : '⏸️ 회수'}</button>
+                <button type="button" class="btn btn-primary btn-sm" data-fr-conv="${esc(x.licId)}" title="유료 판매 등록으로 전환">💰 유료전환</button>
+                <button type="button" class="btn btn-sm" data-fr-del="${esc(x.licId)}" title="이력 삭제">🗑️</button>
+              </div>
+            </td>
+          </tr>`;
+      }).join('') || '<tr><td colspan="5" style="text-align:center;padding:22px;color:var(--muted)">아직 등록된 무료 배포 이력이 없습니다. 위에서 직원·지인·체험판 링크를 10초 만에 발급해 보세요.</td></tr>';
+
+      tb.querySelectorAll('[data-fr-copy]').forEach((b) => b.addEventListener('click', () => {
+        const r = (reg.freeDist || []).find((x) => x.licId === b.dataset.frCopy);
+        if (r) { navigator.clipboard?.writeText(r.signedUrl); toast(`🔗 ${r.recipientName} 무료 배포 링크가 복사되었습니다.`); }
+      }));
+      tb.querySelectorAll('[data-fr-kakao]').forEach((b) => b.addEventListener('click', () => {
+        const r = (reg.freeDist || []).find((x) => x.licId === b.dataset.frKakao);
+        if (!r) return;
+        const msg = `[넥서스원 PRO 무료 이용 링크 안내]\n안녕하세요, ${r.recipientName}님! 😊\n넥서스원 PRO(${String(r.pkg || 'premium').toUpperCase()}) 무료 이용 전용 링크를 보내드립니다.\n• 배포번호: ${r.licId}\n• 이용기간: ${r.expiryDate ? `${r.expiryDate}까지` : '영구 무료'}\n• 전용 접속 링크:\n${r.signedUrl}\n\n(브라우저에서 바로 실행되며, 홈 화면에 추가하면 앱처럼 사용하실 수 있습니다.)`;
+        navigator.clipboard?.writeText(msg);
+        toast(`📱 ${r.recipientName}님용 카카오톡 안내문이 복사되었습니다!`);
+      }));
+      tb.querySelectorAll('[data-fr-ext]').forEach((b) => b.addEventListener('click', () => {
+        const r = (reg.freeDist || []).find((x) => x.licId === b.dataset.frExt);
+        if (!r) return;
+        const baseMs = (r.expiryDate && r.expiryDate >= todayIso) ? new Date(`${r.expiryDate}T12:00:00+09:00`).getTime() : Date.now();
+        const nextIso = new Date(baseMs + 30 * 86400 * 1000).toISOString().slice(0, 10);
+        r.expiryDate = nextIso;
+        r.status = 'active';
+        if (r.cfg) r.cfg.expiryDate = nextIso;
+        else r.cfg = buildFreeCfg(r);
+        r.signedUrl = `${location.origin}${location.pathname}?lic=${encodeSignedLicense(r.cfg, eo)}`;
+        saveSellerRegistry(reg);
+        appendAudit('FREE_DIST_EXTENDED', r.licId, `${r.recipientName} 만료일 → ${nextIso} (+30일 연장)`);
+        navigator.clipboard?.writeText(r.signedUrl);
+        openAdminSalesModal('free');
+        toast(`📅 ${r.recipientName} 만료일 +30일(${nextIso}) 연장 & 갱신 링크 복사 완료!`);
+      }));
+      tb.querySelectorAll('[data-fr-rev]').forEach((b) => b.addEventListener('click', () => {
+        const r = (reg.freeDist || []).find((x) => x.licId === b.dataset.frRev);
+        if (!r) return;
+        const nextRev = r.status !== 'revoked';
+        r.status = nextRev ? 'revoked' : 'active';
+        const revokedSet = new Set(reg.revoked || []);
+        if (nextRev) revokedSet.add(r.licId);
+        else revokedSet.delete(r.licId);
+        reg.revoked = [...revokedSet];
+        saveSellerRegistry(reg);
+        appendAudit(nextRev ? 'FREE_DIST_REVOKED' : 'FREE_DIST_RESTORED', r.licId, `${r.recipientName} 무료배포 → ${r.status}`);
+        openAdminSalesModal('free');
+        toast(nextRev ? `🚫 ${r.recipientName} 무료 배포 권한이 회수(정지)되었습니다.` : `▶️ ${r.recipientName} 무료 배포 권한이 복구되었습니다.`);
+      }));
+      tb.querySelectorAll('[data-fr-conv]').forEach((b) => b.addEventListener('click', () => {
+        const r = (reg.freeDist || []).find((x) => x.licId === b.dataset.frConv);
+        if (!r) return;
+        r.status = 'converted';
+        saveSellerRegistry(reg);
+        appendAudit('FREE_DIST_CONVERTED', r.licId, `${r.recipientName} 무료배포 → 유료판매 발급 초안 이관`);
+        S.salesDraft = {
+          ...createClientSampleConfig(),
+          licId: `NX-${new Date().getFullYear()}-${String(reg.sales.length + 1).padStart(3, '0')}`,
+          companyName: r.affiliation || r.recipientName,
+          contactName: r.recipientName,
+          phone: r.phone || '',
+          email: r.email || '',
+          address: '',
+          bizType: '건설·안전시설',
+          saleDate: todayIso,
+          channel: r.freeType === 'friend' ? '지인소개' : '본사직판',
+          pkg: r.pkg || 'deluxe',
+          priceMan: SALES_PACKAGES[r.pkg]?.priceMan || 59,
+          brandTitle: `${r.affiliation || r.recipientName} 인텔리전스`,
+          brandBadge: 'PRO',
+          brandSub: '',
+          sellerCode: reg.sellers[0]?.id || 'SLR-001',
+          expiryDate: '',
+          memo: `무료배포(${r.licId})에서 유료 전환`,
+          tabs: { ...(SALES_PACKAGES[r.pkg]?.tabs || SALES_PACKAGES.deluxe.tabs) },
+          features: { ...(SALES_PACKAGES[r.pkg]?.features || SALES_PACKAGES.deluxe.features) },
+        };
+        openAdminSalesModal('issue');
+        toast(`💰 ${r.recipientName} 정보를 유료 판매링크 발급 화면으로 불러왔습니다!`);
+      }));
+      tb.querySelectorAll('[data-fr-del]').forEach((b) => b.addEventListener('click', () => {
+        const id = b.dataset.frDel;
+        reg.freeDist = (reg.freeDist || []).filter((x) => x.licId !== id);
+        reg.revoked = (reg.revoked || []).filter((x) => x !== id);
+        saveSellerRegistry(reg);
+        appendAudit('FREE_DIST_DELETED', id, '무료 배포 이력 삭제');
+        openAdminSalesModal('free');
+        toast('🗑️ 무료 배포 이력이 삭제되었습니다.');
+      }));
+    };
+
+    drawFreeRows();
+    $('freeQ')?.addEventListener('input', drawFreeRows);
+    $('freeTypeFilter')?.addEventListener('change', drawFreeRows);
+    $('freeStatusFilter')?.addEventListener('change', drawFreeRows);
+    $('btnFreeToPaid')?.addEventListener('click', () => openAdminSalesModal('status'));
+    $('btnFreeCsv')?.addEventListener('click', () => {
+      const hd = '배포번호,대상구분,수령인,소속관계,연락처,이메일,허용등급,간편모드,개별앱표시,배포일자,만료일자,상태,메모,전용링크\n';
+      const rows = (reg.freeDist || []).map((x) => [
+        x.licId, x.freeLabel || x.freeType, x.recipientName, x.affiliation || '', x.phone || '', x.email || '',
+        x.pkg, x.simpleFreeMode ? 'Y' : 'N', x.showAppLinks ? 'Y' : 'N',
+        x.issuedAt || '', x.expiryDate || '영구', x.status || 'active', x.memo || '', x.signedUrl,
+      ].map((v) => `"${String(v ?? '').replace(/"/g, '""')}"`).join(',')).join('\n');
+      const blob = new Blob(['\uFEFF' + hd + rows], { type: 'text/csv;charset=utf-8' });
+      const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `nexusone_free_distribution_${todayIso}.csv`; a.click();
+      toast('📥 무료 배포 이력 CSV 다운로드 완료');
+    });
   }
 
   // ---------- TAB 3: SELLER / RESELLER MANAGEMENT ----------

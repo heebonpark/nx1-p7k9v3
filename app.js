@@ -3756,6 +3756,8 @@ const S = {
   corpLoading: false,
   corps: [],         // 120,028 rows
   corpEnrichMap: new Map(),
+  corpCrnos: [],     // index-aligned 13-digit crno (117,261+ coverage)
+  corpEnrichMeta: null,
   corpTags: [],      // [{ id, label, set }]
   corpStatusBytes: null,
 
@@ -4660,6 +4662,8 @@ async function ensureCorpLoaded(onProgress) {
     const [c0, c1, c2, enrich, status] = res;
     S.corps = [...c0, ...c1, ...c2];
     S.corpEnrichMap = new Map(enrich.list || []);
+    S.corpCrnos = enrich.crnos || [];
+    S.corpEnrichMeta = enrich.meta || null;
     S.corpTags = Object.entries(enrich.tags || {}).map(([id, obj]) => ({
       id, label: obj.label, set: new Set(obj.b || []),
     }));
@@ -5611,20 +5615,32 @@ function fallbackSectorMult(indName) {
 }
 
 function resolveCorpRevenue(r, enr, inds) {
-  if (!enr) return { won: 0, kind: 'none', label: '', mult: 0, payroll: 0, emp: 0, wage: 0 };
-  const dartWon = enr[0] || enr[1] || enr[2] || 0;
-  if (dartWon > 0) {
-    return { won: dartWon, kind: 'dart', label: '공시', mult: 0, payroll: 0, emp: enr[12] || enr[9] || 0, wage: enr[15] || 0 };
+  if (!enr) return { won: 0, op: null, ni: null, opMargin: null, yr: 0, kind: 'none', label: '', mult: 0, payroll: 0, emp: 0, wage: 0 };
+  const baseYr = Number(enr[17]) || 0;
+  let dartWon = 0, op = null, ni = null, yr = baseYr;
+  if (enr[0] > 0) {
+    dartWon = enr[0]; op = enr[3] ?? null; ni = enr[6] ?? null; yr = baseYr;
+  } else if (enr[1] > 0) {
+    dartWon = enr[1]; op = enr[4] ?? null; ni = enr[7] ?? null; yr = baseYr ? baseYr - 1 : 0;
+  } else if (enr[2] > 0) {
+    dartWon = enr[2]; op = enr[5] ?? null; ni = enr[8] ?? null; yr = baseYr ? baseYr - 2 : 0;
   }
+  if (dartWon > 0) {
+    const opMargin = (op !== null && op !== undefined && dartWon > 0) ? Math.round((op / dartWon) * 1000) / 10 : null;
+    const label = yr ? `${yr} 공시` : '공시';
+    return { won: dartWon, op, ni, opMargin, yr, kind: 'dart', label, mult: 0, payroll: 0, emp: enr[12] || enr[9] || 0, wage: enr[15] || 0 };
+  }
+  const fallbackOp = enr[3] ?? enr[4] ?? enr[5] ?? null;
+  const fallbackNi = enr[6] ?? enr[7] ?? enr[8] ?? null;
   const emp = enr[12] || enr[9] || 0;
   if (emp > 0) {
     const wage = enr[15] > 500000 ? enr[15] : (enr[10] > 6000000 ? Math.round(enr[10] / 12) : 3400000);
     const mult = S.corpIndMult?.get(r[12]) || fallbackSectorMult(inds[r[12]] || '');
     const payroll = emp * wage * 12;
     const estWon = Math.round(payroll * mult);
-    return { won: estWon, kind: 'est', label: '추정', mult, payroll, emp, wage };
+    return { won: estWon, op: fallbackOp, ni: fallbackNi, opMargin: null, yr: baseYr, kind: 'est', label: '추정', mult, payroll, emp, wage };
   }
-  return { won: 0, kind: 'none', label: '', mult: 0, payroll: 0, emp: 0, wage: 0 };
+  return { won: 0, op: fallbackOp, ni: fallbackNi, opMargin: null, yr: baseYr, kind: 'none', label: '', mult: 0, payroll: 0, emp: 0, wage: 0 };
 }
 
 function fmtRevEok(won) {
@@ -5634,6 +5650,14 @@ function fmtRevEok(won) {
   if (eok >= 100) return `${fmt(Math.round(eok))}억`;
   if (eok >= 1) return `${fmtDec(eok, 1)}억`;
   return `${fmt(Math.round(won / 1e4))}만`;
+}
+
+function fmtSignedEok(won) {
+  if (won === null || won === undefined) return '-';
+  const n = Number(won);
+  if (!Number.isFinite(n)) return '-';
+  if (n === 0) return '0원';
+  return `${n < 0 ? '-' : ''}${fmtRevEok(Math.abs(n))}`;
 }
 
 // ===== SHARED PRO GIS HELPERS (V40: CORP + REALESTATE + BID + SBIZ UNIFIED) =====
@@ -5771,7 +5795,7 @@ function renderCorpTab() {
   const tagObj = S.corpTag ? S.corpTags.find((t) => t.id === S.corpTag) : null;
 
   const filtered = [];
-  let dartCnt = 0, estCnt = 0, totalRevEok = 0;
+  let dartCnt = 0, opCnt = 0, estCnt = 0, totalRevEok = 0;
   for (let i = 0; i < S.corps.length; i++) {
     const r = S.corps[i];
     if (S.corpSd) {
@@ -5796,12 +5820,14 @@ function renderCorpTab() {
     }
     if (revInfo.kind === 'dart') dartCnt++;
     else if (revInfo.kind === 'est') estCnt++;
+    if (revInfo.op !== null && revInfo.op !== undefined && revInfo.op !== 0) opCnt++;
     if (revInfo.won > 0) totalRevEok += revInfo.won / 1e8;
     filtered.push({ i, r, bizClean, enr, stCode, revInfo });
   }
 
   if (S.corpSort === 'rev') filtered.sort((a, b) => (b.revInfo.won || 0) - (a.revInfo.won || 0));
-  else if (S.corpSort === 'dartRev') filtered.sort((a, b) => (b.enr?.[0] || 0) - (a.enr?.[0] || 0));
+  else if (S.corpSort === 'dartRev') filtered.sort((a, b) => (b.revInfo.kind === 'dart' ? b.revInfo.won : 0) - (a.revInfo.kind === 'dart' ? a.revInfo.won : 0));
+  else if (S.corpSort === 'op') filtered.sort((a, b) => (b.revInfo.op ?? -1e18) - (a.revInfo.op ?? -1e18));
   else if (S.corpSort === 'emp') filtered.sort((a, b) => (b.enr?.[12] || b.enr?.[9] || 0) - (a.enr?.[12] || a.enr?.[9] || 0));
   else if (S.corpSort === 'net') filtered.sort((a, b) => ((b.enr?.[13] || 0) - (b.enr?.[14] || 0)) - ((a.enr?.[13] || 0) - (a.enr?.[14] || 0)));
   else if (S.corpSort === 'est') filtered.sort((a, b) => (b.r[13] || 0) - (a.r[13] || 0));
@@ -5812,7 +5838,7 @@ function renderCorpTab() {
   const pageRows = filtered.slice((S.corpPage - 1) * perPage, S.corpPage * perPage);
   const stLabel = (c) => (c === 1 ? '<span class="tag tag-sbiz">계속</span>' : c === 2 ? '<span class="tag tag-bid">휴업</span>' : c === 3 ? '<span class="tag tag-re">폐업</span>' : '<span class="tag tag-gray">미확인</span>');
 
-  const corpRevLabels = { dart: '💰 DART 공시매출만', any: '📊 공시+추정 매출 보유', 10: '10억+', 50: '50억+', 100: '100억+', 500: '500억+', 1000: '1,000억+' };
+  const corpRevLabels = { dart: '💰 금융위·DART 공식결산만', any: '📊 공식+추정 매출 보유', 10: '10억+', 50: '50억+', 100: '100억+', 500: '500억+', 1000: '1,000억+' };
   const corpStLabels = { 1: '계속사업자', 2: '휴업자', 3: '폐업자' };
   const corpActiveTags = [];
   if (S.corpSd) corpActiveTags.push(['sd', `📍 ${sidos.find((s) => s.sd === S.corpSd)?.n || S.corpSd}`]);
@@ -5827,7 +5853,7 @@ function renderCorpTab() {
       <div class="card-head">
         <div>
           <h2 class="card-title">🏢 전국 기업분석 PRO <span class="tag tag-corp">${fmt(filtered.length)}사</span></h2>
-          <p class="card-sub">DART 공시매출 (${fmt(dartCnt)}사) + 국민연금 실급여·업종보정 추정매출 (${fmt(estCnt)}사) · 총 ${fmt(dartCnt + estCnt)}사 매출 분석 지원</p>
+          <p class="card-sub">금융위·DART 공식 결산매출 (${fmt(dartCnt)}사 · 영업이익 ${fmt(opCnt)}사) + 국민연금 실급여·업종보정 추정매출 (${fmt(estCnt)}사)</p>
         </div>
         <div style="display:flex;gap:6px;flex-wrap:wrap">
           <button id="btnCorpViewMap" class="btn btn-sm ${S.corpView === 'map' ? 'btn-primary' : ''}" type="button">🗺️ 기업 지도</button>
@@ -5840,7 +5866,7 @@ function renderCorpTab() {
 
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px;margin-bottom:10px">
         <div class="domain-box" style="padding:8px 10px"><div style="font-size:11px;color:var(--muted)">조회 법인</div><b style="font-size:15px">${fmt(filtered.length)}사</b></div>
-        <div class="domain-box" style="padding:8px 10px"><div style="font-size:11px;color:var(--muted)">DART 공시매출</div><b style="font-size:15px;color:#059669">${fmt(dartCnt)}사</b></div>
+        <div class="domain-box" style="padding:8px 10px"><div style="font-size:11px;color:var(--muted)">공식 결산매출 (금융위·DART)</div><b style="font-size:15px;color:#059669">${fmt(dartCnt)}사</b><span style="font-size:10.5px;color:var(--muted);margin-left:4px">(영익 ${fmt(opCnt)}사)</span></div>
         <div class="domain-box" style="padding:8px 10px"><div style="font-size:11px;color:var(--muted)">국민연금 추정매출</div><b style="font-size:15px;color:#4f46e5">${fmt(estCnt)}사</b></div>
         <div class="domain-box" style="padding:8px 10px"><div style="font-size:11px;color:var(--muted)">합산 매출 규모</div><b style="font-size:15px">${totalRevEok >= 10000 ? `${fmtDec(totalRevEok / 10000, 1)}조원` : `${fmt(Math.round(totalRevEok))}억원`}</b></div>
       </div>
@@ -5848,7 +5874,7 @@ function renderCorpTab() {
       <div class="nx-filter-bar">
         <input id="fCorpQ" class="input nx-q-inp" value="${esc(S.corpQ)}" placeholder="🔍 기업명 · 대표자 · 사업자번호 · 주소 · 업종 검색" />
         <button id="btnCorpQuickAny" type="button" class="toggle-pill ${S.corpRevMin === 'any' ? 'on' : ''}">📊 매출보유</button>
-        <button id="btnCorpQuickDart" type="button" class="toggle-pill ${S.corpRevMin === 'dart' ? 'on-emerald' : ''}">💰 공시만</button>
+        <button id="btnCorpQuickDart" type="button" class="toggle-pill ${S.corpRevMin === 'dart' ? 'on-emerald' : ''}">💰 공식결산만</button>
         <button id="btnCorpFilterToggle" type="button" class="btn btn-sm ${S.corpFilterOpen ? 'btn-primary' : ''}">
           🎛️ 상세조건${corpFilterCnt > 0 ? `<span class="nx-filter-badge">${corpFilterCnt}</span>` : ''} ${S.corpFilterOpen ? '▴' : '▾'}
         </button>
@@ -5878,8 +5904,8 @@ function renderCorpTab() {
               <label class="nx-opt-field">💰 매출 규모
                 <select id="fCorpRev" class="select">
                   <option value="" ${S.corpRevMin === '' ? 'selected' : ''}>전체 매출</option>
-                  <option value="dart" ${S.corpRevMin === 'dart' ? 'selected' : ''}>💰 DART 공시매출만</option>
-                  <option value="any" ${S.corpRevMin === 'any' ? 'selected' : ''}>📊 공시+추정 매출 보유</option>
+                  <option value="dart" ${S.corpRevMin === 'dart' ? 'selected' : ''}>💰 금융위·DART 공식결산만</option>
+                  <option value="any" ${S.corpRevMin === 'any' ? 'selected' : ''}>📊 공식+추정 매출 보유</option>
                   <option value="10" ${S.corpRevMin === '10' ? 'selected' : ''}>10억 이상</option>
                   <option value="50" ${S.corpRevMin === '50' ? 'selected' : ''}>50억 이상</option>
                   <option value="100" ${S.corpRevMin === '100' ? 'selected' : ''}>100억 이상</option>
@@ -5909,8 +5935,9 @@ function renderCorpTab() {
               </label>
               <label class="nx-opt-field">↕️ 정렬 기준
                 <select id="fCorpSort" class="select">
-                  <option value="rev" ${S.corpSort === 'rev' ? 'selected' : ''}>매출 높은순 (공시+추정)</option>
-                  <option value="dartRev" ${S.corpSort === 'dartRev' ? 'selected' : ''}>DART 공시매출순</option>
+                  <option value="rev" ${S.corpSort === 'rev' ? 'selected' : ''}>매출 높은순 (공식+추정)</option>
+                  <option value="dartRev" ${S.corpSort === 'dartRev' ? 'selected' : ''}>공식 결산매출순 (금융위·DART)</option>
+                  <option value="op" ${S.corpSort === 'op' ? 'selected' : ''}>공식 영업이익 높은순</option>
                   <option value="emp" ${S.corpSort === 'emp' ? 'selected' : ''}>국민연금 인원순</option>
                   <option value="net" ${S.corpSort === 'net' ? 'selected' : ''}>최근 순증(채용)순</option>
                   <option value="est" ${S.corpSort === 'est' ? 'selected' : ''}>최근 설립순</option>
@@ -5969,7 +5996,7 @@ function renderCorpTab() {
           </div>
           <div class="marker-legend">
             <span class="gis-label">범례:</span>
-            <span class="ml-item"><span class="ml-dot" style="background:#059669"></span>💰 DART 공시매출</span>
+            <span class="ml-item"><span class="ml-dot" style="background:#059669"></span>💰 금융위·DART 공식결산</span>
             <span class="ml-item"><span class="ml-dot" style="background:#4f46e5"></span>📊 국민연금 추정매출</span>
             <span class="ml-item"><span class="ml-dot" style="background:#f59e0b"></span>👑 상장사(금테)</span>
             <span class="ml-item" style="margin-left:auto;color:var(--muted)">지도 클릭 시 반경 ${S.corpRadius / 1000}km 법인·매출 정밀진단</span>
@@ -5982,17 +6009,20 @@ function renderCorpTab() {
         <table class="data-table">
           <thead>
             <tr>
-              <th>기업명</th><th>시장</th><th>대표자</th><th>업종</th><th>매출액 (공시/추정)</th><th>국민연금(순증)</th><th>국세청</th><th>소재지</th>
+              <th>기업명</th><th>시장</th><th>대표자</th><th>업종</th><th>매출액 (결산/추정)</th><th>영업이익 (이익률)</th><th>국민연금(순증)</th><th>국세청</th><th>소재지</th>
             </tr>
           </thead>
           <tbody>
             ${pageRows.map((x) => {
               const ri = x.revInfo;
               const revHtml = ri.kind === 'dart'
-                ? `<b style="color:#059669">${fmtRevEok(ri.won)}</b> <span style="font-size:10px;padding:1px 5px;border-radius:4px;background:rgba(16,185,129,.14);color:#047857;font-weight:700">공시</span>`
+                ? `<b style="color:#059669">${fmtRevEok(ri.won)}</b> <span style="font-size:10px;padding:1px 5px;border-radius:4px;background:rgba(16,185,129,.14);color:#047857;font-weight:700">${esc(ri.label)}</span>`
                 : (ri.kind === 'est'
                   ? `<b style="color:#4f46e5" title="국민연금 ${fmt(ri.emp)}명 × 월 ${fmtDec(ri.wage / 1e4, 0)}만 × 12 × 업종배수 ${ri.mult}x">~${fmtRevEok(ri.won)}</b> <span style="font-size:10px;padding:1px 5px;border-radius:4px;background:rgba(79,70,229,.12);color:#4f46e5;font-weight:700">추정</span>`
                   : '<span style="color:var(--muted)">-</span>');
+              const opHtml = (ri.op !== null && ri.op !== undefined)
+                ? `<b style="color:${ri.op > 0 ? '#059669' : ri.op < 0 ? '#dc2626' : 'var(--muted)'}">${fmtSignedEok(ri.op)}</b>${ri.opMargin !== null ? ` <span style="font-size:10.5px;color:var(--muted)">(${ri.opMargin > 0 ? '+' : ''}${ri.opMargin}%)</span>` : ''}`
+                : '<span style="color:var(--muted)">-</span>';
               const emp = x.enr?.[12] || x.enr?.[9] || 0;
               const net = (x.enr?.[13] || 0) - (x.enr?.[14] || 0);
               return `
@@ -6000,13 +6030,14 @@ function renderCorpTab() {
                   <td><b>${esc(x.r[0])}</b>${x.r[3] ? ` <span class="mono" style="font-size:11px;color:var(--muted)">${esc(x.r[3])}</span>` : ''}</td>
                   <td><span class="tag ${x.r[5] <= 1 ? 'tag-corp' : 'tag-gray'}">${esc(corpTypes[x.r[5]] || '기타')}</span></td>
                   <td>${esc(x.r[4] || '-')}</td>
-                  <td style="max-width:170px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(inds[x.r[12]] || '-')}</td>
+                  <td style="max-width:160px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(inds[x.r[12]] || '-')}</td>
                   <td style="white-space:nowrap">${revHtml}</td>
+                  <td style="white-space:nowrap">${opHtml}</td>
                   <td>${emp ? `${fmt(emp)}명` : '-'}${net ? ` <span style="color:${net > 0 ? 'var(--c-sbiz)' : 'var(--c-re)'}">(${net > 0 ? '+' : ''}${net})</span>` : ''}</td>
                   <td>${stLabel(x.stCode)}</td>
-                  <td style="max-width:210px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--muted)">${esc(x.r[7] || '-')}</td>
+                  <td style="max-width:200px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--muted)">${esc(x.r[7] || '-')}</td>
                 </tr>`;
-            }).join('') || '<tr><td colspan="8" style="text-align:center;padding:24px;color:var(--muted)">조건에 맞는 법인이 없습니다.</td></tr>'}
+            }).join('') || '<tr><td colspan="9" style="text-align:center;padding:24px;color:var(--muted)">조건에 맞는 법인이 없습니다.</td></tr>'}
           </tbody>
         </table>
       </div>
@@ -6069,10 +6100,13 @@ function renderCorpTab() {
   $('btnCorpCsv').addEventListener('click', () => {
     downloadCsv(
       `기업분석_${getTodayKstIso()}.csv`,
-      ['기업명', '시장', '대표자', '사업자번호', '업종', '매출액(억)', '매출구분', '국민연금인원', '전화번호', '주소'],
+      ['기업명', '시장', '대표자', '사업자번호', '업종', '매출액(억)', '매출구분', '영업이익(억)', '영업이익률(%)', '당기순이익(억)', '국민연금인원', '전화번호', '주소'],
       filtered.slice(0, 5000).map((x) => [
         x.r[0], corpTypes[x.r[5]] || '기타', x.r[4] || '', x.r[6] || '', inds[x.r[12]] || '',
         x.revInfo.won > 0 ? Number((x.revInfo.won / 1e8).toFixed(1)) : '', x.revInfo.label || '-',
+        x.revInfo.op !== null && x.revInfo.op !== undefined ? Number((x.revInfo.op / 1e8).toFixed(1)) : '',
+        x.revInfo.opMargin !== null && x.revInfo.opMargin !== undefined ? x.revInfo.opMargin : '',
+        x.revInfo.ni !== null && x.revInfo.ni !== undefined ? Number((x.revInfo.ni / 1e8).toFixed(1)) : '',
         x.enr?.[12] || x.enr?.[9] || 0, x.r[8] || '', x.r[7] || '',
       ])
     );
@@ -6175,7 +6209,7 @@ function initCorpLeaflet(filtered, corpTypes, inds) {
         mk.bindPopup(() => `
           <div style="min-width:240px;max-width:300px;font-size:12px;line-height:1.45">
             <div style="font-weight:800;font-size:13.5px;margin-bottom:4px">🏢 ${esc(g.name)} (${fmt(g.cnt)}사)</div>
-            <div style="font-size:11.5px;color:#475569;margin-bottom:6px">DART 공시 ${fmt(g.dart)}사 · 상장 ${fmt(g.listed)}사 · 합산매출 <b>${g.revEok >= 10000 ? `${fmtDec(g.revEok / 10000, 1)}조원` : `${fmt(Math.round(g.revEok))}억원`}</b></div>
+            <div style="font-size:11.5px;color:#475569;margin-bottom:6px">공식결산 ${fmt(g.dart)}사 · 상장 ${fmt(g.listed)}사 · 합산매출 <b>${g.revEok >= 10000 ? `${fmtDec(g.revEok / 10000, 1)}조원` : `${fmt(Math.round(g.revEok))}억원`}</b></div>
             <div class="nx-pop-list">${g.top.map((x) => `<div class="nx-pop-row" style="cursor:pointer" onclick="window._nxOpenCorp(${x.i})"><span style="font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(x.r[0])}</span><b style="color:${x.revInfo.kind === 'dart' ? '#059669' : '#4f46e5'};flex-shrink:0">${x.revInfo.won ? fmtRevEok(x.revInfo.won) : '-'}</b></div>`).join('')}</div>
           </div>`, { maxWidth: 320 });
         mk.on('click', (ev) => { S._justClickedCorpMk = true; L.DomEvent.stopPropagation(ev); });
@@ -6197,7 +6231,7 @@ function initCorpLeaflet(filtered, corpTypes, inds) {
           fillColor: isDart ? '#059669' : (x.revInfo.won > 0 ? '#4f46e5' : '#64748b'),
           fillOpacity: 0.9, weight: isListed ? 2.4 : 1.5,
         });
-        mk.bindTooltip(`<b>${esc(x.r[0])}</b> · ${x.revInfo.won ? fmtRevEok(x.revInfo.won) : '-'} · ${esc(inds[x.r[12]] || '')}`, { direction: 'top' });
+        mk.bindTooltip(`<b>${esc(x.r[0])}</b> · 매출 ${x.revInfo.won ? fmtRevEok(x.revInfo.won) : '-'}${x.revInfo.op !== null && x.revInfo.op !== undefined ? ` · 영익 ${fmtSignedEok(x.revInfo.op)}` : ''} · ${esc(inds[x.r[12]] || '')}`, { direction: 'top' });
         mk.on('click', (ev) => { S._justClickedCorpMk = true; L.DomEvent.stopPropagation(ev); openCorpDrawer(x.i); });
         mk.addTo(S.corpLeafletLayer);
       }
@@ -6334,29 +6368,34 @@ function openCorpDrawer(idx) {
   if (!r) return;
   const bizClean = String(r[6] || '').replace(/\D/g, '');
   const enr = S.corpEnrichMap.get(bizClean);
+  const crno = String(enr?.[16] || S.corpCrnos?.[idx] || '').replace(/\D/g, '');
   const inds = S.core.corpMeta.industries || [];
   const corpTypes = S.core.corpMeta.corp || [];
   const tags = S.corpTags.filter((t) => t.set.has(bizClean)).map((t) => t.label);
   const reg = S.fusionByRid.get(r[15]);
   const revInfo = resolveCorpRevenue(r, enr, inds);
+  const fy = Number(enr?.[17]) || 0;
 
-  // 3-year DART revenue SVG bars OR NPS Payroll-Calibrated Estimated Revenue card
-  let chartHtml = '<div style="font-size:12px;color:var(--muted)">DART 공시 및 국민연금 급여 데이터 미수록 법인</div>';
+  // 3-year FSC/DART official revenue + operating profit chart OR NPS Payroll-Calibrated Estimated Revenue card
+  let chartHtml = '<div style="font-size:12px;color:var(--muted)">금융위·DART 공시 및 국민연금 급여 데이터 미수록 법인</div>';
   if (enr && (enr[0] || enr[1] || enr[2])) {
     const vals = [
-      { yr: '전전기', rev: (enr[2] || 0) / 1e8, op: (enr[5] || 0) / 1e8 },
-      { yr: '전기', rev: (enr[1] || 0) / 1e8, op: (enr[4] || 0) / 1e8 },
-      { yr: '당기', rev: (enr[0] || 0) / 1e8, op: (enr[3] || 0) / 1e8 },
+      { yr: fy ? `${fy - 2}년` : '전전기', rev: (enr[2] || 0) / 1e8, op: enr[5] ?? null },
+      { yr: fy ? `${fy - 1}년` : '전기', rev: (enr[1] || 0) / 1e8, op: enr[4] ?? null },
+      { yr: fy ? `${fy}년` : '당기', rev: (enr[0] || 0) / 1e8, op: enr[3] ?? null },
     ];
     const maxV = Math.max(1, ...vals.map((v) => Math.abs(v.rev)));
     chartHtml = `
-      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;align-items:end;height:120px;padding:12px 10px 4px;background:var(--surface-2);border-radius:10px;border:1px solid var(--border)">
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;align-items:end;min-height:138px;padding:12px 10px 8px;background:var(--surface-2);border-radius:10px;border:1px solid var(--border)">
         ${vals.map((v) => {
-          const h = Math.max(8, Math.round(Math.abs(v.rev) / maxV * 70));
+          const h = v.rev > 0 ? Math.max(10, Math.round(Math.abs(v.rev) / maxV * 68)) : 4;
+          const opTxt = v.op !== null && v.op !== undefined ? `영익 ${fmtSignedEok(v.op)}` : '';
+          const opCol = v.op > 0 ? '#059669' : (v.op < 0 ? '#dc2626' : 'var(--muted)');
           return `<div style="text-align:center">
-            <div style="font-size:11px;font-weight:700">${v.rev ? fmtDec(v.rev, 0) + '억' : '-'}</div>
-            <div style="height:${h}px;background:linear-gradient(180deg,#4f46e5,#818cf8);border-radius:6px 6px 2px 2px;margin:4px auto;width:44px"></div>
-            <div style="font-size:11px;color:var(--muted)">${v.yr}</div>
+            <div style="font-size:11px;font-weight:800;color:var(--text)">${v.rev > 0 ? fmtRevEok(v.rev * 1e8) : '-'}</div>
+            <div style="height:${h}px;background:${v.rev > 0 ? 'linear-gradient(180deg,#059669,#34d399)' : 'var(--border)'};border-radius:6px 6px 2px 2px;margin:4px auto;width:44px"></div>
+            <div style="font-size:11px;font-weight:700;color:var(--muted)">${v.yr}</div>
+            ${opTxt ? `<div style="font-size:10px;font-weight:700;color:${opCol};margin-top:1px">${opTxt}</div>` : ''}
           </div>`;
         }).join('')}
       </div>
@@ -6369,11 +6408,15 @@ function openCorpDrawer(idx) {
           <b style="font-size:16px;color:#4f46e5">약 ${fmtRevEok(revInfo.won)}원</b>
         </div>
         <div style="font-size:11.5px;color:var(--muted);line-height:1.55">
-          • 산출 근거: 국민연금 <b>${fmt(revInfo.emp)}명</b> × 월평균급여 <b>${fmtDec(revInfo.wage / 1e4, 0)}만원</b> × 12개월 (연 인건비 약 ${fmtRevEok(revInfo.payroll)}원) × 동종업계 DART 실측 배수 <b>${revInfo.mult}x</b><br/>
-          • 비상장·비외감 법인의 영업 규모 가늠용 실측 보정 추정치입니다.
+          • 산출 근거: 국민연금 <b>${fmt(revInfo.emp)}명</b> × 월평균급여 <b>${fmtDec(revInfo.wage / 1e4, 0)}만원</b> × 12개월 (연 인건비 약 ${fmtRevEok(revInfo.payroll)}원) × 동종업계 실측 배수 <b>${revInfo.mult}x</b><br/>
+          • 외부감사 대상 외 비상장 법인의 영업 규모 가늠용 실측 보정 추정치입니다.
         </div>
       </div>`;
   }
+
+  const fmtCrno = (c) => (c.length === 13 ? `${c.slice(0, 6)}-${c.slice(6)}` : c);
+  const opColor = revInfo.op > 0 ? '#059669' : (revInfo.op < 0 ? '#dc2626' : 'inherit');
+  const niColor = revInfo.ni > 0 ? '#059669' : (revInfo.ni < 0 ? '#dc2626' : 'inherit');
 
   openDrawer({
     title: `${r[0]}`,
@@ -6381,6 +6424,7 @@ function openCorpDrawer(idx) {
     body: `
       <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px">
         <span class="tag tag-corp">사업자 ${esc(r[6] || '-')}</span>
+        ${crno.length === 13 ? `<span class="tag tag-gray">법인 ${esc(fmtCrno(crno))}</span>` : ''}
         ${r[3] ? `<span class="tag tag-gray">종목 ${esc(r[3])}</span>` : ''}
         ${tags.map((t) => `<span class="tag tag-sbiz">✦ ${esc(t)}</span>`).join('')}
       </div>
@@ -6391,15 +6435,18 @@ function openCorpDrawer(idx) {
         <div class="domain-stat-row"><span>전화 / 홈페이지</span><b>${esc(r[8] || '-')} ${r[10] ? `· <a href="https://${esc(r[10].replace(/^https?:\/\//, ''))}" target="_blank" rel="noopener">웹사이트</a>` : ''}</b></div>
       </div>
 
-      <h4 style="margin:12px 0 6px;font-size:13px">📊 매출 분석 (${revInfo.kind === 'dart' ? 'DART 3개년 공시' : (revInfo.kind === 'est' ? '국민연금 실급여 추정' : '미수록')})</h4>
+      <h4 style="margin:12px 0 6px;font-size:13px">📊 매출 · 영업이익 분석 (${revInfo.kind === 'dart' ? `금융위·DART 3개년 공식결산${fy ? ` · ${fy} 기준` : ''}` : (revInfo.kind === 'est' ? '국민연금 실급여 추정' : '미수록')})</h4>
       ${chartHtml}
 
       ${enr ? `<div class="domain-box" style="margin-top:12px">
-        <div class="domain-stat-row"><span>매출액 (${revInfo.label || '미수록'})</span><b style="color:${revInfo.kind === 'dart' ? '#059669' : '#4f46e5'}">${revInfo.won > 0 ? `${revInfo.kind === 'est' ? '~' : ''}${fmtRevEok(revInfo.won)}원` : '-'}${revInfo.won > 0 && (enr[12] || enr[9]) > 0 ? ` (1인당 ${fmtDec((revInfo.won / (enr[12] || enr[9])) / 1e8, 1)}억)` : ''}</b></div>
-        <div class="domain-stat-row"><span>당기 영업이익 / 순이익</span><b>${enr[3] ? `${fmtDec(enr[3] / 1e8, 1)}억${enr[0] > 0 ? ` (${(enr[3] / enr[0] * 100).toFixed(1)}%)` : ''}` : '-'} / ${enr[6] ? fmtDec(enr[6] / 1e8, 1) + '억' : '-'}</b></div>
+        <div class="domain-stat-row"><span>결산 매출액 (${esc(revInfo.label || '미수록')})</span><b style="color:${revInfo.kind === 'dart' ? '#059669' : '#4f46e5'}">${revInfo.won > 0 ? `${revInfo.kind === 'est' ? '~' : ''}${fmtRevEok(revInfo.won)}원` : '-'}${revInfo.won > 0 && (enr[12] || enr[9]) > 0 ? ` (1인당 ${fmtDec((revInfo.won / (enr[12] || enr[9])) / 1e8, 1)}억)` : ''}</b></div>
+        <div class="domain-stat-row"><span>결산 영업이익 (이익률)</span><b style="color:${opColor}">${revInfo.op !== null && revInfo.op !== undefined ? `${fmtSignedEok(revInfo.op)}원${revInfo.opMargin !== null ? ` (${revInfo.opMargin > 0 ? '+' : ''}${revInfo.opMargin}%)` : ''}` : '-'}</b></div>
+        <div class="domain-stat-row"><span>결산 당기순이익</span><b style="color:${niColor}">${revInfo.ni !== null && revInfo.ni !== undefined ? `${fmtSignedEok(revInfo.ni)}원` : '-'}</b></div>
         <div class="domain-stat-row"><span>국민연금 가입자</span><b>${fmt(enr[12] || enr[9] || 0)}명 (신규 +${fmt(enr[13] || 0)} / 퇴사 -${fmt(enr[14] || 0)})</b></div>
         <div class="domain-stat-row"><span>추정 평균연봉 / 월급</span><b>${enr[10] ? fmtDec(enr[10] / 1e4, 0) + '만원' : (enr[15] ? `월 ${fmtDec(enr[15] / 1e4, 0)}만원 (연 ${fmtDec(enr[15] * 12 / 1e4, 0)}만원)` : '-')}</b></div>
       </div>` : ''}
+
+      <div id="fscLiveBox" style="margin-top:12px"></div>
 
       ${(() => {
         const revNow = revInfo.won || 0, revPrev = enr?.[1] || 0;
@@ -6412,6 +6459,8 @@ function openCorpDrawer(idx) {
         if (stCode === 2 || stCode === 3) { tier = '⛔ HOLD (휴·폐업 주의)'; msg.push('국세청 휴/폐업 이력 확인 — 여신·장기약정 계약 전 실시간 상태 재검증 필수.'); }
         else {
           if (yoy !== null && yoy >= 15) msg.push(`매출 YoY <b>+${yoy}% 고성장</b> — 사업장 확장·설비 증설 예산 집행 가능성 높음.`);
+          if (revInfo.opMargin !== null && revInfo.opMargin >= 10) msg.push(`영업이익률 <b>+${revInfo.opMargin}% 고수익 흑자</b> — 프리미엄 솔루션 도입 여력 우수.`);
+          else if (revInfo.op !== null && revInfo.op < 0) msg.push(`당기 영업손실(<b>${fmtSignedEok(revInfo.op)}원</b>) — 원가절감·효율화 중심 제안 권장.`);
           if (netHire >= 3) msg.push(`국민연금 인원 <b>+${netHire}명 순증</b>(총 ${fmt(emp)}명) — 출입통제·오피스 보안/통신·법인금융 확장 시그널.`);
           if (tags.length) msg.push(`<b>${esc(tags.join(', '))}</b> 인증 기업 — 신용·결제 안정성 우수, 고단가 장기 계약 타깃.`);
           if (r[5] <= 1) msg.push('상장법인 — 본사/지점 통합 B2B 제안 및 파트너십 적합.');
@@ -6428,6 +6477,7 @@ function openCorpDrawer(idx) {
     `,
     foot: `
       <button id="dwPipe" class="btn btn-primary btn-sm">💼 파이프라인 담기</button>
+      ${crno.length === 13 ? `<button id="dwFsc" class="btn btn-sm" style="background:#0284c7;color:#fff;border-color:#0284c7">📊 금융위 재무제표 실시간 조회</button>` : ''}
       ${bizClean.length === 10 ? `<button id="dwNts" class="btn btn-emerald btn-sm">🧾 국세청 실시간 상태 조회</button>` : ''}
       ${reg ? `<button id="dw360" class="btn btn-sm">⚡ ${esc(reg.name)} 360° 보기</button>` : ''}
     `,
@@ -6435,9 +6485,78 @@ function openCorpDrawer(idx) {
       $('dwPipe')?.addEventListener('click', () => addToPipeline({
         id: `corp:${bizClean || idx}`, domain: 'corp', title: r[0],
         sub: `${r[4] || ''} · ${inds[r[12]] || ''}`, region: reg?.fullName || r[7] || '',
-        valueMan: enr?.[0] ? Math.round(enr[0] / 1e4) : 0,
+        valueMan: revInfo.won ? Math.round(revInfo.won / 1e4) : 0,
       }));
       $('dw360')?.addEventListener('click', () => { closeDrawer(); S.selectedRid = reg.rid; switchTab('overview'); });
+      $('dwFsc')?.addEventListener('click', async () => {
+        const box = $('fscLiveBox');
+        const btn = $('dwFsc');
+        if (btn) btn.disabled = true;
+        box.innerHTML = '<div class="tag tag-gray">📊 금융위원회 공식 재무제표 API 실시간 조회 중…</div>';
+        try {
+          const { dataGoEnc } = getApiKeys();
+          const url = `https://apis.data.go.kr/1160100/service/GetFinaStatInfoService_V2/getSummFinaStat_V2?serviceKey=${dataGoEnc}&pageNo=1&numOfRows=30&resultType=json&crno=${crno}`;
+          const res = await fetch(url);
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          const j = await res.json();
+          const raw = j?.response?.body?.items?.item;
+          const items = Array.isArray(raw) ? raw : (raw ? [raw] : []);
+          const krwItems = items.filter((it) => !it.curCd || it.curCd === 'KRW');
+          const list = krwItems.length ? krwItems : items;
+          if (!list.length) {
+            box.innerHTML = `<div class="diag-card" style="border-color:var(--border)"><div class="diag-title">ℹ️ 금융위 공시 재무제표 미수록 법인</div><div class="diag-detail">외부감사 대상 외 비상장·중소법인은 금융위 요약재무제표가 공시되지 않을 수 있습니다. 상단의 국민연금 실급여 추정매출을 참고하세요.</div></div>`;
+          } else {
+            // Deduplicate per bizYear preferring 연결(110) with positive sale, else 별도(120)
+            const byYr = new Map();
+            for (const it of list) {
+              const yr = String(it.bizYear || '').trim();
+              if (!yr) continue;
+              const prev = byYr.get(yr);
+              const sale = Number(it.enpSaleAmt || 0);
+              const prevSale = Number(prev?.enpSaleAmt || 0);
+              if (!prev || (sale > 0 && prevSale <= 0) || (sale > 0 && prevSale > 0 && it.fnclDcd === '110' && prev.fnclDcd !== '110') || (it.fnclDcd === prev.fnclDcd && String(it.basDt || '') > String(prev.basDt || ''))) {
+                byYr.set(yr, it);
+              }
+            }
+            const sorted = [...byYr.values()].sort((a, b) => String(b.bizYear).localeCompare(String(a.bizYear))).slice(0, 5);
+            const pN = (v) => (v !== undefined && v !== null && v !== '' && !isNaN(Number(v)) ? Number(v) : null);
+            box.innerHTML = `
+              <div class="diag-card ok" style="padding:10px 12px">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;flex-wrap:wrap;gap:4px">
+                  <div class="diag-title" style="margin:0">📊 금융위원회 공식 요약재무제표 (실시간)</div>
+                  <span class="tag tag-sbiz">법인 ${esc(fmtCrno(crno))} · ${sorted.length}개년</span>
+                </div>
+                <div style="overflow-x:auto">
+                  <table class="data-table" style="font-size:11.5px;min-width:440px">
+                    <thead><tr><th>결산</th><th>구분</th><th>매출액</th><th>영업이익(률)</th><th>당기순이익</th><th>총자산</th><th>자본총계</th><th>부채비율</th></tr></thead>
+                    <tbody>
+                      ${sorted.map((it) => {
+                        const sale = pN(it.enpSaleAmt), op = pN(it.enpBzopPft), ni = pN(it.enpCrtmNpf);
+                        const tast = pN(it.enpTastAmt), tcpt = pN(it.enpTcptAmt), debt = pN(it.fnclDebtRto);
+                        const opm = (sale > 0 && op !== null) ? `${(op / sale * 100).toFixed(1)}%` : '';
+                        const dcd = it.fnclDcd === '110' ? '연결' : (it.fnclDcd === '120' ? '별도' : (it.fnclDcdNm || '-'));
+                        return `<tr>
+                          <td><b>${esc(it.bizYear)}</b><div style="font-size:10px;color:var(--muted)">${esc(String(it.basDt || '').replace(/(\d{4})(\d{2})(\d{2})/, '$1.$2.$3'))}</div></td>
+                          <td><span class="tag tag-gray" style="font-size:10px">${esc(dcd)}</span></td>
+                          <td><b>${sale !== null ? fmtSignedEok(sale) : '-'}</b></td>
+                          <td style="color:${op > 0 ? '#059669' : op < 0 ? '#dc2626' : 'inherit'}"><b>${op !== null ? fmtSignedEok(op) : '-'}</b>${opm ? `<div style="font-size:10px;color:var(--muted)">(${opm})</div>` : ''}</td>
+                          <td style="color:${ni > 0 ? '#059669' : ni < 0 ? '#dc2626' : 'inherit'}">${ni !== null ? fmtSignedEok(ni) : '-'}</td>
+                          <td>${tast !== null ? fmtSignedEok(tast) : '-'}</td>
+                          <td>${tcpt !== null ? fmtSignedEok(tcpt) : '-'}</td>
+                          <td>${debt !== null ? `${debt.toFixed(1)}%` : '-'}</td>
+                        </tr>`;
+                      }).join('')}
+                    </tbody>
+                  </table>
+                </div>
+              </div>`;
+          }
+        } catch (e) {
+          box.innerHTML = `<div class="diag-card err">금융위 재무제표 실시간 조회 오류: ${esc(e.message)}</div>`;
+        } finally {
+          if (btn) btn.disabled = false;
+        }
+      });
       $('dwNts')?.addEventListener('click', async () => {
         const box = $('ntsLiveBox');
         box.innerHTML = '<div class="tag tag-gray">국세청 API 실시간 조회 중…</div>';
@@ -11509,6 +11628,11 @@ async function runFull10ApiDiag() {
       url: `https://api.odcloud.kr/api/15100714/v1/uddi:58a57b5e-1fda-4b69-bd16-e31a58fc6798?page=1&perPage=1&serviceKey=${dataGoEnc}`,
       parse: (j) => `착공 데이터 ${fmt(j?.totalCount || 0)}건`,
     },
+    {
+      name: '11. 금융위 외감법인 재무제표',
+      url: `https://apis.data.go.kr/1160100/service/GetFinaStatInfoService_V2/getSummFinaStat_V2?serviceKey=${dataGoEnc}&pageNo=1&numOfRows=1&resultType=json&bizYear=2025`,
+      parse: (j) => `2025 결산공시 ${fmt(j?.response?.body?.totalCount || 0)}건`,
+    },
   ];
 
   S.diagResults = await Promise.all(checks.map(async (c) => {
@@ -11529,7 +11653,7 @@ async function runFull10ApiDiag() {
   }));
 
   const okCnt = S.diagResults.filter((x) => x.ok).length;
-  toast(`🩺 10종 API 진단 완료: ${okCnt}/10 정상 연결`);
+  toast(`🩺 ${checks.length}종 API 진단 완료: ${okCnt}/${checks.length} 정상 연결`);
   if (S.tab === 'hub') renderHubTab();
 }
 

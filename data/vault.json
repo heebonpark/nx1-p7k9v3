@@ -5,8 +5,8 @@
   "salt": "x4jBjVy8SBfiu8zQuZdUTw==",
   "checkIv": "XVhP5LQa0MOnavi5",
   "checkCt": "RWZnUoe0sgVa2WZijk0TRNITNiOcXmHiL8Mt+638VUWd627I",
-  "builtAt": "2026-11-24",
-  "totalBytes": 159969987,
+  "builtAt": "2026-11-27-v42",
+  "totalBytes": 161568831,
   "stats": {
     "corpCount": 120028,
     "sbizCount": 2753778,
@@ -178,5 +178,17 @@
       "new2026": 1329,
       "bytes": 703764
     }
-  ]
+  ],
+  "fscFinancials": {
+    "syncedAt": "2026-11-27",
+    "officialRevCount": 23725,
+    "officialOpCount": 24120,
+    "yearDist": {
+      "2023": 4520,
+      "2024": 5640,
+      "2025": 13909,
+      "dartLegacy": 62
+    },
+    "crnoCoverage": 117261
+  }
 }

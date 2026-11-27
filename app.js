@@ -3771,12 +3771,20 @@ const S = {
   leafletHeat: null,
   leafletCatchLayer: null,
   leafletRulerLayer: null,
+  leafletGpsLayer: null,
   gisBase: 'vbase',
   gisLayers: { cadastral: false, zoning: false, emd: false, bldg: false, heat: false },
+  gisOpacity: 80,
+  gisWalkRings: false,
   gisRadius: 500,
   gisRulerMode: false,
   rulerPts: [],
-  catchment: null,      // { lat, lon, radius, stores, stats, vworld }
+  gpsPos: null,         // { lat, lon, acc, ts }
+  gpsWatching: false,
+  gpsWatchId: null,
+  catchment: null,      // { lat, lon, radius, stores, stats, vworld, blds, nearbyOpps }
+  compareCatchment: null, // Pinned Site A for A/B comparison
+  sbizBookmarks: (() => { try { return JSON.parse(localStorage.getItem(tStorageKey('nx1_sbiz_bm_v38')) || '[]'); } catch { return []; } })(),
   lastSbizMatchedIdx: [],
 
   // UI Navigation, Pro Options, Admin Sales Config & Expert State
@@ -4713,10 +4721,18 @@ function switchTab(tab) {
 
 function renderCurrentTab() {
   if (renderLicenseLockWallIfNeeded()) return;
-  if (S.tab !== 'sbiz' && S.leafletMap) {
-    S.leafletMap.remove();
-    S.leafletMap = null;
-    S.leafletLayer = null;
+  if (S.tab !== 'sbiz') {
+    if (S.gpsWatchId !== null && navigator.geolocation) {
+      try { navigator.geolocation.clearWatch(S.gpsWatchId); } catch {}
+      S.gpsWatchId = null;
+      S.gpsWatching = false;
+    }
+    if (S.leafletMap) {
+      S.leafletMap.remove();
+      S.leafletMap = null;
+      S.leafletLayer = null;
+      S.leafletGpsLayer = null;
+    }
   }
   if (S.tab !== 'bid' && S.bidLeafletMap) {
     S.bidLeafletMap.remove();
@@ -8357,6 +8373,157 @@ function regYearColor(regYm) {
   return '#64748b';
 }
 
+function saveSbizBookmarks() {
+  try { localStorage.setItem(tStorageKey('nx1_sbiz_bm_v38'), JSON.stringify(S.sbizBookmarks.slice(0, 15))); } catch {}
+}
+
+function polygonAreaM2(pts) {
+  if (!pts || pts.length < 3) return 0;
+  const R = 6371000;
+  const toRad = (d) => (d * Math.PI) / 180;
+  let sum = 0;
+  for (let i = 0; i < pts.length; i++) {
+    const [la1, lo1] = pts[i];
+    const [la2, lo2] = pts[(i + 1) % pts.length];
+    sum += toRad(lo2 - lo1) * (2 + Math.sin(toRad(la1)) + Math.sin(toRad(la2)));
+  }
+  return Math.abs((sum * R * R) / 2);
+}
+
+function detectSidoSlugFromCoords(lat, lon, addrText = '') {
+  const sidos = S.core?.sbizSummary?.sidos || [];
+  if (!sidos.length) return '';
+  const txt = String(addrText || '');
+  const kwMap = [
+    ['서울', 'seoul'], ['경기', 'gyeonggi'], ['인천', 'incheon'], ['부산', 'busan'],
+    ['대구', 'daegu'], ['대전', 'daejeon'], ['울산', 'ulsan'], ['세종', 'sejong'],
+    ['강원', 'gangwon'], ['충북', 'chungbuk'], ['충청북', 'chungbuk'], ['충남', 'chungnam'], ['충청남', 'chungnam'],
+    ['전북', 'jeonbuk'], ['전라북', 'jeonbuk'], ['광주', 'jeonnam_gwangju'], ['전남', 'jeonnam_gwangju'], ['전라남', 'jeonnam_gwangju'],
+    ['경북', 'gyeongbuk'], ['경상북', 'gyeongbuk'], ['경남', 'gyeongnam'], ['경상남', 'gyeongnam'], ['제주', 'jeju'],
+  ];
+  for (const [kw, slug] of kwMap) {
+    if (txt.includes(kw) && sidos.some((s) => s.slug === slug)) return slug;
+  }
+  let best = sidos[0]?.slug || '';
+  let bestD = Infinity;
+  for (const s of sidos) {
+    if (!s.lat || !s.lon) continue;
+    const d = haversineM(lat, lon, s.lat, s.lon);
+    if (d < bestD) { bestD = d; best = s.slug; }
+  }
+  return best;
+}
+
+function drawGpsMarkerOnMap() {
+  if (!S.leafletMap || !S.leafletGpsLayer || !S.gpsPos) return;
+  S.leafletGpsLayer.clearLayers();
+  const { lat, lon, acc } = S.gpsPos;
+  if (acc > 0 && acc <= 2000) {
+    L.circle([lat, lon], { radius: acc, color: '#2563eb', fillColor: '#3b82f6', fillOpacity: 0.14, weight: 1.5 }).addTo(S.leafletGpsLayer);
+  }
+  L.marker([lat, lon], {
+    zIndexOffset: 3000,
+    icon: L.divIcon({
+      className: '',
+      html: '<div class="nx-gps-dot"></div>',
+      iconSize: [16, 16],
+      iconAnchor: [8, 8],
+    }),
+  }).bindTooltip(`📍 내 현재 위치 (정확도 ±${Math.round(acc || 0)}m)`, { direction: 'top', offset: [0, -10] }).addTo(S.leafletGpsLayer);
+  const chip = $('sbizGpsStatusChip');
+  if (chip) {
+    chip.textContent = `${S.gpsWatching ? '📡 실시간 GPS 추적중' : '📍 현위치 확인됨'} · ±${Math.round(acc || 0)}m`;
+    chip.classList.remove('hidden');
+  }
+}
+
+function stopGpsWatch() {
+  if (S.gpsWatchId !== null && navigator.geolocation) {
+    try { navigator.geolocation.clearWatch(S.gpsWatchId); } catch {}
+  }
+  S.gpsWatchId = null;
+  S.gpsWatching = false;
+  $('btnSbizTrack')?.classList.remove('btn-emerald');
+  $('hudSbizTrack')?.classList.remove('tracking');
+  drawGpsMarkerOnMap();
+}
+
+async function locateAndAnalyzeGps({ autoLoadSido = true } = {}) {
+  if (!navigator.geolocation) return toast('브라우저에서 GPS 위치 정보를 지원하지 않습니다.');
+  toast('📍 현재 GPS 위치 및 관할 시도 상권 확인 중…');
+  navigator.geolocation.getCurrentPosition(
+    async (pos) => {
+      const { latitude: lat, longitude: lon, accuracy: acc } = pos.coords;
+      S.gpsPos = { lat, lon, acc: acc || 30, ts: Date.now() };
+      let addrText = '';
+      try {
+        const vw = await queryVworldPoint(lon.toFixed(6), lat.toFixed(6));
+        addrText = vw?.addr || '';
+      } catch {}
+      const detectedSlug = detectSidoSlugFromCoords(lat, lon, addrText);
+      let active = S.sbizActiveSlug ? S.sbizCache.get(S.sbizActiveSlug) : null;
+      if (autoLoadSido && detectedSlug && detectedSlug !== S.sbizActiveSlug) {
+        const sInfo = (S.core.sbizSummary.sidos || []).find((x) => x.slug === detectedSlug);
+        toast(`📍 현위치(${sInfo?.short || detectedSlug}) 상권 DB 자동 로드 중…`);
+        active = await loadSbizSido(detectedSlug);
+        S._skipSbizFitOnce = true;
+        renderSbizTab();
+      }
+      S.leafletMap?.setView([lat, lon], 16);
+      drawGpsMarkerOnMap();
+      await runRadiusCatchment(lat, lon, active, addrText ? `내 현위치 · ${addrText.split(' ').slice(0, 3).join(' ')}` : '내 현재 위치');
+      toast(`✅ 현위치(±${Math.round(acc || 0)}m) 반경 ${S.gisRadius >= 1000 ? `${S.gisRadius / 1000}km` : `${S.gisRadius}m`} 상권 분석 완료!`);
+    },
+    (err) => {
+      const msg = err.code === 1
+        ? '위치 권한이 거부되었습니다. 브라우저 주소창/기기 설정에서 위치 접근을 허용해 주세요.'
+        : (err.code === 3 ? 'GPS 응답 시간 초과입니다. 야외 또는 Wi-Fi 환경에서 다시 시도해 주세요.' : err.message);
+      toast(`📍 GPS 조회 실패: ${msg}`);
+    },
+    { enableHighAccuracy: true, timeout: 10000, maximumAge: 15000 }
+  );
+}
+
+function toggleGpsWatch() {
+  if (!navigator.geolocation) return toast('브라우저에서 GPS 위치 추적을 지원하지 않습니다.');
+  if (S.gpsWatching) {
+    stopGpsWatch();
+    toast('📡 실시간 GPS 위치 추적을 종료했습니다.');
+    return;
+  }
+  S.gpsWatching = true;
+  $('btnSbizTrack')?.classList.add('btn-emerald');
+  $('hudSbizTrack')?.classList.add('tracking');
+  toast('📡 실시간 GPS 이동 추적 ON (이동 시 파란 위치 마커 자동 갱신)');
+  let firstFix = true;
+  S.gpsWatchId = navigator.geolocation.watchPosition(
+    async (pos) => {
+      const { latitude: lat, longitude: lon, accuracy: acc } = pos.coords;
+      S.gpsPos = { lat, lon, acc: acc || 25, ts: Date.now() };
+      if (firstFix) {
+        firstFix = false;
+        const detectedSlug = detectSidoSlugFromCoords(lat, lon, '');
+        if (detectedSlug && detectedSlug !== S.sbizActiveSlug) {
+          await loadSbizSido(detectedSlug);
+          S._skipSbizFitOnce = true;
+          renderSbizTab();
+        }
+        S.leafletMap?.setView([lat, lon], 16);
+        const curActive = S.sbizActiveSlug ? S.sbizCache.get(S.sbizActiveSlug) : null;
+        runRadiusCatchment(lat, lon, curActive, '실시간 현위치');
+      } else {
+        S.leafletMap?.panTo([lat, lon], { animate: true });
+      }
+      drawGpsMarkerOnMap();
+    },
+    (err) => {
+      stopGpsWatch();
+      toast(`📡 GPS 추적 오류: ${err.code === 1 ? '위치 권한을 허용해 주세요.' : err.message}`);
+    },
+    { enableHighAccuracy: true, timeout: 12000, maximumAge: 5000 }
+  );
+}
+
 function renderSbizTab() {
   const sidos = S.core.sbizSummary.sidos || [];
   const active = S.sbizActiveSlug ? S.sbizCache.get(S.sbizActiveSlug) : null;
@@ -8366,23 +8533,34 @@ function renderSbizTab() {
       <div class="card-head">
         <div>
           <h2 class="card-title">🏪 전국 소상공인 상권 · 디지털트윈 GIS PRO <span class="tag tag-sbiz">총 ${fmt(S.core.stats.sbizCount)}개</span></h2>
-          <p class="card-sub">등재연월(년·월) 정밀 구분조회 · 지도+리스트 실시간 연동 · 브이월드 위성/지적도/히트맵/반경 상권진단</p>
+          <p class="card-sub">현위치 자동 시도 로드 · 실시간 이동추적 · 도보 동심원 · 입지 A/B 비교 · 업종 블루오션(LQ) · 브이월드 지적도/공시지가</p>
         </div>
         <div style="display:flex;gap:5px;flex-wrap:wrap">
+          <button id="btnSbizGps" class="btn btn-primary btn-sm" type="button" title="현재 GPS 위치 감지 → 해당 시도 자동 로드 및 반경 분석">📍 현위치 분석</button>
+          <button id="btnSbizTrack" class="btn btn-sm ${S.gpsWatching ? 'btn-emerald' : ''}" type="button" title="이동 중 내 위치 실시간 추적">📡 ${S.gpsWatching ? '추적중' : '실시간 추적'}</button>
           <button id="btnSbizFit" class="btn btn-sm" type="button" title="현재 필터 상가 전체가 보이도록 지도 맞춤">🎯 결과 맞춤</button>
-          <button id="btnSbizGps" class="btn btn-sm" type="button" title="내 GPS 현재 위치로 이동 후 반경 분석">📍 내 위치</button>
-          <button id="btnSbizLiveRadius" class="btn btn-emerald btn-sm" type="button">📡 반경 실시간 API</button>
-          <button id="btnSbizVworld" class="btn btn-sm" type="button">📍 중심 반경분석</button>
+          <button id="btnSbizVworld" class="btn btn-sm" type="button">📍 중심 반경</button>
+          <button id="btnSbizLiveRadius" class="btn btn-emerald btn-sm" type="button">📡 실시간 API</button>
         </div>
       </div>
+
+      ${S.sbizBookmarks.length ? `
+        <div class="nx-bm-bar">
+          <span style="font-weight:800;color:var(--c-corp)">⭐ 관심 입지:</span>
+          ${S.sbizBookmarks.map((bm, i) => `
+            <span class="nx-active-pill" data-bm-go="${i}" style="cursor:pointer">
+              📍 ${esc(bm.label)} <button type="button" data-bm-del="${i}" style="border:none;background:none;padding:0 0 0 3px;color:inherit;font-weight:900;cursor:pointer">✕</button>
+            </span>`).join('')}
+        </div>` : ''}
 
       <div class="nx-collapse-bar">
         <button id="btnSbizSidoToggle" type="button" class="btn btn-sm ${S.sbizSidoOpen ? 'btn-primary' : ''}">
           📍 시도 선택 (${active ? esc(active.name) : '미선택'}) ${S.sbizSidoOpen ? '▴' : '▾'}
         </button>
         <button id="btnSbizGisToggle" type="button" class="btn btn-sm ${S.sbizGisOpen ? 'btn-primary' : ''}">
-          🎛️ 지도·GIS 옵션 ${Object.values(S.gisLayers).filter(Boolean).length ? `<span class="nx-filter-badge">${Object.values(S.gisLayers).filter(Boolean).length}</span>` : ''} ${S.sbizGisOpen ? '▴' : '▾'}
+          🎛️ 지도·GIS 옵션 ${Object.values(S.gisLayers).filter(Boolean).length + (S.gisWalkRings ? 1 : 0) ? `<span class="nx-filter-badge">${Object.values(S.gisLayers).filter(Boolean).length + (S.gisWalkRings ? 1 : 0)}</span>` : ''} ${S.sbizGisOpen ? '▴' : '▾'}
         </button>
+        ${S.compareCatchment ? `<button id="btnClearSiteAQuick" type="button" class="btn btn-sm btn-amber">⚖️ 비교 기준(A) 해제</button>` : ''}
       </div>
 
       <div id="sbizSidoWrap" class="sido-grid nx-collapsible-panel ${S.sbizSidoOpen ? '' : 'collapsed'}">
@@ -8434,15 +8612,20 @@ function renderSbizTab() {
           ].map(([k, lb]) => `<button class="toggle-pill ${S.opts.markerColorMode === k ? 'on' : ''}" data-mk-mode="${k}" type="button">${lb}</button>`).join('')}
           <button class="toggle-pill ${S.opts.groupBuildings ? 'on-emerald' : ''}" id="btnToggleGroupBld" type="button">🏢 동일건물 그룹핑</button>
           <button class="toggle-pill ${S.opts.showStoreLabels ? 'on-emerald' : ''}" id="btnToggleLabels" type="button">🏷️ 라벨(줌16+)</button>
-          <button class="toggle-pill ${S.gisRulerMode ? 'on' : ''}" id="btnToggleRuler" type="button">📏 거리측정</button>
+          <button class="toggle-pill ${S.gisRulerMode ? 'on' : ''}" id="btnToggleRuler" type="button">📐 거리·면적측정</button>
+          <button class="toggle-pill ${S.gisWalkRings ? 'on-emerald' : ''}" id="btnToggleWalkRings" type="button">🚶 도보 3·5·10분 동심원</button>
           <button class="toggle-pill ${S.sbizSplitView ? 'on' : ''}" id="btnToggleSplit" type="button">↔️ 지도+리스트 분할</button>
           <button class="toggle-pill ${S.sbizViewportSync ? 'on-emerald' : ''}" id="btnToggleVpSync" type="button">👁️ 지도화면 리스트연동</button>
           <button class="toggle-pill ${S.sbizMapExpanded ? 'on' : ''}" id="btnToggleExpand" type="button">🖥️ 지도확장</button>
         </div>
         <div class="gis-row">
-          <span class="gis-label">🎯 클릭 반경분석:</span>
-          ${[300, 500, 1000, 2000].map((r) => `<button class="toggle-pill ${S.gisRadius === r ? 'on' : ''}" data-gis-rad="${r}" type="button">${r >= 1000 ? `${r / 1000}km` : `${r}m`}</button>`).join('')}
-          <div style="display:flex;gap:5px;margin-left:auto;flex:1;min-width:210px;max-width:340px">
+          <span class="gis-label">🎯 클릭 반경:</span>
+          ${[100, 300, 500, 1000, 2000].map((r) => `<button class="toggle-pill ${S.gisRadius === r ? 'on' : ''}" data-gis-rad="${r}" type="button">${r >= 1000 ? `${r / 1000}km` : `${r}m`}</button>`).join('')}
+          <label style="display:inline-flex;align-items:center;gap:5px;font-size:11.5px;font-weight:700;color:var(--muted);margin-left:4px">
+            🎚️ 투명도 <input id="fGisOpacity" type="range" min="30" max="100" step="5" value="${S.gisOpacity}" style="width:74px;accent-color:var(--c-accent)" />
+            <span id="gisOpacityLbl">${S.gisOpacity}%</span>
+          </label>
+          <div style="display:flex;gap:5px;margin-left:auto;flex:1;min-width:200px;max-width:340px">
             <input id="fGisPlace" class="input" style="flex:1;padding:5px 9px;font-size:12px" placeholder="📍 장소·주소 이동 (예: 부평역, 강남역)" />
             <button id="btnGisPlaceGo" class="btn btn-sm btn-primary" type="button">이동</button>
           </div>
@@ -8456,10 +8639,11 @@ function renderSbizTab() {
 
       ${active ? renderSbizControlsHtml(active) : `
         <div style="padding:12px 14px;border-radius:11px;background:var(--c-sbiz-bg);font-size:13px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:10px">
-          <span>💡 시도를 선택하면 275만 상권 데이터 + 등재연월(년·월) 조회 + 지도·리스트 실시간 연동이 활성화됩니다.</span>
-          <div style="display:flex;gap:6px">
-            <button class="btn btn-emerald btn-sm" data-load-sido="incheon">인천 열기 (6.7MB)</button>
-            <button class="btn btn-sm" data-load-sido="sejong">세종 열기 (0.7MB)</button>
+          <span>💡 시도를 선택하거나 <b>[📍 현위치 분석]</b>을 누르면 관할 시도 275만 상권 데이터와 등재연월·입지 비교가 즉시 활성화됩니다.</span>
+          <div style="display:flex;gap:6px;flex-wrap:wrap">
+            <button class="btn btn-primary btn-sm" id="btnSbizQuickGpsBanner" type="button">📍 내 현위치 자동열기</button>
+            <button class="btn btn-emerald btn-sm" data-load-sido="incheon">인천 (6.7MB)</button>
+            <button class="btn btn-sm" data-load-sido="sejong">세종 (0.7MB)</button>
           </div>
         </div>
       `}
@@ -8468,7 +8652,17 @@ function renderSbizTab() {
 
       <div id="sbizWorkspace" class="sbiz-workspace ${S.sbizSplitView && active ? 'split' : ''}">
         <div>
-          <div id="sbizMap" class="leaflet-box ${S.sbizMapExpanded ? 'expanded' : ''}"></div>
+          <div class="sbiz-map-wrap">
+            <div id="sbizMap" class="leaflet-box ${S.sbizMapExpanded ? 'expanded' : ''}"></div>
+            <div class="sbiz-map-hud" aria-label="지도 빠른 조작">
+              <button id="hudSbizGps" class="sbiz-hud-btn" type="button" title="내 현위치로 이동 & 반경 분석">📍</button>
+              <button id="hudSbizTrack" class="sbiz-hud-btn ${S.gpsWatching ? 'tracking' : ''}" type="button" title="실시간 GPS 이동 추적 ON/OFF">📡</button>
+              <button id="hudSbizCenter" class="sbiz-hud-btn" type="button" title="현재 지도 중심 반경분석">🎯</button>
+              <button id="hudSbizSat" class="sbiz-hud-btn ${S.gisBase === 'vhyb' || S.gisBase === 'vsat' ? 'on' : ''}" type="button" title="기본도 ↔ 위성+도로 전환">🛰️</button>
+              <button id="hudSbizExpand" class="sbiz-hud-btn ${S.sbizMapExpanded ? 'on' : ''}" type="button" title="지도 화면 확장/축소">⛶</button>
+            </div>
+            <div id="sbizGpsStatusChip" class="nx-gps-status-chip ${S.gpsPos ? '' : 'hidden'}"></div>
+          </div>
           <div id="sbizMarkerLegend" class="marker-legend"></div>
         </div>
         <div id="sbizListCard"></div>
@@ -8563,7 +8757,22 @@ function renderSbizTab() {
     S.rulerPts = [];
     S.leafletRulerLayer?.clearLayers();
     e.currentTarget.classList.toggle('on', S.gisRulerMode);
-    toast(S.gisRulerMode ? '📏 거리측정 ON: 지도에서 2개 지점을 차례로 클릭하세요.' : '📏 거리측정 OFF (클릭 반경분석 복귀)');
+    toast(S.gisRulerMode ? '📐 거리·면적측정 ON: 지도에서 2점 이상 클릭(3점+ 시 면적 ㎡/평 자동 계산, 우클릭=초기화)' : '📐 거리·면적측정 OFF (클릭 반경분석 복귀)');
+  });
+  $('btnToggleWalkRings')?.addEventListener('click', (e) => {
+    S.gisWalkRings = !S.gisWalkRings;
+    e.currentTarget.classList.toggle('on-emerald', S.gisWalkRings);
+    toast(S.gisWalkRings ? '🚶 도보 3분(200m)·5분(350m)·10분(700m) 동심원 ON' : '🚶 도보 동심원 OFF');
+    if (S.catchment) runRadiusCatchment(S.catchment.lat, S.catchment.lon, active, S.catchment.label);
+  });
+  $('fGisOpacity')?.addEventListener('input', (e) => {
+    S.gisOpacity = Number(e.target.value) || 80;
+    if ($('gisOpacityLbl')) $('gisOpacityLbl').textContent = `${S.gisOpacity}%`;
+    const scale = S.gisOpacity / 100;
+    for (const [k, lyr] of Object.entries(S.leafletWms || {})) {
+      lyr?.setOpacity?.((VWORLD_WMS_CFG[k]?.opacity || 0.75) * scale);
+    }
+    if (S.leafletHeat?._canvas) S.leafletHeat._canvas.style.opacity = String(scale);
   });
   $('btnToggleSplit')?.addEventListener('click', (e) => {
     S.sbizSplitView = !S.sbizSplitView;
@@ -8578,12 +8787,15 @@ function renderSbizTab() {
     toast(S.sbizViewportSync ? '👁️ 지도 화면 연동 ON: 지도를 움직이면 리스트가 현재 화면 상가로 자동 갱신됩니다.' : '👁️ 지도 화면 연동 OFF (전체 필터 리스트 표시)');
     if (active) { renderViewportSbizMarkers(active); renderSbizListPanel(active); }
   });
-  $('btnToggleExpand')?.addEventListener('click', (e) => {
+  const doToggleExpand = () => {
     S.sbizMapExpanded = !S.sbizMapExpanded;
-    e.currentTarget.classList.toggle('on', S.sbizMapExpanded);
+    $('btnToggleExpand')?.classList.toggle('on', S.sbizMapExpanded);
+    $('hudSbizExpand')?.classList.toggle('on', S.sbizMapExpanded);
     $('sbizMap')?.classList.toggle('expanded', S.sbizMapExpanded);
     setTimeout(() => S.leafletMap?.invalidateSize(), 120);
-  });
+  };
+  $('btnToggleExpand')?.addEventListener('click', doToggleExpand);
+  $('hudSbizExpand')?.addEventListener('click', doToggleExpand);
   $('btnSbizFit')?.addEventListener('click', () => {
     if (!active || !S.leafletMap || !S.lastSbizMatchedIdx.length) return toast('먼저 시도를 열어 상가를 조회하세요.');
     const step = Math.max(1, Math.floor(S.lastSbizMatchedIdx.length / 500));
@@ -8594,18 +8806,51 @@ function renderSbizTab() {
     }
     if (bounds.length) S.leafletMap.fitBounds(bounds, { maxZoom: 16, padding: [24, 24] });
   });
-  $('btnSbizGps')?.addEventListener('click', () => {
-    if (!navigator.geolocation) return toast('브라우저에서 GPS 위치 정보를 지원하지 않습니다.');
-    toast('📍 현재 GPS 위치 확인 중…');
-    navigator.geolocation.getCurrentPosition(
-      (pos) => {
-        const { latitude, longitude } = pos.coords;
-        S.leafletMap?.setView([latitude, longitude], 16);
-        runRadiusCatchment(latitude, longitude, active, '내 현재 위치');
-      },
-      (err) => toast(`GPS 조회 실패: ${err.message}`),
-      { enableHighAccuracy: true, timeout: 8000 }
-    );
+  $('btnSbizGps')?.addEventListener('click', () => locateAndAnalyzeGps({ autoLoadSido: true }));
+  $('btnSbizQuickGpsBanner')?.addEventListener('click', () => locateAndAnalyzeGps({ autoLoadSido: true }));
+  $('hudSbizGps')?.addEventListener('click', () => locateAndAnalyzeGps({ autoLoadSido: true }));
+  $('btnSbizTrack')?.addEventListener('click', toggleGpsWatch);
+  $('hudSbizTrack')?.addEventListener('click', toggleGpsWatch);
+  $('hudSbizCenter')?.addEventListener('click', () => {
+    if (!S.leafletMap) return;
+    const c = S.leafletMap.getCenter();
+    runRadiusCatchment(c.lat, c.lng, active, '지도 중심');
+  });
+  $('hudSbizSat')?.addEventListener('click', () => {
+    S.gisBase = (S.gisBase === 'vhyb' || S.gisBase === 'vsat') ? 'vbase' : 'vhyb';
+    $('hudSbizSat')?.classList.toggle('on', S.gisBase === 'vhyb');
+    $('mainStage').querySelectorAll('[data-gis-base]').forEach((x) => x.classList.toggle('on', x.dataset.gisBase === S.gisBase));
+    applyGisBaseMap();
+    toast(S.gisBase === 'vhyb' ? '🛰️ 브이월드 위성+도로 하이브리드 전환' : '🗺️ 브이월드 기본도 전환');
+  });
+  $('btnClearSiteAQuick')?.addEventListener('click', () => {
+    S.compareCatchment = null;
+    renderSbizTab();
+    toast('⚖️ 비교 기준(A)을 해제했습니다.');
+  });
+  $('mainStage').querySelectorAll('[data-bm-go]').forEach((el) => {
+    el.addEventListener('click', async (e) => {
+      if (e.target.closest('[data-bm-del]')) return;
+      const bm = S.sbizBookmarks[Number(el.dataset.bmGo)];
+      if (!bm) return;
+      let curAct = active;
+      if (bm.slug && bm.slug !== S.sbizActiveSlug) {
+        curAct = await loadSbizSido(bm.slug);
+        S._skipSbizFitOnce = true;
+        renderSbizTab();
+      }
+      S.gisRadius = bm.radius || S.gisRadius;
+      S.leafletMap?.setView([bm.lat, bm.lon], 16);
+      runRadiusCatchment(bm.lat, bm.lon, curAct, bm.label);
+    });
+  });
+  $('mainStage').querySelectorAll('[data-bm-del]').forEach((b) => {
+    b.addEventListener('click', (e) => {
+      e.stopPropagation();
+      S.sbizBookmarks.splice(Number(b.dataset.bmDel), 1);
+      saveSbizBookmarks();
+      renderSbizTab();
+    });
   });
   renderMarkerLegend();
 
@@ -8804,13 +9049,16 @@ function applyGisOverlays(active) {
   const isLocal = /^(127\.0\.0\.1|localhost)$/.test(location.hostname);
   const dom = (!isLocal && location.origin && /^https?:/.test(location.origin)) ? location.origin : 'https://heebonpark.github.io';
 
+  const opScale = (S.gisOpacity || 80) / 100;
   for (const [k, cfg] of Object.entries(VWORLD_WMS_CFG)) {
     if (S.gisLayers[k] && vworld) {
       if (!S.leafletWms[k]) {
         S.leafletWms[k] = L.tileLayer.wms('https://api.vworld.kr/req/wms', {
           layers: cfg.layers, styles: cfg.styles, format: 'image/png', transparent: true,
-          version: '1.3.0', key: vworld, domain: dom, opacity: cfg.opacity, maxZoom: 20, minZoom: cfg.minZoom, zIndex: 250,
+          version: '1.3.0', key: vworld, domain: dom, opacity: cfg.opacity * opScale, maxZoom: 20, minZoom: cfg.minZoom, zIndex: 250,
         }).addTo(S.leafletMap);
+      } else {
+        S.leafletWms[k].setOpacity?.(cfg.opacity * opScale);
       }
     } else if (S.leafletWms[k]) {
       S.leafletMap.removeLayer(S.leafletWms[k]);
@@ -8830,6 +9078,7 @@ function applyGisOverlays(active) {
     }
     if (!S.leafletHeat) S.leafletHeat = createCanvasHeatLayer(pts).addTo(S.leafletMap);
     else S.leafletHeat.setPoints(pts);
+    if (S.leafletHeat?._canvas) S.leafletHeat._canvas.style.opacity = String(opScale);
   } else if (S.leafletHeat) {
     S.leafletMap.removeLayer(S.leafletHeat);
     S.leafletHeat = null;
@@ -8886,7 +9135,9 @@ function initSbizLeaflet(active) {
   S.leafletLayer = L.layerGroup().addTo(S.leafletMap);
   S.leafletCatchLayer = L.layerGroup().addTo(S.leafletMap);
   S.leafletRulerLayer = L.layerGroup().addTo(S.leafletMap);
+  S.leafletGpsLayer = L.layerGroup().addTo(S.leafletMap);
   applyGisOverlays(active);
+  if (S.gpsPos) drawGpsMarkerOnMap();
 
   // Viewport-aware dynamic marker redraw (+ optional live list sync!) on pan/zoom
   let mvTimer = null;
@@ -8901,23 +9152,47 @@ function initSbizLeaflet(active) {
     }, 120);
   });
 
-  // Interactive Map Click -> 2-Point Distance Ruler OR Instant Radius Catchment Analysis!
+  // Right-click resets ruler measurement cleanly when active
+  S.leafletMap.on('contextmenu', () => {
+    if (S.gisRulerMode && S.rulerPts.length) {
+      S.rulerPts = [];
+      S.leafletRulerLayer.clearLayers();
+      toast('🧹 거리·면적 측정 지점을 초기화했습니다.');
+    }
+  });
+
+  // Interactive Map Click -> Multi-Point Distance & Polygon Area Ruler OR Instant Radius Catchment Analysis!
   S.leafletMap.on('click', (e) => {
     if (S._justClickedMarker) { S._justClickedMarker = false; return; }
     if (S.gisRulerMode) {
       S.rulerPts.push([e.latlng.lat, e.latlng.lng]);
-      if (S.rulerPts.length > 2) { S.rulerPts = [S.rulerPts[2]]; S.leafletRulerLayer.clearLayers(); }
-      L.circleMarker([e.latlng.lat, e.latlng.lng], { radius: 6, color: '#fff', fillColor: '#4f46e5', fillOpacity: 1, weight: 2 }).addTo(S.leafletRulerLayer);
-      if (S.rulerPts.length === 2) {
-        const [p1, p2] = S.rulerPts;
-        const dist = haversineM(p1[0], p1[1], p2[0], p2[1]);
-        const walkMin = Math.max(1, Math.round(dist / 70));
-        const lbl = dist >= 1000 ? `${(dist / 1000).toFixed(2)}km (도보 약 ${walkMin}분)` : `${Math.round(dist)}m (도보 약 ${walkMin}분)`;
-        L.polyline([p1, p2], { color: '#4f46e5', weight: 3, dashArray: '6 4' }).addTo(S.leafletRulerLayer);
-        L.popup({ closeButton: true }).setLatLng([(p1[0] + p2[0]) / 2, (p1[1] + p2[1]) / 2])
-          .setContent(`<div style="font-weight:800;font-size:13px">📏 직선거리: ${lbl}</div>`)
+      S.leafletRulerLayer.clearLayers();
+      S.rulerPts.forEach((pt, idx) => {
+        L.circleMarker(pt, { radius: 6, color: '#fff', fillColor: idx === 0 ? '#059669' : '#4f46e5', fillOpacity: 1, weight: 2 })
+          .bindTooltip(`${idx + 1}번 지점`, { direction: 'top', offset: [0, -6] })
+          .addTo(S.leafletRulerLayer);
+      });
+      if (S.rulerPts.length >= 2) {
+        let totalM = 0;
+        for (let i = 1; i < S.rulerPts.length; i++) {
+          totalM += haversineM(S.rulerPts[i - 1][0], S.rulerPts[i - 1][1], S.rulerPts[i][0], S.rulerPts[i][1]);
+        }
+        const walkMin = Math.max(1, Math.round(totalM / 70));
+        const distLbl = totalM >= 1000 ? `${(totalM / 1000).toFixed(2)}km (도보 약 ${walkMin}분)` : `${Math.round(totalM)}m (도보 약 ${walkMin}분)`;
+        let areaHtml = '';
+        if (S.rulerPts.length >= 3) {
+          const areaM2 = polygonAreaM2(S.rulerPts);
+          const pyeong = Math.round(areaM2 / 3.305785);
+          L.polygon(S.rulerPts, { color: '#4f46e5', fillColor: '#6366f1', fillOpacity: 0.14, weight: 2.5, dashArray: '6 4' }).addTo(S.leafletRulerLayer);
+          areaHtml = `<div style="margin-top:3px;color:#059669">📐 다각형 면적: <b>${fmt(Math.round(areaM2))}㎡</b> (약 <b>${fmt(pyeong)}평</b>)</div>`;
+        } else {
+          L.polyline(S.rulerPts, { color: '#4f46e5', weight: 3, dashArray: '6 4' }).addTo(S.leafletRulerLayer);
+        }
+        const last = S.rulerPts[S.rulerPts.length - 1];
+        L.popup({ closeButton: true }).setLatLng(last)
+          .setContent(`<div style="font-size:12.5px;line-height:1.5"><b>📏 누적 거리(${S.rulerPts.length}점): ${distLbl}</b>${areaHtml}<div style="font-size:10.5px;color:#64748b;margin-top:3px">추가 클릭=연장 · 우클릭=초기화</div></div>`)
           .openOn(S.leafletMap);
-        toast(`📏 측정 완료: ${lbl}`);
+        toast(`📐 측정: ${distLbl}${S.rulerPts.length >= 3 ? ` · 면적 ${fmt(Math.round(polygonAreaM2(S.rulerPts) / 3.305785))}평` : ''}`);
       }
       return;
     }
@@ -9130,6 +9405,17 @@ async function runRadiusCatchment(lat, lon, active, label = '') {
   if (!S.leafletMap || !S.leafletCatchLayer) return;
   const rad = S.gisRadius;
   S.leafletCatchLayer.clearLayers();
+  if (S.gisWalkRings) {
+    [
+      [700, '#6366f1', '도보 10분 (700m)'],
+      [350, '#0284c7', '도보 5분 (350m)'],
+      [200, '#059669', '도보 3분 (200m)'],
+    ].forEach(([rM, col, tip]) => {
+      L.circle([lat, lon], { radius: rM, color: col, fillColor: col, fillOpacity: 0.04, weight: 1.5, dashArray: '4 4' })
+        .bindTooltip(tip, { sticky: true })
+        .addTo(S.leafletCatchLayer);
+    });
+  }
   L.circle([lat, lon], { radius: rad, color: '#059669', fillColor: '#10b981', fillOpacity: 0.14, weight: 2, dashArray: '5 4' }).addTo(S.leafletCatchLayer);
   L.marker([lat, lon], {
     zIndexOffset: 2500,
@@ -9143,10 +9429,26 @@ async function runRadiusCatchment(lat, lon, active, label = '') {
 
   const stores = [];
   const l1Map = new Map();
+  const bldMap = new Map();
   const bldSet = new Set();
   let new2026 = 0;
 
+  // Compute sido baseline L1 shares once per sido for Expert LQ (Saturation vs Blue-Ocean) analysis
+  const sidoL1Share = new Map();
   if (active) {
+    if (!active._l1Share) {
+      const m = new Map();
+      const l1Dict = active.dicts.l1 || [];
+      for (let i = 0; i < active.n; i++) {
+        const nm = l1Dict[active.cols.l1[i]] || '기타';
+        m.set(nm, (m.get(nm) || 0) + 1);
+      }
+      const sh = new Map();
+      for (const [k, c] of m.entries()) sh.set(k, c / Math.max(1, active.n));
+      active._l1Share = sh;
+    }
+    for (const [k, v] of active._l1Share.entries()) sidoL1Share.set(k, v);
+
     // Fast bounding-box pre-filter before Haversine
     const dLat = rad / 111000;
     const dLon = rad / (111000 * Math.cos(lat * Math.PI / 180));
@@ -9160,7 +9462,15 @@ async function runRadiusCatchment(lat, lon, active, label = '') {
         stores.push(st);
         if (st.isNew2026) new2026++;
         if (st.bldId) bldSet.add(st.bldId);
-        l1Map.set(st.l1 || '기타', (l1Map.get(st.l1 || '기타') || 0) + 1);
+        const l1Key = st.l1 || '기타';
+        l1Map.set(l1Key, (l1Map.get(l1Key) || 0) + 1);
+        const bk = st.bld || st.addr;
+        if (bk) {
+          let b = bldMap.get(bk);
+          if (!b) { b = { name: bk, addr: st.addr, lat: st.lat, lon: st.lon, cnt: 0, new26: 0 }; bldMap.set(bk, b); }
+          b.cnt++;
+          if (st.isNew2026) b.new26++;
+        }
       }
     }
   }
@@ -9176,9 +9486,29 @@ async function runRadiusCatchment(lat, lon, active, label = '') {
   const topL1 = [...l1Map.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5);
   const newRate = stores.length ? Math.round((new2026 / stores.length) * 1000) / 10 : 0;
 
+  // Expert Category LQ Analysis (Over-saturated vs Blue-Ocean Gap vs Sido Average)
+  const lqList = [];
+  if (stores.length >= 10 && sidoL1Share.size) {
+    for (const [nm, baseSh] of sidoL1Share.entries()) {
+      if (baseSh < 0.02) continue;
+      const localCnt = l1Map.get(nm) || 0;
+      const localSh = localCnt / stores.length;
+      const lq = Math.round((localSh / baseSh) * 100) / 100;
+      lqList.push({ nm, cnt: localCnt, lq, localPct: Math.round(localSh * 100), basePct: Math.round(baseSh * 100) });
+    }
+  }
+  const saturated = lqList.filter((x) => x.lq >= 1.35 && x.cnt >= 3).sort((a, b) => b.lq - a.lq).slice(0, 3);
+  const blueOcean = lqList.filter((x) => x.lq <= 0.65).sort((a, b) => a.lq - b.lq).slice(0, 3);
+  const topBlds = [...bldMap.values()].filter((b) => b.cnt >= 2).sort((a, b) => b.cnt - a.cnt || b.new26 - a.new26).slice(0, 5);
+
+  // Cross-Domain Fusion: Nearby Bids / Pre-specs / Permits within radius!
+  const nearbyOpps = (S.opps || []).filter((o) => o.lat && o.lon && haversineM(lat, lon, o.lat, o.lon) <= Math.max(rad, 1000)).slice(0, 8);
+
   S.catchment = {
-    lat, lon, radius: rad, label, stores,
-    stats: { cnt: stores.length, new2026, newRate, bldCnt: bldSet.size, hhi, topL1 },
+    lat, lon, radius: rad, label, slug: active?.slug || '', stores,
+    stats: { cnt: stores.length, new2026, newRate, bldCnt: bldSet.size, hhi, topL1, saturated, blueOcean },
+    topBlds,
+    nearbyOpps,
     vworld: null,
   };
   renderCatchmentHud();
@@ -9192,7 +9522,7 @@ async function runRadiusCatchment(lat, lon, active, label = '') {
 function renderCatchmentHud() {
   const box = $('sbizCatchmentBox');
   if (!box || !S.catchment) return;
-  const { lat, lon, radius, label, stores, stats, vworld } = S.catchment;
+  const { lat, lon, radius, label, stores, stats, vworld, topBlds = [], nearbyOpps = [] } = S.catchment;
   const maxBar = Math.max(1, ...(stats.topL1 || []).map(([, c]) => c));
   const areaKm2 = (Math.PI * (radius / 1000) ** 2);
   const density = areaKm2 > 0 ? Math.round(stats.cnt / areaKm2) : 0;
@@ -9202,7 +9532,49 @@ function renderCatchmentHud() {
   const topCatTxt = (stats.topL1 || []).slice(0, 2).map(([nm, c]) => `${nm}(${Math.round(c / Math.max(1, stats.cnt) * 100)}%)`).join(' · ') || '분석 중';
   const catchComment = stats.cnt > 0
     ? `<b>${locGrade}</b> — 반경 내 총 <b>${fmt(stats.cnt)}개 상가(${fmt(stats.bldCnt)}동)</b> 중 2026 신규개업 <b>+${fmt(stats.new2026)}개(신규율 ${stats.newRate}%)</b>가 포착되었습니다. 핵심 업종은 <b>${esc(topCatTxt)}</b>이며, <b>${esc(p.short)}</b> 기준 추정 단기 영업가치는 약 <b>${fmtDec(estCatchMan / 10000, 2)}억원</b>입니다. ${stats.hhi >= 2500 ? '특정 업종 집중도(HHI)가 높아 핵심 업종 전용 패키지 영업이 유리합니다.' : '다각화된 복합 상권으로 다중입점 대형건물(숫자 배지)부터 순회 방문을 권장합니다.'}`
-    : '해당 시도를 상단에서 불러오시면 반경 내 정확한 상업적 영업기회·추정 매출·신규개업 코멘트가 자동 산출됩니다.';
+    : '해당 시도를 상단에서 불러오시거나 [📍 현위치 분석]을 누르면 반경 내 상업적 영업기회·추정 가치·업종 블루오션이 자동 산출됩니다.';
+
+  const kakaoRoadviewUrl = `https://map.kakao.com/link/roadview/${lat.toFixed(6)},${lon.toFixed(6)}`;
+  const naverSearchUrl = `https://map.naver.com/p/search/${encodeURIComponent(vworld?.addr || `${lat.toFixed(5)},${lon.toFixed(5)}`)}`;
+  const cmpA = S.compareCatchment;
+  const showCmp = cmpA && (Math.abs(cmpA.lat - lat) > 0.0002 || Math.abs(cmpA.lon - lon) > 0.0002);
+
+  let cmpHtml = '';
+  if (showCmp) {
+    const aArea = Math.PI * ((cmpA.radius || 500) / 1000) ** 2;
+    const aDens = aArea > 0 ? Math.round((cmpA.stats.cnt || 0) / aArea) : 0;
+    const aVal = Math.round(((cmpA.stats.new2026 || 0) * p.storeDealMan * 0.25) + ((cmpA.stats.cnt || 0) * p.storeDealMan * 0.03));
+    const aName = cmpA.label || cmpA.vworld?.addr || '입지 A';
+    const bName = label || vworld?.addr || '현재 입지 B';
+    const cmpRows = [
+      ['총 상가 수', cmpA.stats.cnt || 0, stats.cnt || 0, '개', false],
+      ['상권 밀도 (개/㎢)', aDens, density, '개', false],
+      ['2026 신규개업', cmpA.stats.new2026 || 0, stats.new2026 || 0, '개', false],
+      ['신규개업률', cmpA.stats.newRate || 0, stats.newRate || 0, '%', false],
+      ['업종 HHI (낮을수록 다각화)', cmpA.stats.hhi || 0, stats.hhi || 0, '', true],
+      ['평당 공시지가', cmpA.vworld?.pyeongMan || 0, vworld?.pyeongMan || 0, '만', false],
+      [`추정 영업가치(${p.short})`, +(aVal / 10000).toFixed(2), +(estCatchMan / 10000).toFixed(2), '억', false],
+    ];
+    cmpHtml = `
+      <div class="domain-box" style="margin-top:10px;border-color:rgba(79,70,229,.4);background:rgba(79,70,229,.04)">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap">
+          <h4 style="margin:0;font-size:13px;color:var(--c-corp)">⚖️ 2개 상권 입지 A vs B 정밀 비교 매트릭스</h4>
+          <button id="btnCatchClearCmp" class="btn btn-sm" type="button">✕ 비교 해제</button>
+        </div>
+        <div class="table-wrap">
+          <table class="data-table" style="font-size:12px">
+            <thead><tr><th>평가 지표</th><th>📌 A: ${esc(aName)} (${cmpA.radius}m)</th><th>📍 B: ${esc(bName)} (${radius}m)</th></tr></thead>
+            <tbody>
+              ${cmpRows.map(([k, va, vb, u, lowWin]) => {
+                const aWin = va !== vb && (lowWin ? va < vb : va > vb);
+                const bWin = va !== vb && (lowWin ? vb < va : vb > va);
+                return `<tr><td><b>${k}</b></td><td class="${aWin ? 'compare-win' : ''}">${typeof va === 'number' && !Number.isInteger(va) ? va : fmt(va)}${u} ${aWin ? '👑' : ''}</td><td class="${bWin ? 'compare-win' : ''}">${typeof vb === 'number' && !Number.isInteger(vb) ? vb : fmt(vb)}${u} ${bWin ? '👑' : ''}</td></tr>`;
+              }).join('')}
+            </tbody>
+          </table>
+        </div>
+      </div>`;
+  }
 
   box.innerHTML = `
     <div class="catchment-card">
@@ -9214,7 +9586,11 @@ function renderCatchmentHud() {
           </p>
         </div>
         <div style="display:flex;gap:5px;flex-wrap:wrap">
-          <button id="btnCatchReport" class="btn btn-sm btn-primary" type="button">📄 반경 리포트 (PDF)</button>
+          <button id="btnCatchPinA" class="btn btn-sm ${cmpA ? 'btn-amber' : ''}" type="button">📌 ${cmpA ? '입지 A 재고정' : '비교 기준(A) 고정'}</button>
+          <button id="btnCatchBookmark" class="btn btn-sm" type="button">⭐ 입지 북마크</button>
+          <a class="btn btn-sm" href="${kakaoRoadviewUrl}" target="_blank" rel="noopener">🗺️ 로드뷰 ↗</a>
+          <a class="btn btn-sm" href="${naverSearchUrl}" target="_blank" rel="noopener">🧭 네이버지도 ↗</a>
+          <button id="btnCatchReport" class="btn btn-sm btn-primary" type="button">📄 리포트 (PDF)</button>
           ${stores.length ? `<button id="btnCatchCsv" class="btn btn-sm btn-emerald" type="button">📥 리드팩 CSV (${fmt(stores.length)})</button>` : ''}
           <button id="btnCatchPipe" class="btn btn-sm" type="button">💼 CRM 담기</button>
         </div>
@@ -9229,6 +9605,15 @@ function renderCatchmentHud() {
         <div class="quant-box"><div class="q-lbl">💰 추정 평당 공시지가</div><div class="q-val" style="color:var(--c-corp)">${vworld?.pyeongMan ? `${fmt(vworld.pyeongMan)}만` : '-'}</div><div class="q-sub">${esc(vworld?.zoning || '조회 중')}</div></div>
       </div>
 
+      ${(stats.saturated?.length || stats.blueOcean?.length) ? `
+        <div class="domain-box" style="margin-bottom:10px;padding:9px 11px">
+          <div style="font-size:12px;font-weight:800;margin-bottom:6px">💎 전문가 업종 포화도 · 블루오션 공백(LQ) 진단 <span style="font-weight:500;color:var(--muted);font-size:11px">(시도 평균=1.00 기준)</span></div>
+          <div style="display:flex;gap:6px;flex-wrap:wrap">
+            ${(stats.saturated || []).map((x) => `<span class="nx-lq-chip nx-lq-over">🔴 과밀 ${esc(x.nm)} (LQ ${x.lq} · ${x.localPct}%)</span>`).join('')}
+            ${(stats.blueOcean || []).map((x) => `<span class="nx-lq-chip nx-lq-blue">🟢 블루오션 ${esc(x.nm)} (LQ ${x.lq} · ${x.localPct}%)</span>`).join('')}
+          </div>
+        </div>` : ''}
+
       ${stats.topL1.length ? `
         <div style="margin-top:6px">
           ${stats.topL1.map(([nm, cnt]) => `
@@ -9239,8 +9624,75 @@ function renderCatchmentHud() {
             </div>`).join('')}
         </div>
       ` : '<div style="font-size:12px;color:var(--muted)">상단에서 해당 시도를 로드하면 반경 내 정확한 상가·신규개업·HHI 분석이 표시됩니다.</div>'}
+
+      ${topBlds.length ? `
+        <div class="domain-box" style="margin-top:10px;padding:9px 11px">
+          <div style="font-size:12px;font-weight:800;margin-bottom:6px">🏢 반경 내 우선 공략 밀집건물 TOP ${topBlds.length} (현장 영업 최적 동선)</div>
+          <div style="display:grid;gap:5px">
+            ${topBlds.map((b, i) => `
+              <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:12px;padding:4px 0;border-bottom:1px dashed var(--border)">
+                <div style="min-width:0"><b>${i + 1}. ${esc(b.name)}</b> <span class="tag tag-sbiz">${fmt(b.cnt)}개</span>${b.new26 ? ` <span class="tag tag-bid">🆕+${b.new26}</span>` : ''}</div>
+                <div style="display:flex;gap:4px;flex-shrink:0">
+                  <button type="button" class="btn btn-sm" style="padding:2px 7px;font-size:11px" data-cbld-fly="${b.lat},${b.lon}">📍</button>
+                  <a class="btn btn-sm" style="padding:2px 7px;font-size:11px" href="https://map.kakao.com/link/roadview/${b.lat.toFixed(6)},${b.lon.toFixed(6)}" target="_blank" rel="noopener">🗺️</a>
+                </div>
+              </div>`).join('')}
+          </div>
+        </div>` : ''}
+
+      ${nearbyOpps.length ? `
+        <div class="domain-box" style="margin-top:10px;padding:9px 11px;border-color:rgba(217,119,6,.35);background:rgba(217,119,6,.04)">
+          <div style="font-size:12px;font-weight:800;margin-bottom:5px;color:var(--c-bid)">🎯 크로스 도메인 포착: 반경 내 입찰 · 사전규격 · 건축인허가 (${nearbyOpps.length}건)</div>
+          <div style="display:grid;gap:4px">
+            ${nearbyOpps.slice(0, 4).map((o) => `
+              <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;font-size:11.5px">
+                <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap"><b>${esc(o.title)}</b> <span style="color:var(--muted)">(${esc(o.org || '-')})</span></span>
+                <button type="button" class="btn btn-sm" style="padding:2px 7px;font-size:11px;flex-shrink:0" data-copp-open="${esc(o.id)}">상세</button>
+              </div>`).join('')}
+          </div>
+        </div>` : ''}
+
+      ${cmpHtml}
     </div>
   `;
+
+  $('btnCatchPinA')?.addEventListener('click', () => {
+    S.compareCatchment = {
+      lat, lon, radius,
+      label: label || vworld?.addr?.split(' ').slice(0, 3).join(' ') || '입지 A',
+      stats: { ...stats },
+      vworld: vworld ? { ...vworld } : null,
+    };
+    toast(`📌 입지 A(${S.compareCatchment.label}) 고정 완료! 지도에서 비교할 다른 지점을 클릭하세요.`);
+    renderSbizTab();
+  });
+  $('btnCatchClearCmp')?.addEventListener('click', () => {
+    S.compareCatchment = null;
+    renderCatchmentHud();
+    toast('⚖️ 입지 비교를 종료했습니다.');
+  });
+  $('btnCatchBookmark')?.addEventListener('click', () => {
+    const defName = label || vworld?.addr?.split(' ').slice(0, 3).join(' ') || `${lat.toFixed(4)},${lon.toFixed(4)}`;
+    const nm = prompt('저장할 관심 입지 이름을 입력하세요:', defName);
+    if (!nm || !nm.trim()) return;
+    S.sbizBookmarks.unshift({ label: nm.trim(), lat, lon, radius, slug: S.sbizActiveSlug || '' });
+    S.sbizBookmarks = S.sbizBookmarks.slice(0, 15);
+    saveSbizBookmarks();
+    toast(`⭐ '${nm.trim()}' 관심 입지가 북마크에 저장되었습니다!`);
+    renderSbizTab();
+  });
+  box.querySelectorAll('[data-cbld-fly]').forEach((b) => {
+    b.addEventListener('click', () => {
+      const [la, lo] = b.dataset.cbldFly.split(',').map(Number);
+      S.leafletMap?.setView([la, lo], 18);
+    });
+  });
+  box.querySelectorAll('[data-copp-open]').forEach((b) => {
+    b.addEventListener('click', () => {
+      const o = S.opps.find((x) => x.id === b.dataset.coppOpen);
+      if (o) openOppDrawer(o);
+    });
+  });
 
   $('btnCatchReport')?.addEventListener('click', () => {
     const today = new Date().toISOString().slice(0, 10);

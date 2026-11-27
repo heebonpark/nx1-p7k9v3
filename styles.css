@@ -983,3 +983,60 @@ table.data-table tbody tr:hover { background: var(--surface-2); }
   .nx-adm-tabs { gap: 4px; }
   .nx-adm-tab { padding: 6px 9px; font-size: 11px; }
 }
+
+/* ===== V38 COMMERCIAL MAP PRO GIS · GPS PULSE · EXPERT HUD ===== */
+.sbiz-map-wrap { position: relative; }
+.sbiz-map-hud {
+  position: absolute; right: 10px; top: 10px; z-index: 420;
+  display: flex; flex-direction: column; gap: 6px;
+}
+.sbiz-hud-btn {
+  width: 38px; height: 38px; border-radius: 10px;
+  border: 1px solid rgba(15, 23, 42, 0.16);
+  background: rgba(255, 255, 255, 0.94); color: #0f172a;
+  font-size: 16px; display: inline-flex; align-items: center; justify-content: center;
+  box-shadow: 0 3px 12px rgba(15, 23, 42, 0.18); backdrop-filter: blur(6px);
+  transition: transform .12s, background .15s, border-color .15s;
+}
+.sbiz-hud-btn:hover { background: #fff; border-color: #4f46e5; transform: scale(1.04); }
+.sbiz-hud-btn.on { background: #4f46e5; color: #fff; border-color: #4f46e5; }
+.sbiz-hud-btn.tracking { background: #059669; color: #fff; border-color: #059669; animation: nxGpsBtnPulse 1.8s infinite; }
+[data-theme="dark"] .sbiz-hud-btn { background: rgba(15, 23, 42, 0.9); color: #f8fafc; border-color: rgba(148, 163, 184, 0.35); }
+[data-theme="dark"] .sbiz-hud-btn.on { background: #6366f1; color: #fff; }
+[data-theme="dark"] .sbiz-hud-btn.tracking { background: #10b981; color: #fff; }
+
+@keyframes nxGpsBtnPulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.55); }
+  50% { box-shadow: 0 0 0 8px rgba(16, 185, 129, 0); }
+}
+.nx-gps-dot {
+  width: 16px; height: 16px; border-radius: 50%;
+  background: #2563eb; border: 3px solid #fff;
+  box-shadow: 0 0 0 5px rgba(37, 99, 235, 0.32), 0 2px 8px rgba(0, 0, 0, 0.35);
+  animation: nxGpsDotPulse 2s infinite;
+}
+@keyframes nxGpsDotPulse {
+  0%, 100% { box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.38), 0 2px 8px rgba(0, 0, 0, 0.35); }
+  50% { box-shadow: 0 0 0 11px rgba(37, 99, 235, 0.06), 0 2px 8px rgba(0, 0, 0, 0.35); }
+}
+.nx-gps-status-chip {
+  position: absolute; left: 10px; bottom: 10px; z-index: 420;
+  padding: 5px 10px; border-radius: 999px; font-size: 11px; font-weight: 800;
+  background: rgba(15, 23, 42, 0.84); color: #f8fafc;
+  backdrop-filter: blur(6px); box-shadow: 0 2px 10px rgba(0, 0, 0, 0.25);
+  pointer-events: none;
+}
+.nx-lq-chip {
+  display: inline-flex; align-items: center; gap: 4px; padding: 3px 8px;
+  border-radius: 999px; font-size: 11px; font-weight: 800;
+}
+.nx-lq-over { background: rgba(225, 29, 72, 0.12); color: #be123c; border: 1px solid rgba(225, 29, 72, 0.3); }
+.nx-lq-blue { background: rgba(16, 185, 129, 0.12); color: #047857; border: 1px solid rgba(16, 185, 129, 0.3); }
+[data-theme="dark"] .nx-lq-over { color: #fda4af; }
+[data-theme="dark"] .nx-lq-blue { color: #6ee7b7; }
+.nx-bm-bar {
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  padding: 6px 10px; border-radius: 10px; margin-bottom: 8px;
+  background: rgba(79, 70, 229, 0.05); border: 1px solid rgba(79, 70, 229, 0.2);
+  font-size: 11.5px;
+}

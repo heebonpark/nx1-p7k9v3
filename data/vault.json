@@ -5,8 +5,8 @@
   "salt": "x4jBjVy8SBfiu8zQuZdUTw==",
   "checkIv": "XVhP5LQa0MOnavi5",
   "checkCt": "RWZnUoe0sgVa2WZijk0TRNITNiOcXmHiL8Mt+638VUWd627I",
-  "builtAt": "2026-11-27-v42",
-  "totalBytes": 161568831,
+  "builtAt": "2026-11-27-v43",
+  "totalBytes": 161874090,
   "stats": {
     "corpCount": 120028,
     "sbizCount": 2753778,
@@ -181,14 +181,16 @@
   ],
   "fscFinancials": {
     "syncedAt": "2026-11-27",
-    "officialRevCount": 23725,
-    "officialOpCount": 24120,
+    "officialRevCount": 29363,
+    "officialOpCount": 29598,
+    "estimatedRevCount": 22084,
+    "totalRevCoverage": 51447,
     "yearDist": {
-      "2023": 4520,
-      "2024": 5640,
-      "2025": 13909,
-      "dartLegacy": 62
-    },
-    "crnoCoverage": 117261
+      "2021": 2222,
+      "2022": 3250,
+      "2023": 4429,
+      "2024": 5585,
+      "2025": 13860
+    }
   }
 }

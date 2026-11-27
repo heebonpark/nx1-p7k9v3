@@ -6435,7 +6435,13 @@ function openCorpDrawer(idx) {
         <div class="domain-stat-row"><span>전화 / 홈페이지</span><b>${esc(r[8] || '-')} ${r[10] ? `· <a href="https://${esc(r[10].replace(/^https?:\/\//, ''))}" target="_blank" rel="noopener">웹사이트</a>` : ''}</b></div>
       </div>
 
-      <h4 style="margin:12px 0 6px;font-size:13px">📊 매출 · 영업이익 분석 (${revInfo.kind === 'dart' ? `금융위·DART 3개년 공식결산${fy ? ` · ${fy} 기준` : ''}` : (revInfo.kind === 'est' ? '국민연금 실급여 추정' : '미수록')})</h4>
+      <h4 style="margin:12px 0 6px;font-size:13px;display:flex;justify-content:space-between;align-items:center;gap:6px;flex-wrap:wrap">
+        <span>📊 매출 · 영업이익 분석 (${revInfo.kind === 'dart' ? `금융위·DART 3개년 공식결산${fy ? ` · ${fy} 기준` : ''}` : (revInfo.kind === 'est' ? '국민연금 실급여 추정' : '미수록')})</span>
+        <span style="display:flex;gap:5px;font-weight:600;font-size:11px">
+          <a href="https://search.naver.com/search.naver?query=${encodeURIComponent(String(r[0] || '').replace(/\(주\)|㈜|주식회사/g, '').trim() + ' 매출액')}" target="_blank" rel="noopener" style="color:var(--accent);text-decoration:none">🔍 네이버 매출</a>
+          <a href="https://dart.fss.or.kr/dsab007/main.do?option=corp&textCrpNm=${encodeURIComponent(String(r[0] || '').replace(/\(주\)|㈜|주식회사/g, '').trim())}" target="_blank" rel="noopener" style="color:#059669;text-decoration:none">📄 DART 공시</a>
+        </span>
+      </h4>
       ${chartHtml}
 
       ${enr ? `<div class="domain-box" style="margin-top:12px">

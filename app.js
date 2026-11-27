@@ -296,8 +296,18 @@ function defaultAdminConfig() {
   };
 }
 
+function peekRegistryRawSafe() {
+  try {
+    return JSON.parse(localStorage.getItem(MASTER_REG_KEY) || 'null');
+  } catch {
+    return null;
+  }
+}
+
 function encodeSignedLicense(cfg, expertOpts = null) {
-  const eo = expertOpts || loadSellerRegistry().expertOpts;
+  const rawReg = peekRegistryRawSafe();
+  const eo = expertOpts || (rawReg?.expertOpts ? { ...defaultExpertOpts(), ...rawReg.expertOpts } : defaultExpertOpts());
+  const cp = { ...defaultConsentPolicy(), ...(rawReg?.consentPolicy || {}) };
   const al = cfg.appLinks || {};
   const enabledApps = al.showSection ? INDIVIDUAL_PRO_APPS.filter((a) => al[a.key]).map((a) => a.key) : [];
   const compact = {
@@ -323,8 +333,8 @@ function encodeSignedLicense(cfg, expertOpts = null) {
     fr: cfg.isFree ? 1 : 0,
     ft: cfg.freeType || '',
     sm: cfg.simpleFreeMode ? 1 : 0,
-    ce: (cfg.consentEnabled !== undefined ? cfg.consentEnabled : (loadSellerRegistry().consentPolicy?.enabled !== false)) ? 1 : 0,
-    cv: cfg.consentVersion || loadSellerRegistry().consentPolicy?.version || '2026.11-v1',
+    ce: (cfg.consentEnabled !== undefined ? cfg.consentEnabled : (cp.enabled !== false)) ? 1 : 0,
+    cv: cfg.consentVersion || cp.version || '2026.11-v1',
   };
   const b64 = toBase64Url(compact);
   return `${b64}.${signTokenStr(b64)}`;
@@ -3933,47 +3943,81 @@ async function fetchDecryptJson(name) {
   return JSON.parse(new TextDecoder().decode(plain));
 }
 
-// IndexedDB non-extractable key cache
-function openIdb() {
+// IndexedDB non-extractable key cache (timeout-guarded for iOS/iPadOS & KakaoTalk WebView)
+function openIdb(timeoutMs = 1500) {
   return new Promise((resolve, reject) => {
-    const req = indexedDB.open(IDB_NAME, 1);
-    req.onupgradeneeded = () => req.result.createObjectStore(IDB_STORE);
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error);
+    if (typeof indexedDB === 'undefined') { reject(new Error('No IDB')); return; }
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (!settled) { settled = true; reject(new Error('IDB timeout')); }
+    }, timeoutMs);
+    const done = (fn, val) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      fn(val);
+    };
+    try {
+      const req = indexedDB.open(IDB_NAME, 1);
+      req.onupgradeneeded = () => {
+        if (!req.result.objectStoreNames.contains(IDB_STORE)) {
+          req.result.createObjectStore(IDB_STORE);
+        }
+      };
+      req.onsuccess = () => done(resolve, req.result);
+      req.onerror = () => done(reject, req.error || new Error('IDB open error'));
+      req.onblocked = () => done(reject, new Error('IDB blocked'));
+    } catch (e) {
+      done(reject, e);
+    }
   });
 }
 async function idbGetKey() {
+  let db = null;
   try {
-    const db = await openIdb();
+    db = await openIdb(1500);
     return await new Promise((res) => {
+      const timer = setTimeout(() => res(null), 1500);
       const tx = db.transaction(IDB_STORE, 'readonly');
       const r = tx.objectStore(IDB_STORE).get('master');
-      r.onsuccess = () => res(r.result || null);
-      r.onerror = () => res(null);
+      r.onsuccess = () => { clearTimeout(timer); res(r.result || null); };
+      r.onerror = () => { clearTimeout(timer); res(null); };
     });
-  } catch { return null; }
+  } catch { return null; } finally {
+    try { db?.close(); } catch {}
+  }
 }
 async function idbSetKey(key) {
+  let db = null;
   try {
-    const db = await openIdb();
-    await new Promise((res, rej) => {
+    db = await openIdb(1500);
+    await new Promise((res) => {
+      const timer = setTimeout(res, 1500);
       const tx = db.transaction(IDB_STORE, 'readwrite');
       tx.objectStore(IDB_STORE).put(key, 'master');
-      tx.oncomplete = res;
-      tx.onerror = rej;
+      tx.oncomplete = () => { clearTimeout(timer); res(); };
+      tx.onerror = () => { clearTimeout(timer); res(); };
+      tx.onabort = () => { clearTimeout(timer); res(); };
     });
-  } catch {}
+  } catch {} finally {
+    try { db?.close(); } catch {}
+  }
 }
 async function idbClearKey() {
+  let db = null;
   try {
-    const db = await openIdb();
+    db = await openIdb(1500);
     await new Promise((res) => {
+      const timer = setTimeout(res, 1500);
       const tx = db.transaction(IDB_STORE, 'readwrite');
       tx.objectStore(IDB_STORE).clear();
-      tx.oncomplete = res;
-      tx.onerror = res;
+      tx.oncomplete = () => { clearTimeout(timer); res(); };
+      tx.onerror = () => { clearTimeout(timer); res(); };
+      tx.onabort = () => { clearTimeout(timer); res(); };
     });
-  } catch {}
+  } catch {} finally {
+    try { db?.close(); } catch {}
+  }
 }
 
 // ===== VWORLD JSONP HELPER =====
@@ -10490,27 +10534,37 @@ function openManualModal(tabKey = null) {
 // ===== THEME & INIT =====
 function applyTheme(theme) {
   document.documentElement.dataset.theme = theme;
-  localStorage.setItem(THEME_KEY, theme);
-  $('btnTheme').textContent = theme === 'dark' ? '☀️' : '🌙';
+  try { localStorage.setItem(THEME_KEY, theme); } catch {}
+  if ($('btnTheme')) $('btnTheme').textContent = theme === 'dark' ? '☀️' : '🌙';
+}
+
+async function ensureVaultManifest() {
+  if (S.vault) return S.vault;
+  const r = await fetch('data/vault.json', { cache: 'no-store' });
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  S.vault = await r.json();
+  return S.vault;
 }
 
 async function init() {
-  applyTheme(localStorage.getItem(THEME_KEY) || 'light');
+  let savedTheme = 'light';
+  try { savedTheme = localStorage.getItem(THEME_KEY) || 'light'; } catch {}
+  applyTheme(savedTheme);
   loadPipeline();
 
-  $('btnTheme').addEventListener('click', () => applyTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'));
-  $('btnOptions').addEventListener('click', openOptionsModal);
-  $('optionsClose').addEventListener('click', closeOptionsModal);
-  $('optionsBackdrop').addEventListener('click', (e) => { if (e.target === $('optionsBackdrop')) closeOptionsModal(); });
+  $('btnTheme')?.addEventListener('click', () => applyTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'));
+  $('btnOptions')?.addEventListener('click', openOptionsModal);
+  $('optionsClose')?.addEventListener('click', closeOptionsModal);
+  $('optionsBackdrop')?.addEventListener('click', (e) => { if (e.target === $('optionsBackdrop')) closeOptionsModal(); });
   $('btnManual')?.addEventListener('click', () => openManualModal());
   $('manualClose')?.addEventListener('click', () => $('manualBackdrop')?.classList.add('hidden'));
   $('manualBackdrop')?.addEventListener('click', (e) => { if (e.target === $('manualBackdrop')) $('manualBackdrop')?.classList.add('hidden'); });
-  $('reportClose').addEventListener('click', closeReportModal);
-  $('reportBackdrop').addEventListener('click', (e) => { if (e.target === $('reportBackdrop')) closeReportModal(); });
-  $('brandHome').addEventListener('click', () => switchTab('overview'));
-  $('btnGoPipe').addEventListener('click', () => switchTab('hub'));
-  $('drawerClose').addEventListener('click', closeDrawer);
-  $('drawerBackdrop').addEventListener('click', (e) => { if (e.target === $('drawerBackdrop')) closeDrawer(); });
+  $('reportClose')?.addEventListener('click', closeReportModal);
+  $('reportBackdrop')?.addEventListener('click', (e) => { if (e.target === $('reportBackdrop')) closeReportModal(); });
+  $('brandHome')?.addEventListener('click', () => switchTab('overview'));
+  $('btnGoPipe')?.addEventListener('click', () => switchTab('hub'));
+  $('drawerClose')?.addEventListener('click', closeDrawer);
+  $('drawerBackdrop')?.addEventListener('click', (e) => { if (e.target === $('drawerBackdrop')) closeDrawer(); });
   document.querySelectorAll('[data-tab]').forEach((b) => b.addEventListener('click', () => switchTab(b.dataset.tab)));
 
   $('btnAdminSales')?.addEventListener('click', () => {
@@ -10527,7 +10581,7 @@ async function init() {
     }
   });
 
-  $('btnLockOut').addEventListener('click', async () => {
+  $('btnLockOut')?.addEventListener('click', async () => {
     await idbClearKey();
     location.reload();
   });
@@ -10562,25 +10616,7 @@ async function init() {
   // Apply white-label branding even on lock screen before unlock!
   applyLockScreenBranding();
 
-  // Load vault manifest
-  try {
-    const r = await fetch('data/vault.json', { cache: 'no-store' });
-    S.vault = await r.json();
-  } catch (e) {
-    $('lockErr').textContent = '볼트 메타데이터(data/vault.json)를 찾을 수 없습니다.';
-    return;
-  }
-
-  // Try auto-unlock from IndexedDB non-extractable key
-  const cachedKey = await idbGetKey();
-  if (cachedKey && await verifyKey(cachedKey, S.vault)) {
-    try {
-      await unlockAndBoot(cachedKey);
-      return;
-    } catch {}
-  }
-
-  // Show/hide password toggle & KakaoTalk/Naver in-app browser tip
+  // Bind password show/hide toggle, in-app browser tip, and submit handler IMMEDIATELY (before async I/O!)
   $('lockPwToggle')?.addEventListener('click', () => {
     const inp = $('lockPw');
     if (!inp) return;
@@ -10598,10 +10634,9 @@ async function init() {
     }
   }
 
-  // Manual password submit (auto-trim fallback + role-mistake / IME guidance)
-  $('lockForm').addEventListener('submit', async (e) => {
+  $('lockForm')?.addEventListener('submit', async (e) => {
     e.preventDefault();
-    const rawPw = $('lockPw').value || '';
+    const rawPw = $('lockPw')?.value || '';
     const trimmedPw = rawPw.trim();
     const btn = $('lockBtn'), err = $('lockErr');
     if (!trimmedPw) {
@@ -10610,11 +10645,12 @@ async function init() {
     }
     btn.disabled = true; btn.textContent = '🔓 PBKDF2 키 유도 및 복호화 중…'; err.textContent = '';
     try {
-      let key = await deriveKey(rawPw, S.vault.salt, S.vault.iter);
-      let ok = await verifyKey(key, S.vault);
+      const vault = await ensureVaultManifest();
+      let key = await deriveKey(rawPw, vault.salt, vault.iter);
+      let ok = await verifyKey(key, vault);
       if (!ok && trimmedPw !== rawPw) {
-        key = await deriveKey(trimmedPw, S.vault.salt, S.vault.iter);
-        ok = await verifyKey(key, S.vault);
+        key = await deriveKey(trimmedPw, vault.salt, vault.iter);
+        ok = await verifyKey(key, vault);
       }
       if (!ok) {
         const low = trimmedPw.toLowerCase();
@@ -10630,7 +10666,7 @@ async function init() {
         btn.disabled = false; btn.textContent = '🔐 통합 볼트 잠금 해제';
         return;
       }
-      if ($('lockRemember').checked) await idbSetKey(key);
+      if ($('lockRemember')?.checked) await idbSetKey(key);
       await unlockAndBoot(key);
     } catch (ex) {
       err.textContent = `잠금 해제 실패: ${ex.message}`;
@@ -10640,6 +10676,22 @@ async function init() {
 
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('sw.js').catch(() => {});
+  }
+
+  // Load vault manifest & attempt auto-unlock from IndexedDB
+  try {
+    await ensureVaultManifest();
+  } catch (e) {
+    $('lockErr').textContent = '볼트 메타데이터(data/vault.json)를 찾을 수 없습니다.';
+    return;
+  }
+
+  const cachedKey = await idbGetKey();
+  if (cachedKey && await verifyKey(cachedKey, S.vault)) {
+    try {
+      await unlockAndBoot(cachedKey);
+      return;
+    } catch {}
   }
 }
 

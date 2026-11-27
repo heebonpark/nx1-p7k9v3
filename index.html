@@ -68,6 +68,7 @@
           💼 <span class="hide-xs">파이프라인</span> <span id="pipeBadge" class="pipe-badge">0</span>
         </button>
         <button id="btnAdminSales" class="icon-btn" type="button" title="관리자 · 판매 패키지 및 노출 서비스 항목 설정 (Ctrl+Shift+A)">🛡️ <span class="hide-xs">관리자</span></button>
+        <button id="btnManual" class="icon-btn" type="button" title="운영 · 사용 매뉴얼 및 FAQ (인쇄/PDF 지원)">📖 <span class="hide-xs">매뉴얼</span></button>
         <button id="btnOptions" class="icon-btn" type="button" title="전문가 옵션 · 가중치 · GIS 설정">⚙️ <span class="hide-xs">옵션</span></button>
         <button id="btnTheme" class="icon-btn" type="button" title="다크/라이트 테마 전환">🌙</button>
         <button id="btnLockOut" class="icon-btn" type="button" title="볼트 잠금 (로그아웃)">🔒</button>
@@ -139,6 +140,21 @@
     </div>
   </div>
 
+  <!-- ===== ROLE-AWARE OPERATIONS & USER MANUAL MODAL (v34) ===== -->
+  <div id="manualBackdrop" class="modal-backdrop hidden" style="z-index:960">
+    <div class="modal-card nx-admin-modal" role="dialog" aria-modal="true" style="max-width:960px">
+      <div class="drawer-head">
+        <div>
+          <h3 id="manualModalTitle" style="margin:0;font-size:16px;font-weight:800">📖 넥서스원 PRO · 운영 & 사용 통합 매뉴얼</h3>
+          <div id="manualModalSub" style="font-size:12px;color:var(--muted);margin-top:2px">v34 최신 기준 · 도메인별 실무 사용법 · 관리자 운영 절차 · FAQ</div>
+        </div>
+        <button id="manualClose" class="icon-btn" type="button">✕</button>
+      </div>
+      <div id="manualBody" class="drawer-body"></div>
+      <div id="manualFoot" class="drawer-foot"></div>
+    </div>
+  </div>
+
   <!-- ===== FIRST-LOGIN PRIVACY & TERMS CONSENT MODAL (v32) ===== -->
   <div id="consentBackdrop" class="modal-backdrop hidden" style="z-index:980">
     <div class="modal-card" role="dialog" aria-modal="true" style="max-width:680px">
@@ -172,6 +188,6 @@
   <div id="toast" class="toast hidden"></div>
 
   <script src="vendor/leaflet.min.js"></script>
-  <script type="module" src="app.js?v=33"></script>
+  <script type="module" src="app.js?v=34"></script>
 </body>
 </html>

@@ -1,0 +1,237 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+<meta name="robots" content="noindex, nofollow, noarchive" />
+<title>넥서스원 PRO — 운영 · 사용 통합 매뉴얼 (v34)</title>
+<style>
+  :root{--bg:#f8fafc;--surface:#ffffff;--surface2:#f1f5f9;--ink:#0f172a;--ink2:#334155;--muted:#64748b;--line:#e2e8f0;--acc:#4f46e5;--ok:#059669;--amber:#d97706;--rose:#e11d48}
+  *{box-sizing:border-box}
+  body{margin:0;font-family:-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic',sans-serif;background:var(--bg);color:var(--ink);line-height:1.65}
+  .wrap{max-width:960px;margin:0 auto;padding:24px 18px 72px}
+  .hero{background:linear-gradient(135deg,#0f172a 0%,#1e1b4b 55%,#065f46 100%);color:#fff;border-radius:18px;padding:28px 26px;margin-bottom:18px;box-shadow:0 16px 40px rgba(15,23,42,.18)}
+  .pill{display:inline-flex;align-items:center;gap:6px;padding:4px 11px;border-radius:999px;background:rgba(16,185,129,.22);border:1px solid rgba(110,231,183,.5);color:#a7f3d0;font-size:11.5px;font-weight:800;margin-bottom:10px}
+  .hero h1{margin:0 0 8px;font-size:24px;font-weight:900;letter-spacing:-.02em}
+  .hero p{margin:0 0 16px;color:#cbd5e1;font-size:13.5px}
+  .btn-row{display:flex;flex-wrap:wrap;gap:8px}
+  .btn{display:inline-flex;align-items:center;gap:6px;padding:9px 14px;border-radius:10px;border:1px solid var(--line);background:#fff;color:var(--ink);font-size:12.5px;font-weight:800;cursor:pointer;text-decoration:none}
+  .btn-primary{background:#4f46e5;border-color:#4f46e5;color:#fff}
+  .btn-ok{background:#059669;border-color:#059669;color:#fff}
+  .tabs{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px}
+  .tab{padding:9px 15px;border-radius:10px;border:1px solid var(--line);background:var(--surface);color:var(--ink2);font-size:13px;font-weight:800;cursor:pointer}
+  .tab.active{background:var(--acc);color:#fff;border-color:var(--acc)}
+  .search{width:100%;padding:10px 14px;border-radius:10px;border:1px solid var(--line);background:var(--surface);font-size:13.5px;margin-bottom:16px}
+  .card{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:20px 22px;margin-bottom:14px;box-shadow:0 2px 10px rgba(15,23,42,.04)}
+  .card h2{margin:0 0 10px;font-size:16.5px;font-weight:900;color:var(--acc);display:flex;align-items:center;gap:7px}
+  .card h3{margin:14px 0 6px;font-size:14px;font-weight:800;color:var(--ink)}
+  .card ul,.card ol{margin:6px 0 0;padding-left:20px;font-size:13.2px;color:var(--ink2)}
+  .card li{margin-bottom:5px}
+  table{width:100%;border-collapse:collapse;font-size:12.5px;margin-top:8px}
+  th,td{border:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top}
+  th{background:var(--surface2);font-weight:800;color:var(--ink)}
+  code{background:var(--surface2);padding:2px 6px;border-radius:5px;font-size:12px;color:#312e81}
+  .note{background:rgba(79,70,229,.06);border:1px solid rgba(79,70,229,.25);border-radius:10px;padding:11px 14px;font-size:12.5px;color:var(--ink2);margin-top:10px}
+  .warn{background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.35);border-radius:10px;padding:11px 14px;font-size:12.5px;color:#92400e;margin-top:10px}
+  .hidden{display:none!important}
+  @media print{
+    @page{size:A4 portrait;margin:12mm}
+    body{background:#fff}
+    .no-print{display:none!important}
+    .wrap{padding:0;max-width:none}
+    .hero{background:#0f172a!important;-webkit-print-color-adjust:exact;print-color-adjust:exact;break-inside:avoid}
+    .card{box-shadow:none;break-inside:avoid;border-color:#cbd5e1}
+  }
+</style>
+</head>
+<body>
+<main class="wrap">
+  <section class="hero">
+    <div class="pill">NEXUS ONE PRO · OFFICIAL MANUAL v34</div>
+    <h1 id="heroTitle">넥서스원 PRO — 사용자 실무 매뉴얼</h1>
+    <p id="heroSub">기업분석(12만·공시/추정매출 4.3만) · K-Bid급 입찰·투찰 · 소상공인 상권(275만) · 청약·착공 통합 플랫폼 공식 안내서</p>
+    <div class="btn-row no-print">
+      <a class="btn btn-primary" href="./">🚀 넥서스원 PRO 실행</a>
+      <button class="btn btn-ok" type="button" onclick="window.print()">🖨️ 전체 매뉴얼 PDF / 인쇄</button>
+    </div>
+  </section>
+
+  <div class="tabs no-print" id="tabBar">
+    <button type="button" class="tab active" data-sec="user">📘 사용자 실무 매뉴얼</button>
+    <button type="button" class="tab" data-sec="buyer">🏢 구매자 사내관리 · 보안 가이드</button>
+    <button type="button" class="tab hidden" id="tabOpsBtn" data-sec="ops">🛡️ 판매자 마스터 운영 매뉴얼</button>
+    <button type="button" class="tab" data-sec="faq">❓ FAQ · 장애대응</button>
+  </div>
+
+  <input id="qInput" class="search no-print" type="search" placeholder="매뉴얼 키워드 검색 (예: A값, 매출, admin, 비번초기화, 직권중지, 홈택스, 무료배포, 개인정보, PWA…)" />
+
+  <!-- ===== 1. USER MANUAL ===== -->
+  <div id="sec-user" class="sec-group">
+    <section class="card" data-k="시작 로그인 볼트 암호화 개인정보 동의 PWA 설치">
+      <h2>1. 빠른 시작 · 최초 로그인 동의 · PWA 앱 설치</h2>
+      <ol>
+        <li><b>원패스 볼트 잠금 해제</b>: 전용 링크 접속 후 전달받은 비밀번호를 입력합니다. <b>"이 기기에서 로그인 유지"</b>를 체크하면 추출 불가 WebCrypto 키로 보관되어 재입력 없이 즉시 실행됩니다.</li>
+        <li><b>최초 로그인 개인정보·약관 동의</b>: 최초 1회 개인정보보호·이용약관·보안서약 필수 3종에 동의하고 확인자 성명/부서를 입력하면 바로 시작됩니다.</li>
+        <li><b>스마트폰·PC 앱 설치(PWA)</b>:
+          <ul>
+            <li><b>아이폰(Safari)</b>: 하단 <code>공유(↑)</code> → <code>홈 화면에 추가</code></li>
+            <li><b>안드로이드(Chrome)</b>: 우측 상단 <code>⋮</code> → <code>앱 설치 / 홈 화면에 추가</code></li>
+            <li><b>PC(Chrome/Edge)</b>: 주소창 우측 <code>설치(⊕)</code> 클릭 → 독립 앱 창 실행</li>
+          </ul>
+        </li>
+      </ol>
+    </section>
+
+    <section class="card" data-k="통합 360 커맨드 시군구 히트맵 가중치 리포트 검색">
+      <h2>2. ⚡ 통합 360° 커맨드 센터 & 글로벌 크로스 검색</h2>
+      <ul>
+        <li><b>전국 229 시군구 융합 지도</b>: 지역 클릭 시 기업·입찰·상권·부동산 4축 레이더, 블루오션/LQ/HHI 퀀트 지표, 30·60일 영업 플레이북을 즉시 확인합니다.</li>
+        <li><b>임원 보고용 상업기회 리포트</b>: <code>📄 상업기회 정밀 리포트</code> 버튼으로 A4 인쇄/PDF, Markdown, 카카오톡 요약 복사를 지원합니다.</li>
+        <li><b>상단 통합 크로스 검색</b>: 지역명·기업명·입찰공고·분양단지를 계약된 허용 도메인 범위 내에서 즉시 검색합니다.</li>
+      </ul>
+    </section>
+
+    <section class="card" data-k="기업분석 매출 DART 국민연금 추정매출 시도 필터 CSV">
+      <h2>3. 🏢 기업분석 PRO (120,028사 · 공시+추정매출 43,746사)</h2>
+      <ul>
+        <li><b>이중 매출 커버리지</b>:
+          <ul>
+            <li><b>DART 공시매출 (2,813사)</b>: 녹색 <code>공시</code> 배지 · 3개년 매출 차트 · 1인당 매출 · 영업이익률(%) 제공.</li>
+            <li><b>국민연금 실급여·동종업계 보정 추정매출 (+40,933사)</b>: 인디고 <code>~XX억 추정</code> 배지 · DART 공시기업 2,263사 업종별 실측 배수(중앙값×0.72 보수적 보정) 적용 및 산출 근거 투명 공개.</li>
+          </ul>
+        </li>
+        <li><b>실무 필터 & CSV</b>: <code>시도 필터</code> + <code>매출 규모(공시만/공시+추정/10억~1,000억+)</code> + <code>매출 높은순</code> 정렬 + <b>📥 조건결과 CSV</b> 다운로드.</li>
+      </ul>
+    </section>
+
+    <section class="card" data-k="입찰 사전규격 당일 A값 순공사 1365조합 적격심사 내서류함 A4 PDF 1km 모바일 필터">
+      <h2>4. 🎯 입찰·사전규격·인허가 PRO (K-Bid급 정밀 투찰 & A4 결재서)</h2>
+      <ul>
+        <li><b>아침 3분 당일 공고 포착</b>: <code>📅 당일 입찰만</code> + <code>⭐ 내 키워드만</code> + 취소공고 자동 제외. 모바일에서는 1줄 퀵바 + <b>🎛️ 필터 팝업 시트</b>로 지도 시야를 넓게 유지합니다.</li>
+        <li><b>K-Bid급 투찰 시뮬레이터</b>:
+          <ul>
+            <li>나라장터 실시간 <b>기초금액·A값</b> 자동 조회 → <code>(예정가 − A값) × 낙찰하한율 + A값</code> 자동 산출.</li>
+            <li><b>순공사원가 98% 미만 실격 경고</b> · 복수예가 15개(1,365조합) 시뮬레이션 · 과거 낙찰률 분포도 최빈구간 1클릭 적용.</li>
+          </ul>
+        </li>
+        <li><b>적격심사 · 내서류함 · A4 검토서</b>: 자사 신용/실적 저장 시 <code>PASS / 공동도급권장</code> 판정 · <code>📁 내서류함</code> 투찰가 기록 · <code>📑 A4 검토서</code> 1P 결재 PDF 인쇄(인쇄 창에서 <b>배경 그래픽 체크</b> 권장) · <code>.ics</code> 마감 캘린더.</li>
+        <li><b>현장 반경 1km 상권 점프 (PREMIUM)</b>: 브이월드 정밀좌표 기반으로 입찰 현장 반경 1km 주변 영업처를 상권지도에 즉시 연동합니다.</li>
+      </ul>
+    </section>
+
+    <section class="card" data-k="상권지도 소상공인 275만 브이월드 지적도 공시지가 반경 신규개업 청약 착공">
+      <h2>5. 🏪 소상공인 상권지도 (275.3만) · 🏠 청약/착공 · 🔌 허브</h2>
+      <ul>
+        <li><b>상권지도 PRO</b>: 16개 시도 온디맨드 복호화 · 브이월드 항공위성/연속지적도/용도지역 · <code>2026 신규개업</code> 필터 · 반경 300m~2km 상권·공시지가 진단.</li>
+        <li><b>부동산·청약·착공 PRO</b>: 청약홈 6종 API 실시간 갱신 · 내 청약가점/예산 적합도 · 건축인허가·착공·K-apt 단지 통합 조회.</li>
+        <li><b>API 진단 & 파이프라인 CRM</b>: <code>🩺 전체 10종 API 진단</code> + 4대 도메인 통합 영업 파이프라인 단계 관리 및 CSV/JSON 백업.</li>
+      </ul>
+    </section>
+  </div>
+
+  <!-- ===== 2. BUYER SELF-ADMIN & SECURITY ===== -->
+  <div id="sec-buyer" class="sec-group hidden">
+    <section class="card" data-k="구매자 사내관리자 admin 초기 비밀번호 변경 공지 부서명 동의내역">
+      <h2>🏢 구매자 자체 사내 관리자 (초기 비밀번호 <code>admin</code> 변경 필수)</h2>
+      <ol>
+        <li>전용 납품 링크로 접속 후 우측 상단 <b>[🏢 사내관리]</b> 버튼(또는 상단 노란 보안 배너의 <b>[🔑 지금 비밀번호 변경]</b>)을 클릭합니다.</li>
+        <li>최초 로그인 시 초기 비밀번호 <b><code>admin</code></b>을 입력하면 <b>보안 필수 비밀번호 변경 화면</b>으로 자동 이동합니다.</li>
+        <li><code>admin</code>을 제외한 4자 이상 사내 전용 비밀번호로 변경 완료하면 사내 관리 기능이 활성화됩니다.</li>
+        <li><b>사내 관리 가능 항목</b>: 상단 사내 공지 배너 · 담당 부서명/연락처(A4 검토서 푸터 자동 각인) · 임직원 기본 시작 화면 · 개인정보·약관 동의내역 열람 · 사내 보안 감사로그.</li>
+      </ol>
+      <div class="warn">🔐 <b>비밀번호 분실 시</b>: 담당 판매자에게 <b>1회용 원격 비밀번호 초기화 링크</b>를 요청해 접속하시면 비밀번호가 <code>admin</code>으로 안전하게 초기화됩니다.</div>
+    </section>
+  </div>
+
+  <!-- ===== 3. SELLER MASTER OPERATIONS MANUAL (?mode=ops) ===== -->
+  <div id="sec-ops" class="sec-group hidden">
+    <section class="card" data-k="판매자 마스터 콘솔 7탭 기본모드 복귀 멀티테넌트 격리">
+      <h2>1. 🛡️ 마스터 기본모드 보호 & 7탭 통합 콘솔 구조</h2>
+      <ul>
+        <li><b>마스터 오염 원천 차단</b>: 판매링크(<code>?lic=...</code>)는 테넌트 격리 공간(<code>nx1_tenant_&lt;ID&gt;_*</code>)에서만 동작합니다. 기본 주소(<code>./</code> 또는 <code>?master=1</code>)로 접속하면 항상 <b>넥서스원 PRO 기본(마스터) 모드</b>로 복원됩니다.</li>
+        <li><b>구매자 화면에서 빠른 복귀</b>: <code>Ctrl+Shift+A</code> → 판매자 마스터 PIN(기본 <code>nx1master</code> 또는 볼트 비밀번호) 인증.</li>
+      </ul>
+      <table>
+        <thead><tr><th>마스터 콘솔 탭</th><th>핵심 운영 업무</th></tr></thead>
+        <tbody>
+          <tr><td><b>1. 🚀 판매링크 발급</b></td><td>4종 패키지 프리셋 · 고객/시설 정보 · 판매일자/경로 · 사용기간(시작일~만료일) · 입금/세금 · 개별앱 통제 → 서명 링크 발급</td></tr>
+          <tr><td><b>2. 📊 납품고객·입금·세금</b></td><td>실입금액/미수금/미발급 KPI · <code>✏️ 수정</code>(부가세 자동계산) · <code>🚦 직권·기간</code> · <code>🔑 비번초기화</code> · <code>26컬럼 CSV</code> · <code>JSON 백업(토큰제외)/복원</code></td></tr>
+          <tr><td><b>3. 🎁 무료배포·이력</b></td><td>직원·지인·체험판·파트너 무료 링크(유료 매출 분리) · 간편모드 · 카톡안내 · <code>+30일 연장</code> · <code>💰 유료전환</code> · <code>배포이력 CSV</code></td></tr>
+          <tr><td><b>4. 🧾 세금계산서·API</b></td><td>10종 세무 바로가기 · 공급자 정보 · <b>0원 홈택스 일괄발급 CSV</b> · 팝빌/볼타/바로빌 API 프록시 발행 · Cloudflare Worker 코드</td></tr>
+          <tr><td><b>5. 🧑‍💼 판매자 관리</b></td><td>영업담당/대리점/크몽 채널 등록 · 수수료율(%) 설정 · 판매건수·매출·예상 정산액 자동 집계</td></tr>
+          <tr><td><b>6. 💎 TOP 10 옵션</b></td><td>전문가 기법 TOP 10 ON/OFF · 개인정보 동의 정책/버전 재동의/이력 CSV · 원격 GitHub 동기화 토큰 · 마스터 PIN 변경</td></tr>
+          <tr><td><b>7. 📜 감사 로그</b></td><td>발급·비번초기화·직권중지/재개·세금계산서·약관동의 이력 최대 200건 추적 및 CSV 내보내기</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="card" data-k="사용기간 제한 직권 중지 재개 원격 license_control GitHub 동기화">
+      <h2>2. 🚦 사용기간 제한 · 관리자 직권 중지/재개 & 원격 실시간 반영</h2>
+      <ol>
+        <li>유료 또는 무료 목록에서 <b>[🚦 직권·기간]</b> 버튼을 엽니다.</li>
+        <li><b>사용기간 제한</b>: 시작일(미래 날짜 입력 시 <code>🗓️ 예약 개통</code> 차단) ~ 종료일(<code>7/14/30/90/365일/+30일/영구</code>) 설정 후 <b>[📅 사용기간 제한 적용]</b> 클릭.</li>
+        <li><b>직권 중지 · 재개</b>: 중지 사유 선택/입력 → <b>[🚫 관리자 직권 사용 중지]</b> 시 고객 화면 즉시 차단(중지 사유 표시). 해제 시 <b>[▶️ 관리자 직권 사용 재개]</b> 클릭.</li>
+        <li><b>전 세계 원격 고객 기기 반영</b>: <code>💎 TOP 10</code> 탭에 GitHub PAT(<code>nx1-p7k9v3</code> Contents Read/Write 권한, 로컬 전용)를 1회 저장해 두면 <b>[☁️ 원격 고객 기기 즉시 동기화]</b> 클릭 시 <code>data/license_control.json</code>이 갱신되어 약 20초 내 모든 원격 PC/모바일에 중지·재개·기간변경·개정약관이 자동 반영됩니다.</li>
+      </ol>
+    </section>
+
+    <section class="card" data-k="세금계산서 홈택스 API 팝빌 볼타 바로빌 10종 세무 바로가기">
+      <h2>3. 🧾 세금계산서 · 국세청 API 연동 & 10종 세무 바로가기 운영</h2>
+      <ul>
+        <li><b>초기 판매(월 30건 미만 · 0원)</b>: <code>🧾 세금계산서·API</code> 탭에서 <b>[📥 미발급 전체 홈택스 일괄발급 CSV]</b> 다운로드 → 홈택스 <code>일괄발급</code> 업로드 → <code>✅ 수기발급 완료</code> 처리.</li>
+        <li><b>자동화 단계(API 연동)</b>: 국세청 지정 ASP(팝빌/볼타/바로빌) 가입 + 공동인증서 1회 등록 → 탭 내 Cloudflare Worker 프록시 코드 배포 → Endpoint 저장 시 원클릭 국세청 자동 전송.</li>
+        <li><b>세무 바로가기 10종</b>: <code>🔌 허브 탭(마스터 전용)</code> · <code>🧾 세금계산서 탭</code> · <code>✏️ 수정 모달(사업자번호 복사+홈택스)</code>에서 홈택스·휴폐업조회·위택스·정부24·인터넷등기소·4대보험·여신금융협회 등 즉시 실행.</li>
+      </ul>
+    </section>
+  </div>
+
+  <!-- ===== 4. FAQ ===== -->
+  <div id="sec-faq" class="sec-group hidden">
+    <section class="card" data-k="FAQ 판매링크 기본모드 A4 PDF 인쇄 모바일 필터 캐시">
+      <h2>❓ 자주 묻는 질문 & 장애대응 체크리스트</h2>
+      <h3>Q1. 판매링크로 들어갔다가 넥서스원 기본(마스터) 모드로 돌아가려면?</h3>
+      <p style="font-size:13px;color:var(--ink2)">기본 주소(<code>https://heebonpark.github.io/nx1-p7k9v3/</code> 또는 <code>?master=1</code>)로 접속하면 즉시 마스터 모드가 복원됩니다.</p>
+      <h3>Q2. 입찰 A4 수주검토서 PDF가 깔끔하게 출력되려면?</h3>
+      <p style="font-size:13px;color:var(--ink2)">인쇄 설정에서 용지 <code>A4 세로</code>, <b>배경 그래픽(체크)</b>을 켜고 <code>PDF로 저장</code>하세요.</p>
+      <h3>Q3. 구매자가 사내관리자 비밀번호를 잊어버렸을 때는?</h3>
+      <p style="font-size:13px;color:var(--ink2)">판매자 마스터 콘솔 <code>📊 납품고객·입금·세금</code>에서 <b>[🔑 비번]</b> 클릭 → 자동 복사된 1회용 원격 초기화 링크(72시간 유효)를 고객에게 전달하면 안전하게 <code>admin</code>으로 리셋됩니다.</p>
+      <h3>Q4. 업데이트가 바로 보이지 않을 때는?</h3>
+      <p style="font-size:13px;color:var(--ink2)">강력 새로고침(<code>Ctrl+Shift+R</code> / Mac <code>Cmd+Shift+R</code>) 1회로 최신 서비스 워커가 즉시 반영됩니다.</p>
+    </section>
+  </div>
+</main>
+<script>
+const isOps = new URLSearchParams(location.search).get('mode') === 'ops';
+if (isOps) {
+  document.getElementById('tabOpsBtn').classList.remove('hidden');
+  document.getElementById('heroTitle').textContent = '넥서스원 PRO — 판매자 운영 · 사용자 통합 매뉴얼';
+  document.getElementById('heroSub').textContent = '마스터 운영 7탭 콘솔 · 직권 중지/재개/기간제한 · 무료배포 · 세무/국세청 API · 개인정보 동의 · 4대 도메인 실무 완전판 (v34)';
+}
+const tabs = document.querySelectorAll('.tab');
+const groups = document.querySelectorAll('.sec-group');
+function showSec(k) {
+  tabs.forEach((b) => b.classList.toggle('active', b.dataset.sec === k));
+  groups.forEach((g) => g.classList.toggle('hidden', g.id !== 'sec-' + k));
+}
+tabs.forEach((b) => b.addEventListener('click', () => showSec(b.dataset.sec)));
+if (isOps) showSec('ops');
+document.getElementById('qInput').addEventListener('input', (e) => {
+  const q = e.target.value.trim().toLowerCase();
+  if (!q) {
+    document.querySelectorAll('.card').forEach((c) => c.classList.remove('hidden'));
+    const act = document.querySelector('.tab.active')?.dataset.sec || 'user';
+    showSec(act);
+    return;
+  }
+  groups.forEach((g) => {
+    if (g.id === 'sec-ops' && !isOps) return;
+    g.classList.remove('hidden');
+    g.querySelectorAll('.card').forEach((c) => {
+      const hit = (c.textContent + ' ' + (c.dataset.k || '')).toLowerCase().includes(q);
+      c.classList.toggle('hidden', !hit);
+    });
+  });
+});
+</script>
+</body>
+</html>

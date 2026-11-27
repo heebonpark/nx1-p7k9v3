@@ -10234,6 +10234,259 @@ function openOptionsModal() {
 }
 function closeOptionsModal() { $('optionsBackdrop').classList.add('hidden'); }
 
+// ===== V34 ROLE-AWARE OPERATIONS & USER MANUAL MODAL =====
+function openManualModal(tabKey = null) {
+  const isBuyer = Boolean(S.isBuyerMode);
+  const allow = S.admin?.tabs || defaultAdminConfig().tabs;
+  const brand = `${S.admin?.brandTitle || '넥서스원'} ${S.admin?.brandBadge || 'PRO'}`.trim();
+  const activeTab = tabKey || S.manualTab || 'user';
+  S.manualTab = activeTab;
+
+  $('manualModalTitle').textContent = `📖 ${brand} · ${isBuyer ? '사용자 실무 & 사내관리 매뉴얼' : '운영 · 사용 통합 매뉴얼'}`;
+  $('manualModalSub').textContent = isBuyer
+    ? `계약 패키지(${String(S.admin?.pkg || 'deluxe').toUpperCase()}) 맞춤 사용 안내 · 최초 동의 · 사내관리자 · FAQ`
+    : 'v34 최신 기준 · 4대 도메인 실무 사용법 · 마스터 7탭 운영 콘솔 · 직권제어 · 세무/국세청 API · FAQ';
+
+  const userCards = [
+    {
+      show: true,
+      title: '1. 최초 로그인 · 개인정보 동의 · PWA 앱 설치',
+      tags: '로그인 보안 동의 PWA 설치 아이폰 안드로이드 PC',
+      html: `
+        <ul>
+          <li><b>원패스 볼트 잠금 해제</b>: 전달받은 비밀번호로 1회 잠금 해제 시 WebCrypto 추출 불가 키로 기기에 안전 저장(서버 평문 0바이트).</li>
+          <li><b>최초 로그인 동의 팝업</b>: 개인정보보호·이용약관·보안서약 필수 3종 동의 후 이용(개정 시 재동의 자동 안내).</li>
+          <li><b>앱 설치(PWA)</b>: 아이폰 Safari <code>공유(↑) → 홈 화면에 추가</code> / 안드로이드 Chrome <code>⋮ → 앱 설치</code> / PC Chrome 주소창 <code>설치(⊕)</code>.</li>
+        </ul>`,
+    },
+    {
+      show: allow.overview,
+      title: '2. ⚡ 통합 360° 커맨드 센터 & 글로벌 크로스 검색',
+      tags: '통합 360 시군구 지도 가중치 리포트 검색',
+      html: `
+        <ul>
+          <li>전국 229개 시군구 히트맵에서 지역 클릭 → 기업·입찰·상권·부동산 4축 레이더 및 상업기회 정밀 리포트(A4 PDF/카톡 요약) 즉시 생성.</li>
+          <li>상단 <b>🔍 통합 크로스 검색</b>으로 지역명·기업명·입찰공고·분양단지를 허용된 계약 범위 내에서 한 번에 탐색.</li>
+        </ul>`,
+    },
+    {
+      show: allow.corp,
+      title: '3. 🏢 기업분석 PRO (120,028사 · 공시+추정매출 43,746사)',
+      tags: '기업분석 매출 DART 국민연금 추정매출 필터 시도 CSV',
+      html: `
+        <ul>
+          <li><b>매출 분석</b>: DART 공시매출(녹색 <code>공시</code> · 2,813사) + 국민연금 실급여·동종업계 DART 실측 배수 보정 추정매출(인디고 <code>~XX억 추정</code> · 40,933사) = <b>총 43,746사</b> 매출 규모 분석.</li>
+          <li><b>실무 필터</b>: 시도별 필터 + 매출 규모(<code>공시만</code> / <code>공시+추정</code> / <code>10억~1,000억+</code>) + <code>매출 높은순</code> 정렬 + <b>📥 조건결과 CSV</b> 다운로드.</li>
+          <li>법인 클릭 시 상세 드로어에서 3개년 매출 차트(또는 추정 산출 근거), 1인당 매출, 영업이익률, 국세청 사업자상태 실시간 조회.</li>
+        </ul>`,
+    },
+    {
+      show: allow.bid,
+      title: '4. 🎯 입찰·사전규격·인허가 PRO (K-Bid급 투찰엔진 · A4 검토서)',
+      tags: '입찰 사전규격 당일 A값 순공사 1365조합 적격심사 내서류함 A4 PDF 1km 모바일 필터',
+      html: `
+        <ul>
+          <li><b>아침 3분 당일 포착</b>: <code>📅 당일 입찰만</code> + <code>⭐ 내 키워드만</code> + 취소공고 자동 제외로 당일 유효 공고만 즉시 확인. (모바일에서는 1줄 퀵바 + <b>🎛️ 필터 팝업</b>으로 넓은 지도 화면 확보)</li>
+          <li><b>정밀 투찰 시뮬레이터</b>: 나라장터 실시간 <b>기초금액·A값</b> 자동 조회 → <code>(예정가 − A값) × 낙찰하한율 + A값</code> 계산 · <b>순공사원가 98% 미만 경고</b> · 복수예가 15개(1,365조합) · 과거 낙찰률 분포도 최빈구간 적용.</li>
+          <li><b>적격심사 · 내서류함 · A4 결재서</b>: 자사 신용/실적 1회 입력 시 <code>PASS / 공동도급권장</code> 자동 판정, <code>📁 내서류함</code>에 투찰가·진행상태 기록, <code>📑 A4 검토서</code> 1P 결재 PDF 인쇄 및 <code>.ics</code> 마감 캘린더 등록.</li>
+          ${S.admin?.features?.bid1km ? '<li><b>반경 1km 현장 상권 점프</b>: 입찰 공고에서 <code>🗺️ 현장 반경 1km</code> 클릭 시 브이월드 정밀좌표로 상권지도 1km 주변 영업처를 즉시 연동.</li>' : ''}
+        </ul>`,
+    },
+    {
+      show: allow.sbiz,
+      title: '5. 🏪 소상공인 상권지도 PRO (275.3만 상가 · 브이월드 GIS)',
+      tags: '상권지도 소상공인 275만 브이월드 지적도 공시지가 반경 신규개업',
+      html: `
+        <ul>
+          <li>16개 시도 온디맨드 복호화 + 브이월드 기본도/항공위성/연속지적도/용도지역 레이어 + <code>2026 신규개업</code> 골든타임 필터.</li>
+          <li>지도 클릭 시 반경 300m~2km 상권밀도·경쟁도·공시지가 즉시 진단 및 동일건물 다중입점 배지 그룹핑.</li>
+        </ul>`,
+    },
+    {
+      show: allow.realestate,
+      title: '6. 🏠 부동산·청약·착공·K-apt PRO',
+      tags: '부동산 청약 분양 착공 인허가 K-apt 가점',
+      html: `
+        <ul>
+          <li>청약홈 6종 API 실시간 연동 + 내 청약가점/예산 적합도 자동 판정 + 지자체 착공·건축인허가·K-apt 공동주택 단지 교차 조회.</li>
+        </ul>`,
+    },
+    {
+      show: allow.hub,
+      title: '7. 🔌 API 실시간 진단 & 통합 파이프라인 CRM',
+      tags: 'API 진단 파이프라인 CRM CSV JSON 백업',
+      html: `
+        <ul>
+          <li><b>🩺 10종 실시간 API 진단</b>으로 나라장터·브이월드·청약홈·소상공인·K-apt 연결 상태를 1클릭 점검.</li>
+          <li>각 도메인에서 담은 영업 타깃을 <code>발굴 → 검토 → 제안 → 성사</code> 단계별로 관리하고 CSV/JSON으로 내보내기.</li>
+        </ul>`,
+    },
+  ].filter((c) => c.show);
+
+  const opsCards = [
+    {
+      title: '1. 🚀 판매링크 발급 & 멀티테넌트 격리 (기본모드 보호)',
+      tags: '판매링크 발급 패키지 화이트라벨 서명 토큰 격리 기본모드 복귀',
+      html: `
+        <ul>
+          <li><b>마스터 보호 구조</b>: 판매링크(<code>?lic=...</code>)를 열어 미리보기해도 마스터 기본 주소(<code>https://heebonpark.github.io/nx1-p7k9v3/</code> 또는 <code>?master=1</code>)로 접속하면 항상 <b>넥서스원 PRO 기본(마스터) 모드</b>로 복원됩니다.</li>
+          <li><b>발급 절차</b>: <code>🛡️ 관리자 → 🚀 판매링크 발급</code>에서 패키지(STANDARD/DELUXE/PREMIUM/ENTERPRISE), 고객사·담당자·연락처·주소·이메일·판매일자·판매경로·사용기간(시작일~만료일)·입금·세금계산서 정보 입력 후 <b>[✨ 판매 등록 + 서명 판매링크 발급·복사]</b> 클릭.</li>
+          <li><b>개별 앱 통제</b>: 납품 시 <code>개별 전문 앱 바로가기</code>를 OFF하면 판매자의 단독 앱 링크가 고객 화면에서 완전 숨김 처리됩니다.</li>
+        </ul>`,
+    },
+    {
+      title: '2. 📊 납품 고객 · 입금 · 세금계산서 CRM & 비밀번호 초기화',
+      tags: '납품고객 입금 미수금 세금계산서 비밀번호 초기화 admin 원격 리셋 CSV 백업',
+      html: `
+        <ul>
+          <li><b>실시간 회계 KPI</b>: 총 공급가 · 실입금 완료액 · 미수/부분입금 · 세금계산서 미발급 건수를 실시간 집계하며 <code>✏️ 수정</code>에서 부가세 별도/포함 자동 계산.</li>
+          <li><b>🔑 구매자 비밀번호 초기화</b>: 고객이 사내관리자 비번을 분실하면 <code>🔑 비번</code> 클릭 → ① 동일 기기 즉시 <code>admin</code> 초기화 + ② 원격 고객 기기용 <b>1회용 서명 초기화 링크(<code>&rst=...</code>)</b> 자동 복사(카톡 전달).</li>
+          <li><b>안전 백업/복원</b>: <code>📥 26컬럼 회계 CSV</code> 출력 · <code>📤 JSON 백업</code>(보안상 GitHub/API 토큰 자동 제외) · <code>📂 JSON 복원</code>(기존 로컬 토큰 유지).</li>
+        </ul>`,
+    },
+    {
+      title: '3. 🎁 직원 · 지인 · 체험판 무료 배포 & 유료전환',
+      tags: '무료배포 직원 지인 체험판 간편모드 30일 연장 유료전환 CSV',
+      html: `
+        <ul>
+          <li>유료 매출·세금계산서 KPI와 100% 분리 관리(<code>freeDist</code>). 대상 구분(사내 직원/지인/무료 체험판/파트너), 기간 프리셋(7/14/30/90일/영구), <code>🔓 간편모드</code>(비번 경고 배너 숨김) 지원.</li>
+          <li>이력 테이블에서 <code>📱 카톡</code> 안내문 복사 · <code>📅 +30일</code> 연장 · <code>🚦 직권·기간</code> 회수 · <code>💰 유료전환</code>(유료 판매 초안으로 1클릭 이관) · <code>📥 배포이력 CSV</code>.</li>
+        </ul>`,
+    },
+    {
+      title: '4. 🚦 사용기간 제한 · 관리자 직권 중지/재개 & 원격 실시간 반영',
+      tags: '직권 중지 재개 사용기간 시작일 만료일 license_control 원격 동기화 GitHub PAT',
+      html: `
+        <ul>
+          <li>유료/무료 목록의 <b>[🚦 직권·기간]</b> 버튼에서 <b>시작일(예약 개통)~종료일(자동 만료)</b> 설정 및 <b>직권 중지(사유 명시) · 직권 재개</b> 실행.</li>
+          <li><b>전 고객 원격 기기 실시간 반영</b>: <code>💎 TOP 10</code> 탭에 GitHub PAT(<code>nx1-p7k9v3</code> Contents 권한, 본인 브라우저 로컬 전용)를 1회 등록하면 <b>[☁️ 원격 고객 기기 즉시 동기화]</b> 1클릭으로 <code>data/license_control.json</code>이 갱신되어 약 20초 내 전 세계 고객 PC/스마트폰에 즉시 적용됩니다(토큰 없이 수동 다운로드도 가능).</li>
+        </ul>`,
+    },
+    {
+      title: '5. 🧾 국세청 세금계산서 · 홈택스 일괄발급 CSV · 10종 세무 바로가기',
+      tags: '세금계산서 홈택스 위택스 정부24 팝빌 볼타 바로빌 API Cloudflare Worker',
+      html: `
+        <ul>
+          <li><b>수수료 0원 즉시 발행</b>: <code>🧾 세금계산서·API</code> 탭에서 <b>[📥 미발급 전체 홈택스 일괄발급 CSV]</b> 다운로드 → 홈택스 <code>조회/발급 → 전자세금계산서 → 일괄발급</code> 업로드 후 <code>✅ 수기발급 완료</code> 처리.</li>
+          <li><b>API 자동 발행</b>: 팝빌/볼타/바로빌 가입 + 공동인증서 1회 등록 → 탭 내 <code>Cloudflare Worker 프록시 코드</code> 배포 → Endpoint 저장 시 원클릭 국세청 자동 전송 및 승인번호 자동 기록.</li>
+          <li><b>세무 10종 바로가기</b>: <code>🔌 허브 탭</code> · <code>🧾 세금계산서 탭</code> · <code>✏️ 수정 모달(사업자번호 복사+홈택스)</code>에서 홈택스·휴폐업조회·위택스·정부24·인터넷등기소·4대보험·여신금융협회 등 즉시 이동.</li>
+        </ul>`,
+    },
+    {
+      title: '6. 📋 개인정보 동의 정책 · 💎 TOP 10 보안 옵션 · 📜 감사로그',
+      tags: '개인정보 약관 동의 버전 재동의 TOP 10 마스터 PIN 감사로그',
+      html: `
+        <ul>
+          <li><b>개정 약관 재동의</b>: <code>💎 TOP 10</code> 탭에서 약관 버전(예: <code>2026.11-v1 → 2026.12-v2</code>)을 변경·저장(및 원격 동기화)하면 기존 동의자에게도 재동의 팝업이 자동 표시되며, <b>📥 동의 이력 CSV</b>로 법적 증빙 보관.</li>
+          <li><b>마스터 전환 PIN</b>: 구매자 화면에서 <code>Ctrl+Shift+A</code> 입력 시 판매자 본인 확인용 PIN(기본 <code>nx1master</code> 또는 볼트 비밀번호)을 언제든 변경 가능.</li>
+          <li><b>감사로그</b>: 발급·비번초기화·직권중지/재개·세금계산서·약관동의 등 주요 이벤트 최대 200건 자동 기록 및 CSV 출력.</li>
+        </ul>`,
+    },
+  ];
+
+  const buyerAdminCards = [
+    {
+      title: '1. 🏢 구매자 자체 사내 관리자 (초기 비밀번호 admin → 필수 변경)',
+      tags: '사내관리자 초기 비밀번호 admin 변경 공지 부서명',
+      html: `
+        <ul>
+          <li><b>최초 1회 필수 변경</b>: 우측 상단 <b>[🏢 사내관리]</b> 클릭 → 초기 비밀번호 <code>admin</code> 입력 → 보안을 위해 4자 이상 새 비밀번호(<code>admin</code> 제외)로 즉시 변경하세요.</li>
+          <li><b>사내 맞춤 설정</b>: 상단 사내 공지 배너, 담당 부서명/연락처(A4 수주검토서 푸터 자동 반영), 임직원 기본 시작 화면, 개인정보·약관 동의내역 열람 및 사내 감사로그 조회를 지원합니다.</li>
+        </ul>`,
+    },
+    {
+      title: '2. 🔐 비밀번호 분실 · 계약 업그레이드 · 기간 연장 안내',
+      tags: '비밀번호 분실 초기화 업그레이드 만료 기간 연장',
+      html: `
+        <ul>
+          <li><b>사내관리자 비밀번호 분실 시</b>: 담당 판매자에게 <b>1회용 원격 비밀번호 초기화 링크</b>를 요청해 접속하시면 비밀번호가 <code>admin</code>으로 안전하게 초기화됩니다.</li>
+          <li><b>라이선스 보안</b>: 전용 URL을 임의로 수정하면 무결성 서명 검증으로 차단됩니다. 도메인 추가(예: 상권지도·청약 업그레이드) 또는 기간 연장은 담당 판매자에게 문의해 주세요.</li>
+        </ul>`,
+    },
+  ];
+
+  const faqCards = [
+    {
+      title: 'Q1. 판매링크로 들어갔다가 넥서스원 기본(마스터) 모드로 돌아가려면?',
+      tags: '판매링크 기본모드 마스터 복귀',
+      html: '판매링크는 테넌트 격리 공간에서만 동작하므로 <b>기본 주소(<code>https://heebonpark.github.io/nx1-p7k9v3/</code> 또는 <code>?master=1</code>)</b>로 이동하면 즉시 마스터 기본 모드로 복원됩니다. 구매자 화면에서 <code>Ctrl+Shift+A</code> + 마스터 PIN 인증으로도 즉시 복귀할 수 있습니다.',
+    },
+    {
+      title: 'Q2. 입찰 A4 검토서 PDF 출력 시 여백/배경이 제대로 나오게 하려면?',
+      tags: 'A4 PDF 출력 인쇄 빈화면 배경',
+      html: '공고 상세 드로어에서 <b>[📑 A4 검토서]</b> 클릭 → 인쇄 창에서 용지 <code>A4 세로</code>, <b>배경 그래픽(체크)</b>을 켜고 <code>PDF로 저장</code>을 선택하면 1페이지 결재 보고서가 선명하게 저장됩니다.',
+    },
+    {
+      title: 'Q3. 모바일에서 입찰·상권 지도 화면이 좁아 보일 때는?',
+      tags: '모바일 필터 바텀시트 팝업 지도',
+      html: '모바일(820px 이하)에서는 필터가 자동 접힘 처리되어 지도가 넓게 보입니다. 상단 1줄 퀵바의 <b>[🎛️ 필터]</b> 또는 <b>[🗺️ 지도옵션]</b> 버튼을 눌러 팝업 시트에서 조건을 선택 후 적용하세요.',
+    },
+    {
+      title: 'Q4. 새 버전 업데이트가 바로 안 보일 때는?',
+      tags: '업데이트 캐시 새로고침 버전',
+      html: 'PWA 서비스 워커가 최신 버전을 자동 갱신합니다. 즉시 반영이 필요하면 브라우저에서 <b>강력 새로고침(<code>Ctrl+Shift+R</code> / Mac <code>Cmd+Shift+R</code>)</b>을 1회 실행해 주세요.',
+    },
+  ];
+
+  const navButtons = isBuyer
+    ? [
+        ['user', '📘 사용자 실무 매뉴얼'],
+        ['buyer', '🏢 사내관리·보안 가이드'],
+        ['faq', '❓ FAQ · 사용팁'],
+      ]
+    : [
+        ['user', '📘 사용자 실무 매뉴얼'],
+        ['ops', '🛡️ 판매자 운영 매뉴얼 (마스터)'],
+        ['faq', '❓ FAQ · 장애대응'],
+      ];
+
+  const targetList = activeTab === 'ops' && !isBuyer
+    ? opsCards
+    : (activeTab === 'buyer' && isBuyer ? buyerAdminCards : (activeTab === 'faq' ? faqCards : userCards));
+
+  const renderCardsHtml = (q = '') => {
+    const kw = q.trim().toLowerCase();
+    const matched = targetList.filter((c) => !kw || `${c.title} ${c.tags} ${c.html}`.toLowerCase().includes(kw));
+    return matched.map((c) => `
+      <div class="domain-box" style="margin-bottom:9px">
+        <h4 style="margin:0 0 6px;font-size:13px;color:var(--c-corp)">${c.title}</h4>
+        <div style="font-size:12px;line-height:1.6;color:var(--text-2)">${c.html}</div>
+      </div>`).join('') || '<div style="text-align:center;padding:24px;color:var(--muted);font-size:12.5px">검색어에 해당하는 매뉴얼 항목이 없습니다.</div>';
+  };
+
+  $('manualBody').innerHTML = `
+    <div class="nx-adm-tabs">
+      ${navButtons.map(([k, lb]) => `<button type="button" class="nx-adm-tab ${activeTab === k ? 'active' : ''}" data-man-nav="${k}">${lb}</button>`).join('')}
+    </div>
+    <div style="margin-bottom:10px">
+      <input id="manSearch" class="input" type="search" placeholder="매뉴얼 키워드 검색 (예: A값, 매출, 비번초기화, 직권중지, 홈택스, 무료배포, 개인정보…)" style="width:100%;font-size:12.5px;padding:7px 11px" />
+    </div>
+    <div id="manContentList">${renderCardsHtml('')}</div>
+  `;
+
+  const standaloneUrl = isBuyer ? 'manual.html' : 'manual.html?mode=ops';
+  $('manualFoot').innerHTML = `
+    <a class="btn btn-emerald btn-sm" href="${standaloneUrl}" target="_blank" rel="noopener">🖨️ 전체 단독 웹 매뉴얼 / PDF 출력 ↗</a>
+    ${!isBuyer ? '<button id="btnManOpenAdmin" class="btn btn-primary btn-sm" type="button">🛡️ 마스터 관리자 콘솔 열기</button>' : ''}
+    <button id="btnManCloseFoot" class="btn btn-sm" type="button" style="margin-left:auto">닫기</button>
+  `;
+
+  $('manualBackdrop')?.classList.remove('hidden');
+
+  $('manualBody').querySelectorAll('[data-man-nav]').forEach((b) => {
+    b.addEventListener('click', () => openManualModal(b.dataset.manNav));
+  });
+  $('manSearch')?.addEventListener('input', (e) => {
+    const box = $('manContentList');
+    if (box) box.innerHTML = renderCardsHtml(e.target.value);
+  });
+  $('btnManOpenAdmin')?.addEventListener('click', () => {
+    $('manualBackdrop')?.classList.add('hidden');
+    openAdminSalesModal();
+  });
+  $('btnManCloseFoot')?.addEventListener('click', () => $('manualBackdrop')?.classList.add('hidden'));
+}
+
 // ===== THEME & INIT =====
 function applyTheme(theme) {
   document.documentElement.dataset.theme = theme;
@@ -10249,6 +10502,9 @@ async function init() {
   $('btnOptions').addEventListener('click', openOptionsModal);
   $('optionsClose').addEventListener('click', closeOptionsModal);
   $('optionsBackdrop').addEventListener('click', (e) => { if (e.target === $('optionsBackdrop')) closeOptionsModal(); });
+  $('btnManual')?.addEventListener('click', () => openManualModal());
+  $('manualClose')?.addEventListener('click', () => $('manualBackdrop')?.classList.add('hidden'));
+  $('manualBackdrop')?.addEventListener('click', (e) => { if (e.target === $('manualBackdrop')) $('manualBackdrop')?.classList.add('hidden'); });
   $('reportClose').addEventListener('click', closeReportModal);
   $('reportBackdrop').addEventListener('click', (e) => { if (e.target === $('reportBackdrop')) closeReportModal(); });
   $('brandHome').addEventListener('click', () => switchTab('overview'));

@@ -507,9 +507,9 @@ function appendConsentLog(rec) {
 
 function getEffectiveConsentPolicy() {
   const reg = loadSellerRegistry();
-  const base = { ...defaultConsentPolicy(), ...(reg.consentPolicy || {}) };
+  const base = { ...defaultConsentPolicy(), ...(reg.consentPolicy || {}), ...(typeof S !== 'undefined' && S?.remoteConsentPolicy ? S.remoteConsentPolicy : {}) };
   if (typeof S !== 'undefined' && S?.isBuyerMode) {
-    if (S.admin?.consentEnabled === false) base.enabled = false;
+    if (S.admin?.consentEnabled === false && !S.remoteConsentPolicy) base.enabled = false;
     if (S.admin?.consentVersion && S.admin.consentVersion > base.version) base.version = S.admin.consentVersion;
   }
   return base;
@@ -683,6 +683,19 @@ function maybePromptConsentOnLogin() {
   openConsentModal({ preview: false, readOnly: false });
 }
 
+function nextSeqId(list, prefix, field = 'licId') {
+  let maxN = 0;
+  const pfx = `${prefix}-`;
+  (list || []).forEach((item) => {
+    const val = String(item?.[field] || '');
+    if (val.startsWith(pfx)) {
+      const m = val.slice(pfx.length).match(/(\d+)$/);
+      if (m) maxN = Math.max(maxN, parseInt(m[1], 10));
+    }
+  });
+  return `${prefix}-${String(maxN + 1).padStart(3, '0')}`;
+}
+
 function buildLicenseControlPayload(reg) {
   const overrides = { ...(reg.controlOverrides || {}) };
   const allItems = [...(reg.sales || []), ...(reg.freeDist || [])];
@@ -701,6 +714,7 @@ function buildLicenseControlPayload(reg) {
   return {
     updatedAt: new Date(Date.now() + 9 * 3600 * 1000).toISOString(),
     version: 1,
+    consentPolicy: reg.consentPolicy ? { ...defaultConsentPolicy(), ...reg.consentPolicy } : defaultConsentPolicy(),
     overrides,
   };
 }
@@ -822,15 +836,22 @@ async function fetchAndApplyRemoteLicenseControl() {
     const j = await r.json();
     if (!j || typeof j.overrides !== 'object') return;
     S.remoteControl = j;
+    if (j.consentPolicy && typeof j.consentPolicy === 'object') {
+      S.remoteConsentPolicy = j.consentPolicy;
+    }
     const prevState = S.licenseStatus?.state;
     S.licenseStatus = evaluateLicensePolicy(S.admin, loadSellerRegistry(), j.overrides);
     const curState = S.licenseStatus?.state;
     renderTenantBar();
     if (['REVOKED', 'NOT_STARTED', 'EXPIRED_LOCK'].includes(curState)) {
       renderLicenseLockWallIfNeeded();
-    } else if (['REVOKED', 'NOT_STARTED', 'EXPIRED_LOCK'].includes(prevState)) {
-      renderCurrentTab();
-      toast('▶️ 관리자 직권 재개가 반영되어 정상 이용이 복구되었습니다.');
+    } else {
+      setShellLockState(false);
+      if (['REVOKED', 'NOT_STARTED', 'EXPIRED_LOCK'].includes(prevState)) {
+        renderCurrentTab();
+        toast('▶️ 관리자 직권 재개가 반영되어 정상 이용이 복구되었습니다.');
+      }
+      if (j.consentPolicy) maybePromptConsentOnLogin();
     }
   } catch {}
 }
@@ -1271,9 +1292,36 @@ function renderTenantBar() {
   $('btnTenantChangePwNow')?.addEventListener('click', () => openBuyerAdminModal());
 }
 
+function isLicenseBlocked() {
+  const st = S.licenseStatus?.state;
+  return Boolean(S.isBuyerMode && ['TAMPERED', 'REVOKED', 'NOT_STARTED', 'EXPIRED_LOCK'].includes(st));
+}
+
+function setShellLockState(locked) {
+  const inp = $('omniInput');
+  const drop = $('omniDrop');
+  if (inp) {
+    inp.disabled = locked;
+    if (locked) { inp.value = ''; inp.placeholder = '🔒 라이선스 제한 상태 (관리자 문의)'; }
+    else if (inp.placeholder.startsWith('🔒')) inp.placeholder = '통합 크로스 검색: 지역(부평·강남·송파) · 기업명 · 입찰 · 상권 · 분양단지…';
+  }
+  if (locked && drop) drop.classList.add('hidden');
+  ['desktopNav', 'mobileNav'].forEach((id) => {
+    const el = $(id);
+    if (el) {
+      el.style.pointerEvents = locked ? 'none' : '';
+      el.style.opacity = locked ? '0.4' : '';
+    }
+  });
+}
+
 function renderLicenseLockWallIfNeeded() {
   const st = S.licenseStatus?.state;
-  if (!S.isBuyerMode || !['TAMPERED', 'REVOKED', 'NOT_STARTED', 'EXPIRED_LOCK'].includes(st)) return false;
+  if (!isLicenseBlocked()) {
+    setShellLockState(false);
+    return false;
+  }
+  setShellLockState(true);
   const stage = $('mainStage');
   if (!stage) return true;
   const titleMap = {
@@ -1388,11 +1436,6 @@ function openMasterEscapePrompt() {
     <button id="btnMasterEscClose" class="btn btn-sm" type="button">닫기</button>
   `;
   $('adminBackdrop')?.classList.remove('hidden');
-
-  $('btnByViewConsent')?.addEventListener('click', () => {
-    const cRec = loadConsentState(S.tenantId);
-    openConsentModal({ readOnly: Boolean(cRec), preview: false });
-  });
   $('btnMasterEscClose')?.addEventListener('click', () => $('adminBackdrop')?.classList.add('hidden'));
   const verifyAndReturn = async () => {
     const pin = $('masterEscPin')?.value || '';
@@ -1452,11 +1495,6 @@ function openBuyerAdminModal() {
       <button id="btnBuyerModalClose" class="btn btn-sm" type="button">닫기</button>
     `;
     $('adminBackdrop')?.classList.remove('hidden');
-
-  $('btnByViewConsent')?.addEventListener('click', () => {
-    const cRec = loadConsentState(S.tenantId);
-    openConsentModal({ readOnly: Boolean(cRec), preview: false });
-  });
     $('btnBuyerModalClose')?.addEventListener('click', () => $('adminBackdrop')?.classList.add('hidden'));
     const doLogin = async () => {
       const pw = $('buyerLoginPw')?.value || '';
@@ -1504,11 +1542,6 @@ function openBuyerAdminModal() {
       <button id="btnBuyerForceCancel" class="btn btn-sm" type="button">나중에</button>
     `;
     $('adminBackdrop')?.classList.remove('hidden');
-
-  $('btnByViewConsent')?.addEventListener('click', () => {
-    const cRec = loadConsentState(S.tenantId);
-    openConsentModal({ readOnly: Boolean(cRec), preview: false });
-  });
     $('btnBuyerForceCancel')?.addEventListener('click', () => { S.buyerAuthed = false; $('adminBackdrop')?.classList.add('hidden'); });
     const doRotate = async () => {
       const p1 = $('buyerNewPw1')?.value || '';
@@ -2097,7 +2130,7 @@ function openAdminSalesModal(tabKey = null) {
     const todayKst = new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 10);
     const draft = S.salesDraft || {
       ...createClientSampleConfig(),
-      licId: `NX-${new Date().getFullYear()}-${String(reg.sales.length + 1).padStart(3, '0')}`,
+      licId: nextSeqId(reg.sales, `NX-${new Date().getFullYear()}`, 'licId'),
       companyName: '',
       contactName: '',
       phone: '',
@@ -2717,9 +2750,12 @@ function openAdminSalesModal(tabKey = null) {
       toast('📥 고객·입금·세금계산서 CSV (26개 전체컬럼) 다운로드 완료');
     });
     $('btnCrmBackup')?.addEventListener('click', () => {
-      const blob = new Blob([JSON.stringify(reg, null, 2)], { type: 'application/json' });
+      const safeReg = JSON.parse(JSON.stringify(reg));
+      if (safeReg.remoteSync) safeReg.remoteSync.token = '';
+      if (safeReg.taxConfig) safeReg.taxConfig.apiToken = '';
+      const blob = new Blob([JSON.stringify(safeReg, null, 2)], { type: 'application/json' });
       const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `nexusone_crm_backup_${new Date().toISOString().slice(0, 10)}.json`; a.click();
-      toast('📤 납품 고객·입금·세금 CRM JSON 백업 완료');
+      toast('📤 납품 고객·입금·세금·무료배포 CRM JSON 백업 완료 (보안상 API/GitHub 토큰 제외)');
     });
     $('btnCrmRestore')?.addEventListener('click', () => $('crmRestoreFile')?.click());
     $('crmRestoreFile')?.addEventListener('change', (e) => {
@@ -2730,10 +2766,21 @@ function openAdminSalesModal(tabKey = null) {
         try {
           const parsed = JSON.parse(String(reader.result || '{}'));
           if (!Array.isArray(parsed.sales)) throw new Error('유효한 CRM 백업 JSON 형식이 아닙니다.');
+          const curReg = loadSellerRegistry();
+          parsed.remoteSync = {
+            ...defaultRemoteSyncConfig(),
+            ...(parsed.remoteSync || {}),
+            token: (parsed.remoteSync && parsed.remoteSync.token) ? parsed.remoteSync.token : (curReg.remoteSync?.token || ''),
+          };
+          parsed.taxConfig = {
+            ...defaultTaxConfig(),
+            ...(parsed.taxConfig || {}),
+            apiToken: (parsed.taxConfig && parsed.taxConfig.apiToken) ? parsed.taxConfig.apiToken : (curReg.taxConfig?.apiToken || ''),
+          };
           saveSellerRegistry(parsed);
-          appendAudit('CRM_RESTORED', 'MASTER', `JSON 백업 복원 (고객 ${parsed.sales.length}건)`);
+          appendAudit('CRM_RESTORED', 'MASTER', `JSON 백업 복원 (유료 ${parsed.sales.length}건 · 무료 ${(parsed.freeDist || []).length}건)`);
           openAdminSalesModal('status');
-          toast(`📂 CRM 백업 복원 완료! (납품 고객 ${parsed.sales.length}건)`);
+          toast(`📂 CRM 백업 복원 완료! (유료 ${parsed.sales.length}건 · 무료 ${(parsed.freeDist || []).length}건 · 로컬 토큰 유지)`);
         } catch (err) {
           toast(`⚠️ 복원 실패: ${err.message}`);
         }
@@ -3183,8 +3230,7 @@ export default {
       syncFreeDraft();
       if (!fd.recipientName) { toast('수령인 성명을 입력해 주세요.'); $('fdName')?.focus(); return; }
       const typeMeta = FREE_RECIPIENT_TYPES.find((t) => t.key === fd.freeType) || FREE_RECIPIENT_TYPES[0];
-      const seq = String((reg.freeDist || []).length + 1).padStart(3, '0');
-      const licId = `${typeMeta.prefix}-${seq}`;
+      const licId = nextSeqId(reg.freeDist || [], typeMeta.prefix, 'licId');
       const cfg = buildFreeCfg({ ...fd, licId });
       const signedUrl = `${location.origin}${location.pathname}?lic=${encodeSignedLicense(cfg, eo)}`;
       const rec = {
@@ -3415,9 +3461,8 @@ export default {
     $('btnAddSeller')?.addEventListener('click', () => {
       const name = $('slName')?.value.trim();
       if (!name) { toast('판매자명을 입력하세요.'); return; }
-      const nextNum = reg.sellers.length + 1;
       const newSl = {
-        id: `SLR-${String(nextNum).padStart(3, '0')}`,
+        id: nextSeqId(reg.sellers || [], 'SLR', 'id'),
         name,
         channel: $('slChannel')?.value.trim() || '파트너',
         phone: $('slPhone')?.value.trim() || '-',
@@ -3684,11 +3729,6 @@ export default {
     b.addEventListener('click', () => openAdminSalesModal(b.dataset.admNav));
   });
   $('adminBackdrop')?.classList.remove('hidden');
-
-  $('btnByViewConsent')?.addEventListener('click', () => {
-    const cRec = loadConsentState(S.tenantId);
-    openConsentModal({ readOnly: Boolean(cRec), preview: false });
-  });
 }
 
 // ===== GLOBAL APPLICATION STATE =====
@@ -4601,6 +4641,14 @@ async function loadSbizSido(slug) {
 
 // ===== TAB ROUTER =====
 function switchTab(tab) {
+  if (renderLicenseLockWallIfNeeded()) {
+    toast('🔒 현재 라이선스가 제한 상태입니다.');
+    return;
+  }
+  if (S.isBuyerMode && S.admin?.tabs && !S.admin.tabs[tab]) {
+    toast('🔒 현재 계약 패키지에 포함되지 않은 도메인입니다. 업그레이드는 담당 판매자에게 문의해 주세요.');
+    return;
+  }
   S.tab = tab;
   document.querySelectorAll('[data-tab]').forEach((el) => {
     el.classList.toggle('active', el.dataset.tab === tab);
@@ -4610,6 +4658,7 @@ function switchTab(tab) {
 }
 
 function renderCurrentTab() {
+  if (renderLicenseLockWallIfNeeded()) return;
   if (S.tab !== 'sbiz' && S.leafletMap) {
     S.leafletMap.remove();
     S.leafletMap = null;
@@ -9911,36 +9960,42 @@ function wireOmniSearch() {
   let t = null;
 
   function renderOmni(rawQ) {
+    if (isLicenseBlocked()) { drop.classList.add('hidden'); return; }
     const q = rawQ.trim().toLowerCase();
     clr.classList.toggle('hidden', !q);
     if (!q || !S.fusion) { drop.classList.add('hidden'); return; }
 
-    const regions = S.fusion.regions.filter((r) => r.fullName.toLowerCase().includes(q)).slice(0, 4);
-    const opps = S.opps.filter((o) => `${o.title} ${o.org} ${o.region}`.toLowerCase().includes(q)).slice(0, 4);
-    const reItems = (S.re.listings || []).filter((l) => `${l.name} ${l.addr} ${l.builder}`.toLowerCase().includes(q)).slice(0, 4);
+    const allow = S.admin?.tabs || defaultAdminConfig().tabs;
+    const regions = allow.overview ? S.fusion.regions.filter((r) => r.fullName.toLowerCase().includes(q)).slice(0, 4) : [];
+    const opps = allow.bid ? S.opps.filter((o) => `${o.title} ${o.org} ${o.region}`.toLowerCase().includes(q)).slice(0, 4) : [];
+    const reItems = allow.realestate ? (S.re.listings || []).filter((l) => `${l.name} ${l.addr} ${l.builder}`.toLowerCase().includes(q)).slice(0, 4) : [];
 
-    // Search loaded Sbiz stores (parsed cleanly via \x1f)
+    // Search loaded Sbiz stores (parsed cleanly via \x1f) — only if sbiz tab is licensed
     const sbizHits = [];
-    for (const [slug, sidoObj] of S.sbizCache.entries()) {
-      for (let i = 0; i < sidoObj.n && sbizHits.length < 4; i++) {
-        if (String(sidoObj.strs[i] || '').toLowerCase().includes(q)) {
-          const st = parseSbizStore(sidoObj, i);
-          sbizHits.push({ slug, st });
+    if (allow.sbiz) {
+      for (const [slug, sidoObj] of S.sbizCache.entries()) {
+        for (let i = 0; i < sidoObj.n && sbizHits.length < 4; i++) {
+          if (String(sidoObj.strs[i] || '').toLowerCase().includes(q)) {
+            const st = parseSbizStore(sidoObj, i);
+            sbizHits.push({ slug, st });
+          }
         }
+        if (sbizHits.length >= 4) break;
       }
-      if (sbizHits.length >= 4) break;
     }
 
-    // Search loaded corps, or fallback to topCorps inside fusion index!
+    // Search loaded corps, or fallback to topCorps inside fusion index — only if corp tab is licensed
     let corps = [];
-    if (S.corpLoaded) {
-      for (let i = 0; i < S.corps.length && corps.length < 4; i++) {
-        if (`${S.corps[i][0]} ${S.corps[i][4]} ${S.corps[i][6]}`.toLowerCase().includes(q)) corps.push({ idx: i, name: S.corps[i][0], sub: S.corps[i][7] });
-      }
-    } else {
-      for (const r of S.fusion.regions) {
-        for (const tc of r.corp.top) {
-          if (String(tc[0]).toLowerCase().includes(q) && corps.length < 4) corps.push({ idx: -1, name: tc[0], sub: `${r.fullName} · ${tc[5] || ''}`, rid: r.rid });
+    if (allow.corp) {
+      if (S.corpLoaded) {
+        for (let i = 0; i < S.corps.length && corps.length < 4; i++) {
+          if (`${S.corps[i][0]} ${S.corps[i][4]} ${S.corps[i][6]}`.toLowerCase().includes(q)) corps.push({ idx: i, name: S.corps[i][0], sub: S.corps[i][7] });
+        }
+      } else {
+        for (const r of S.fusion.regions) {
+          for (const tc of r.corp.top) {
+            if (String(tc[0]).toLowerCase().includes(q) && corps.length < 4) corps.push({ idx: -1, name: tc[0], sub: `${r.fullName} · ${tc[5] || ''}`, rid: r.rid });
+          }
         }
       }
     }

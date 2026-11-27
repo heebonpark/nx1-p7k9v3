@@ -929,4 +929,15 @@ table.data-table tbody tr:hover { background: var(--surface-2); }
 @media (max-width: 720px) {
   .nx-adm-kpi4 { grid-template-columns: repeat(2, 1fr); }
   .nx-expert-grid { grid-template-columns: 1fr; }
+  .nx-admin-modal, #consentBackdrop .modal-card {
+    width: calc(100vw - 16px) !important;
+    max-width: calc(100vw - 16px) !important;
+    max-height: 92vh !important;
+  }
+  .nx-admin-modal .drawer-body, #consentBackdrop .drawer-body { padding: 12px !important; }
+  .nx-admin-modal .domain-box [style*="grid-template-columns"] {
+    grid-template-columns: 1fr !important;
+  }
+  .nx-adm-tabs { gap: 4px; }
+  .nx-adm-tab { padding: 6px 9px; font-size: 11px; }
 }

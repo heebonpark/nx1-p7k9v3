@@ -707,10 +707,11 @@ table.data-table tbody tr:hover { background: var(--surface-2); }
 
 /* ===== V6 SPLIT-VIEW GIS MAP + LIVE LIST & YYYYMM TIMELINE ===== */
 .sbiz-workspace {
-  display: grid; grid-template-columns: 1fr; gap: 12px; align-items: start;
+  display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; align-items: start;
 }
+.sbiz-workspace > *, .bid-workspace > * { min-width: 0; max-width: 100%; }
 .sbiz-workspace.split {
-  grid-template-columns: 1.25fr 0.95fr;
+  grid-template-columns: minmax(0, 1.25fr) minmax(0, 0.95fr);
 }
 .sbiz-workspace.split .leaflet-box {
   height: 580px;
@@ -764,7 +765,7 @@ table.data-table tbody tr:hover { background: var(--surface-2); }
 .ym-old  { background: var(--surface-2); color: var(--muted); border: 1px solid var(--border); }
 
 @media (max-width: 1024px) {
-  .sbiz-workspace.split { grid-template-columns: 1fr; }
+  .sbiz-workspace.split { grid-template-columns: minmax(0, 1fr); }
   .sbiz-workspace.split .leaflet-box { height: 380px; }
   .sbiz-workspace.split .sbiz-side-list { height: auto; }
   .sbiz-workspace.split .sbiz-side-scroll { max-height: 440px; }
@@ -985,7 +986,7 @@ table.data-table tbody tr:hover { background: var(--surface-2); }
 }
 
 /* ===== V38 COMMERCIAL MAP PRO GIS · GPS PULSE · EXPERT HUD ===== */
-.sbiz-map-wrap { position: relative; }
+.sbiz-map-wrap { position: relative; width: 100%; max-width: 100%; overflow: hidden; border-radius: 12px; }
 .sbiz-map-hud {
   position: absolute; right: 10px; top: 10px; z-index: 420;
   display: flex; flex-direction: column; gap: 6px;

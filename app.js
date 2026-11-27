@@ -428,6 +428,18 @@ const FACILITY_TYPES = ['건설·안전시설', '전기·통신·소방', '보�
 const PAY_STATUSES = ['입금완료', '미수(대기)', '부분입금', '환불·취소'];
 const PAY_METHODS = ['계좌이체', '크몽정산', '법인카드', '현금영수증', '후불/어음'];
 const TAX_STATUSES = ['발급완료', '미발급', '발급요청', '해당없음(크몽/카드)'];
+const TAX_QUICK_LINKS = [
+  { key: 'hometax', icon: '🏛️', name: '국세청 홈택스', sub: '전자세금계산서·부가세·현금영수증', url: 'https://www.hometax.go.kr/', color: '#2563eb' },
+  { key: 'bizcheck', icon: '🔍', name: '사업자 휴·폐업 조회', sub: '거래처 사업자등록·과세유형 확인', url: 'https://teht.hometax.go.kr/websquare/websquare.html?w2xPath=/ui/ab/a/a/UTEABAAA13.xml', color: '#0284c7' },
+  { key: 'wetax', icon: '🏦', name: '위택스 (지방세)', sub: '지방소득세 신고 · 완납증명', url: 'https://www.wetax.go.kr/', color: '#059669' },
+  { key: 'gov24', icon: '📜', name: '정부24 (증명서)', sub: '국세·지방세 납세증명·사업자증명', url: 'https://www.gov.kr/', color: '#4f46e5' },
+  { key: 'iros', icon: '🏢', name: '인터넷등기소', sub: '법인등기부등본 열람 · 발급', url: 'https://www.iros.go.kr/', color: '#7c3aed' },
+  { key: '4insure', icon: '🛡️', name: '4대사회보험센터', sub: '4대보험 완납증명서 · 가입내역', url: 'https://www.4insure.or.kr/', color: '#0d9488' },
+  { key: 'cardsales', icon: '💳', name: '여신금융협회', sub: '신용카드 매출 · 입금정산 조회', url: 'https://www.cardsales.or.kr/', color: '#d97706' },
+  { key: 'popbill', icon: '⚡', name: '팝빌 (Popbill)', sub: '국세청 전자세금계산서 API 연동', url: 'https://www.popbill.com/', color: '#e11d48' },
+  { key: 'bolta', icon: '⚡', name: '볼타 (Bolta)', sub: '클라우드 전자세금계산서 REST API', url: 'https://bolta.io/', color: '#6366f1' },
+  { key: 'barobill', icon: '⚡', name: '바로빌 (Barobill)', sub: '세금계산서 · 계좌입금조회 API', url: 'https://www.barobill.co.kr/', color: '#0f766e' },
+];
 const FREE_RECIPIENT_TYPES = [
   { key: 'staff', label: '👨‍💼 사내 직원', prefix: 'FREE-STF', defaultDays: 0 },
   { key: 'friend', label: '🤝 지인 / 가족', prefix: 'FREE-VIP', defaultDays: 0 },
@@ -1537,13 +1549,19 @@ function openCustomerEditModal(licId) {
           <input id="edTaxDate" class="input" type="date" value="${esc(s.taxDate || '')}" style="width:100%;margin-top:2px;font-size:12px" />
         </label>
       </div>
-      <div style="display:grid;grid-template-columns:1.2fr 1fr;gap:8px">
+      <div style="display:grid;grid-template-columns:1.2fr 1fr;gap:8px;margin-bottom:8px">
         <label style="font-size:11px;color:var(--muted)">국세청 승인번호 (24자리)
           <input id="edNtsNo" class="input mono" value="${esc(s.ntsConfirmNo || '')}" placeholder="예: 20261126-41000000-00001024" style="width:100%;margin-top:2px;font-size:12px" />
         </label>
         <label style="font-size:11px;color:var(--muted)">세금계산서 수신 이메일
           <input id="edTaxEmail" class="input" type="email" value="${esc(s.taxEmail || s.email || '')}" placeholder="tax@company.co.kr" style="width:100%;margin-top:2px;font-size:12px" />
         </label>
+      </div>
+      <div style="display:flex;gap:5px;flex-wrap:wrap;padding-top:6px;border-top:1px dashed var(--border)">
+        <button id="btnEdCopyBizHometax" class="btn btn-sm" type="button">📋 사업자번호 복사 + 🏛️ 홈택스 ↗</button>
+        <a class="btn btn-sm" href="${TAX_QUICK_LINKS[1].url}" target="_blank" rel="noopener">🔍 휴·폐업 상태조회 ↗</a>
+        <a class="btn btn-sm" href="${TAX_QUICK_LINKS[2].url}" target="_blank" rel="noopener">🏦 위택스 ↗</a>
+        <a class="btn btn-sm" href="${TAX_QUICK_LINKS[3].url}" target="_blank" rel="noopener">📜 정부24 ↗</a>
       </div>
     </div>
   `;
@@ -1560,6 +1578,12 @@ function openCustomerEditModal(licId) {
   refreshTaxPreview();
   $('edPrice')?.addEventListener('input', refreshTaxPreview);
   $('edVatMode')?.addEventListener('change', refreshTaxPreview);
+  $('btnEdCopyBizHometax')?.addEventListener('click', () => {
+    const bno = ($('edBizNo')?.value || '').trim();
+    if (bno) navigator.clipboard?.writeText(bno);
+    window.open('https://www.hometax.go.kr/', '_blank', 'noopener');
+    toast(bno ? `📋 사업자번호(${bno}) 복사 완료! 홈택스에서 붙여넣기(Ctrl+V) 하세요.` : '🏛️ 국세청 홈택스를 새 탭으로 열었습니다.');
+  });
   $('btnEdHometaxCsv')?.addEventListener('click', () => {
     downloadHometaxBatchCsv([s], reg.taxConfig);
     toast('📥 국세청 홈택스 일괄발급용 CSV 다운로드 완료');
@@ -2264,8 +2288,15 @@ function openAdminSalesModal(tabKey = null) {
           <tbody id="crmTableBody"></tbody>
         </table>
       </div>
-      <div style="font-size:11px;color:var(--muted);margin-top:8px">
-        💡 <b>✏️ 수정</b>에서 고객·입금·세금계산서 정보를 편집하고, 상단 <b>🧾 세금계산서·국세청API</b> 탭에서 홈택스 일괄발급 CSV 다운로드 및 API 연동을 관리하세요.
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:6px;flex-wrap:wrap;margin-top:8px">
+        <div style="font-size:11px;color:var(--muted)">💡 <b>✏️ 수정</b>에서 고객·입금·세금정보 편집 · <b>🚦 직권·기간</b>에서 중지/재개/기간제한 제어</div>
+        <div style="display:flex;gap:4px;flex-wrap:wrap">
+          <a class="btn btn-sm" href="https://www.hometax.go.kr/" target="_blank" rel="noopener">🏛️ 홈택스 ↗</a>
+          <a class="btn btn-sm" href="${TAX_QUICK_LINKS[1].url}" target="_blank" rel="noopener">🔍 사업자조회 ↗</a>
+          <a class="btn btn-sm" href="https://www.wetax.go.kr/" target="_blank" rel="noopener">🏦 위택스 ↗</a>
+          <a class="btn btn-sm" href="https://www.gov.kr/" target="_blank" rel="noopener">📜 정부24 ↗</a>
+          <a class="btn btn-sm" href="https://www.cardsales.or.kr/" target="_blank" rel="noopener">💳 카드매출 ↗</a>
+        </div>
       </div>
     `;
 
@@ -2490,6 +2521,20 @@ export default {
 };`;
 
     $('adminBody').innerHTML = `${tabBarHtml}
+      <div class="domain-box" style="margin-bottom:10px;border-color:rgba(37,99,235,.35);background:rgba(37,99,235,.04)">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:6px;margin-bottom:7px;flex-wrap:wrap">
+          <h4 style="margin:0">🏛️ 세무 · 국세청 · 정산 실무 바로가기 (원클릭 10종)</h4>
+          <span style="font-size:11px;color:var(--muted)">새 탭에서 공식 포털 즉시 열기</span>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(168px,1fr));gap:6px">
+          ${TAX_QUICK_LINKS.map((lk) => `
+            <a href="${lk.url}" target="_blank" rel="noopener" style="display:block;padding:7px 9px;border:1px solid var(--border);border-radius:9px;background:var(--surface);text-decoration:none;color:var(--text);transition:border-color .15s">
+              <div style="font-size:12px;font-weight:800;color:${lk.color}">${lk.icon} ${esc(lk.name)} ↗</div>
+              <div style="font-size:10.5px;color:var(--muted);margin-top:2px;line-height:1.3">${esc(lk.sub)}</div>
+            </a>`).join('')}
+        </div>
+      </div>
+
       <div class="domain-box" style="margin-bottom:10px;border-color:rgba(79,70,229,.35);background:rgba(79,70,229,.04)">
         <h4 style="margin:0 0 8px">1. 공급자(판매자) 사업자정보 & 국세청 중계 API 설정</h4>
         <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:6px;margin-bottom:6px">
@@ -9373,7 +9418,29 @@ function renderHubTab() {
         </div>
       </div>`;
     })()}
+
+    <!-- 4. SELLER MASTER TAX & ACCOUNTING QUICK LAUNCHPAD (Master Mode Only!) -->
+    ${!S.isBuyerMode ? `
+      <div class="card" id="hubTaxLinksCard" style="margin-top:14px">
+        <div class="card-head">
+          <div>
+            <h2 class="card-title">🏛️ 세무 · 국세청 · 정산 실무 바로가기 (관리자 전용)</h2>
+            <p class="card-sub">전자세금계산서 발급 · 사업자 휴폐업 조회 · 완납증명 · 카드매출 정산 · API 중계 포털 원클릭 실행</p>
+          </div>
+          <button id="btnHubOpenTaxCenter" class="btn btn-primary btn-sm" type="button">🧾 세금계산서·API 콘솔 열기</button>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(195px,1fr));gap:9px">
+          ${TAX_QUICK_LINKS.map((lk) => `
+            <a class="domain-box" href="${lk.url}" target="_blank" rel="noopener" style="text-decoration:none">
+              <h4 style="color:${lk.color}">${lk.icon} ${esc(lk.name)} ↗</h4>
+              <div style="font-size:11.5px;color:var(--muted)">${esc(lk.sub)}</div>
+            </a>`).join('')}
+        </div>
+      </div>
+    ` : ''}
   `;
+
+  $('btnHubOpenTaxCenter')?.addEventListener('click', () => openAdminSalesModal('tax'));
 
   $('btnRunDiag10').addEventListener('click', runFull10ApiDiag);
   $('mainStage').querySelectorAll('[data-ps]').forEach((b) => {

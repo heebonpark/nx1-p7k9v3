@@ -313,6 +313,7 @@ function encodeSignedLicense(cfg, expertOpts = null) {
     f: Object.entries(cfg.features || {}).filter(([, v]) => v).map(([k]) => k),
     als: al.showSection ? 1 : 0,
     al: enabledApps,
+    sd: cfg.startDate || '',
     exp: cfg.expiryDate || '',
     em: cfg.expiryMode || eo.expiryMode || 'lock',
     fp: (cfg.forcePwChange !== undefined ? cfg.forcePwChange : eo.forcePwChange) ? 1 : 0,
@@ -342,6 +343,7 @@ function decodeSignedLicense(token, requireSig = true) {
     if (typeof c.bt === 'string' && c.bt) base.brandTitle = c.bt;
     if (typeof c.bb === 'string') base.brandBadge = c.bb;
     if (typeof c.bs === 'string') base.brandSub = c.bs;
+    base.startDate = c.sd || '';
     base.expiryDate = c.exp || '';
     base.expiryMode = c.em || 'lock';
     base.isFree = Boolean(c.fr);
@@ -432,6 +434,174 @@ const FREE_RECIPIENT_TYPES = [
   { key: 'trial', label: '🎁 무료 체험판', prefix: 'FREE-TRL', defaultDays: 14 },
   { key: 'partner', label: '🤝 파트너 / 협력사', prefix: 'FREE-PRT', defaultDays: 90 },
 ];
+const SUSPEND_REASONS = [
+  '대금 미납 / 연체로 인한 직권 중지',
+  '계약(체험) 사용기간 만료',
+  '임직원 퇴사 / 권한 회수',
+  '약관 위반 / 무단 링크 공유',
+  '고객사 요청에 의한 일시 중지',
+];
+
+function defaultRemoteSyncConfig() {
+  return {
+    repo: 'heebonpark/nx1-p7k9v3',
+    branch: 'main',
+    path: 'data/license_control.json',
+    token: '',
+  };
+}
+
+function buildLicenseControlPayload(reg) {
+  const overrides = { ...(reg.controlOverrides || {}) };
+  const allItems = [...(reg.sales || []), ...(reg.freeDist || [])];
+  allItems.forEach((x) => {
+    const isRev = x.status === 'revoked' || (reg.revoked || []).includes(x.licId);
+    if (isRev || x.startDate || x.expiryDate || x.suspendReason || overrides[x.licId]) {
+      overrides[x.licId] = {
+        status: isRev ? 'suspended' : 'active',
+        reason: isRev ? (x.suspendReason || overrides[x.licId]?.reason || '관리자 직권으로 사용이 중지되었습니다.') : '',
+        startDate: x.startDate || '',
+        expiryDate: x.expiryDate || '',
+        updatedAt: new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 19).replace('T', ' '),
+      };
+    }
+  });
+  return {
+    updatedAt: new Date(Date.now() + 9 * 3600 * 1000).toISOString(),
+    version: 1,
+    overrides,
+  };
+}
+
+function downloadLicenseControlJson(reg) {
+  const payload = buildLicenseControlPayload(reg);
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'license_control.json';
+  a.click();
+}
+
+async function publishLicenseControlToGithub(reg) {
+  const rs = { ...defaultRemoteSyncConfig(), ...(reg.remoteSync || {}) };
+  if (!rs.token || !rs.repo) {
+    return { ok: false, noToken: true, msg: '원격 동기화 GitHub 토큰이 설정되지 않았습니다.' };
+  }
+  const apiUrl = `https://api.github.com/repos/${rs.repo}/contents/${rs.path}`;
+  const headers = {
+    Accept: 'application/vnd.github+json',
+    Authorization: `Bearer ${rs.token}`,
+    'Content-Type': 'application/json',
+  };
+  let sha = '';
+  try {
+    const getRes = await fetch(`${apiUrl}?ref=${encodeURIComponent(rs.branch || 'main')}`, { headers, cache: 'no-store' });
+    if (getRes.ok) {
+      const meta = await getRes.json();
+      sha = meta.sha || '';
+    }
+  } catch {}
+  const jsonText = JSON.stringify(buildLicenseControlPayload(reg), null, 2) + '\n';
+  const bytes = new TextEncoder().encode(jsonText);
+  let bin = '';
+  bytes.forEach((b) => { bin += String.fromCharCode(b); });
+  const body = {
+    message: `chore(license): update remote license_control.json (${new Date().toISOString().slice(0, 16)})`,
+    content: btoa(bin),
+    branch: rs.branch || 'main',
+    ...(sha ? { sha } : {}),
+  };
+  const putRes = await fetch(apiUrl, { method: 'PUT', headers, body: JSON.stringify(body) });
+  if (!putRes.ok) {
+    const errJ = await putRes.json().catch(() => ({}));
+    return { ok: false, msg: errJ.message || `GitHub API HTTP ${putRes.status}` };
+  }
+  return { ok: true, msg: '원격 license_control.json 동기화 완료! (약 20초 내 전 고객 기기 반영)' };
+}
+
+function evaluateLicensePolicy(adminCfg, reg, remoteOverrides = null) {
+  const eo = reg?.expertOpts || defaultExpertOpts();
+  const tid = adminCfg?.licId || 'CLIENT-001';
+  const saleRec = (reg?.sales || []).find((x) => x.licId === tid);
+  const freeRec = (reg?.freeDist || []).find((x) => x.licId === tid);
+  const localOv = (reg?.controlOverrides || {})[tid] || null;
+  const remoteOv = remoteOverrides ? (remoteOverrides[tid] || null) : null;
+
+  // Remote override takes priority for cross-device authority control; fallback to local registry
+  const effStatus = remoteOv?.status || localOv?.status || ((saleRec?.status === 'revoked' || freeRec?.status === 'revoked' || (reg?.revoked || []).includes(tid)) ? 'suspended' : 'active');
+  const effReason = remoteOv?.reason || localOv?.reason || saleRec?.suspendReason || freeRec?.suspendReason || '';
+  const effStart = (remoteOv && remoteOv.startDate !== undefined && remoteOv.startDate !== '') ? remoteOv.startDate : (localOv?.startDate || saleRec?.startDate || freeRec?.startDate || adminCfg.startDate || '');
+  const effExpiry = (remoteOv && remoteOv.expiryDate !== undefined && remoteOv.expiryDate !== '') ? remoteOv.expiryDate : (localOv?.expiryDate || saleRec?.expiryDate || freeRec?.expiryDate || adminCfg.expiryDate || '');
+
+  adminCfg._effStart = effStart;
+  adminCfg._effExpiry = effExpiry;
+
+  // 1) Authority Suspend (Kill-Switch)
+  if (eo.revocationGuard !== false && (effStatus === 'suspended' || effStatus === 'revoked')) {
+    return {
+      state: 'REVOKED',
+      reason: effReason || '관리자 직권으로 사용이 일시 중지되었습니다.',
+      msg: `라이선스(${tid})가 관리자 직권으로 중지되었습니다.${effReason ? ` (사유: ${effReason})` : ''} 담당자(${adminCfg.sellerName || '본사'})에게 재개를 문의해 주세요.`,
+    };
+  }
+
+  // 2) Usage Period Enforcement (Start Date ~ Expiry Date)
+  if (eo.expiryEngine !== false) {
+    const todayIso = new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 10);
+    if (effStart && todayIso < effStart) {
+      const waitDays = Math.ceil((new Date(`${effStart}T00:00:00+09:00`).getTime() - Date.now()) / 86400000);
+      return {
+        state: 'NOT_STARTED',
+        daysUntil: Math.max(1, waitDays),
+        msg: `본 라이선스(${tid})는 ${effStart}부터 사용 가능합니다. (개통까지 D-${Math.max(1, waitDays)}일)`,
+      };
+    }
+    if (effExpiry) {
+      const diffDays = Math.ceil((new Date(`${effExpiry}T23:59:59+09:00`).getTime() - Date.now()) / 86400000);
+      if (todayIso > effExpiry) {
+        return {
+          state: adminCfg.expiryMode === 'readonly' ? 'EXPIRED_RO' : 'EXPIRED_LOCK',
+          daysLeft: diffDays,
+          msg: `사용 허용 기간(${effStart ? `${effStart} ~ ` : ''}${effExpiry})이 만료되었습니다. 담당 판매자(${adminCfg.sellerName || '본사'})에게 기간 연장을 요청해 주세요.`,
+        };
+      }
+      if (diffDays <= 7) {
+        return {
+          state: 'EXPIRING_SOON',
+          daysLeft: Math.max(0, diffDays),
+          msg: `사용기간 만료 D-${Math.max(0, diffDays)}일 (${effStart ? `${effStart} ~ ` : '~'}${effExpiry}) · 담당자(${adminCfg.sellerName || '본사'})에게 연장을 문의하세요.`,
+        };
+      }
+      return {
+        state: 'ACTIVE_LIMITED',
+        daysLeft: diffDays,
+        msg: `이용기간: ${effStart ? `${effStart} ~ ` : '~'}${effExpiry} (잔여 D-${diffDays}일)`,
+      };
+    }
+  }
+  return { state: 'OK', msg: '' };
+}
+
+async function fetchAndApplyRemoteLicenseControl() {
+  if (!S.isBuyerMode || S.licenseStatus?.state === 'TAMPERED') return;
+  try {
+    const r = await fetch(`data/license_control.json?t=${Date.now()}`, { cache: 'no-store' });
+    if (!r.ok) return;
+    const j = await r.json();
+    if (!j || typeof j.overrides !== 'object') return;
+    S.remoteControl = j;
+    const prevState = S.licenseStatus?.state;
+    S.licenseStatus = evaluateLicensePolicy(S.admin, loadSellerRegistry(), j.overrides);
+    const curState = S.licenseStatus?.state;
+    renderTenantBar();
+    if (['REVOKED', 'NOT_STARTED', 'EXPIRED_LOCK'].includes(curState)) {
+      renderLicenseLockWallIfNeeded();
+    } else if (['REVOKED', 'NOT_STARTED', 'EXPIRED_LOCK'].includes(prevState)) {
+      renderCurrentTab();
+      toast('▶️ 관리자 직권 재개가 반영되어 정상 이용이 복구되었습니다.');
+    }
+  } catch {}
+}
 
 function addDaysKstIso(days) {
   const n = Number(days) || 0;
@@ -585,6 +755,8 @@ function defaultSellerRegistry() {
     ],
     freeDist: [],
     revoked: [],
+    controlOverrides: {},
+    remoteSync: defaultRemoteSyncConfig(),
     expertOpts: defaultExpertOpts(),
     taxConfig: defaultTaxConfig(),
     masterPinHash: MASTER_DEFAULT_PIN_HASH,
@@ -606,6 +778,8 @@ function loadSellerRegistry() {
           bizNo: isSample ? '124-86-54321' : '',
           channel: isSample ? '크몽' : '본사직판',
           saleDate: x.saleDate || x.issuedAt || '',
+          startDate: x.startDate || '',
+          suspendReason: x.suspendReason || '',
           vatMode: 'sep',
           payStatus: isSample ? '입금완료' : '미수(대기)',
           payDate: isSample ? '2026-11-26' : '',
@@ -624,6 +798,8 @@ function loadSellerRegistry() {
         sales: normalizedSales,
         freeDist: Array.isArray(raw.freeDist) ? raw.freeDist : [],
         revoked: Array.isArray(raw.revoked) ? raw.revoked : [],
+        controlOverrides: (raw.controlOverrides && typeof raw.controlOverrides === 'object') ? raw.controlOverrides : {},
+        remoteSync: { ...defaultRemoteSyncConfig(), ...(raw.remoteSync || {}) },
         expertOpts: { ...defaultExpertOpts(), ...(raw.expertOpts || {}) },
         taxConfig: { ...defaultTaxConfig(), ...(raw.taxConfig || {}) },
         masterPinHash: raw.masterPinHash || MASTER_DEFAULT_PIN_HASH,
@@ -756,35 +932,9 @@ function resolveInitialContext() {
 
   const tid = adminCfg.licId || 'CLIENT-001';
 
-  // Check Revocation Guard (Kill-Switch: Paid Sales + Free Staff/Friend Distribution)
-  if (licenseStatus.state === 'OK' && eo.revocationGuard !== false) {
-    const saleRec = (reg.sales || []).find((x) => x.licId === tid);
-    const freeRec = (reg.freeDist || []).find((x) => x.licId === tid);
-    if ((reg.revoked || []).includes(tid) || saleRec?.status === 'revoked' || freeRec?.status === 'revoked') {
-      licenseStatus = {
-        state: 'REVOKED',
-        msg: `라이선스(${tid})가 관리자에 의해 회수(정지)되었습니다. 담당자(${adminCfg.sellerName || '본사'})에게 문의해 주세요.`,
-      };
-    }
-  }
-
-  // Check Expiry Engine
-  if (licenseStatus.state === 'OK' && eo.expiryEngine !== false && adminCfg.expiryDate) {
-    const todayIso = new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 10);
-    const diffDays = Math.ceil((new Date(`${adminCfg.expiryDate}T23:59:59+09:00`).getTime() - Date.now()) / 86400000);
-    if (todayIso > adminCfg.expiryDate) {
-      licenseStatus = {
-        state: adminCfg.expiryMode === 'readonly' ? 'EXPIRED_RO' : 'EXPIRED_LOCK',
-        daysLeft: diffDays,
-        msg: `라이선스 사용 기간(${adminCfg.expiryDate})이 만료되었습니다. 담당 판매자(${adminCfg.sellerName || '본사'})에게 갱신을 요청해 주세요.`,
-      };
-    } else if (diffDays <= 7) {
-      licenseStatus = {
-        state: 'EXPIRING_SOON',
-        daysLeft: Math.max(0, diffDays),
-        msg: `라이선스 만료 D-${Math.max(0, diffDays)}일 (${adminCfg.expiryDate}) · 담당 판매자(${adminCfg.sellerName || '본사'})에게 연장을 문의하세요.`,
-      };
-    }
+  // Evaluate local Authority Suspend & Usage Period (Start Date ~ Expiry Date)
+  if (licenseStatus.state === 'OK') {
+    licenseStatus = evaluateLicensePolicy(adminCfg, reg, null);
   }
 
   // Process Remote 1-Time Password Reset Link (&rst=...)
@@ -861,9 +1011,11 @@ function renderTenantBar() {
   const bSt = loadBuyerState(S.tenantId);
   const rows = [];
   if (S.licenseStatus?.state === 'EXPIRED_RO') {
-    rows.push(`<div class="nx-tbar-row nx-tbar-danger"><span>⛔ <b>[만료 · 읽기전용]</b> ${esc(S.licenseStatus.msg)}</span><span>라이선스: <code>${esc(S.tenantId)}</code></span></div>`);
+    rows.push(`<div class="nx-tbar-row nx-tbar-danger"><span>⛔ <b>[사용기간 만료 · 읽기전용]</b> ${esc(S.licenseStatus.msg)}</span><span>라이선스: <code>${esc(S.tenantId)}</code></span></div>`);
   } else if (S.licenseStatus?.state === 'EXPIRING_SOON') {
-    rows.push(`<div class="nx-tbar-row nx-tbar-warn"><span>⏳ <b>[만료 임박]</b> ${esc(S.licenseStatus.msg)}</span><span>라이선스: <code>${esc(S.tenantId)}</code></span></div>`);
+    rows.push(`<div class="nx-tbar-row nx-tbar-warn"><span>⏳ <b>[사용기간 만료 임박]</b> ${esc(S.licenseStatus.msg)}</span><span>라이선스: <code>${esc(S.tenantId)}</code></span></div>`);
+  } else if (S.licenseStatus?.state === 'ACTIVE_LIMITED') {
+    rows.push(`<div class="nx-tbar-row nx-tbar-info"><span>📅 <b>${esc(S.licenseStatus.msg)}</b></span><span style="font-size:11px;color:var(--muted)">라이선스: <code>${esc(S.tenantId)}</code></span></div>`);
   }
   if (bSt.mustChangePw && S.admin.forcePwChange !== false) {
     rows.push(`
@@ -887,28 +1039,40 @@ function renderTenantBar() {
 
 function renderLicenseLockWallIfNeeded() {
   const st = S.licenseStatus?.state;
-  if (!S.isBuyerMode || !['TAMPERED', 'REVOKED', 'EXPIRED_LOCK'].includes(st)) return false;
+  if (!S.isBuyerMode || !['TAMPERED', 'REVOKED', 'NOT_STARTED', 'EXPIRED_LOCK'].includes(st)) return false;
   const stage = $('mainStage');
   if (!stage) return true;
   const titleMap = {
     TAMPERED: '🛡️ 라이선스 서명 무결성 검증 실패',
-    REVOKED: '🚫 라이선스 일시 정지 안내',
-    EXPIRED_LOCK: '⏳ 라이선스 사용 기간 만료',
+    REVOKED: '🚫 관리자 직권 사용 중지 안내',
+    NOT_STARTED: '🗓️ 사용 시작일 전 안내 (예약 개통)',
+    EXPIRED_LOCK: '⏳ 사용 허용 기간 만료 안내',
   };
+  const iconMap = { TAMPERED: '🛡️', REVOKED: '🚫', NOT_STARTED: '🗓️', EXPIRED_LOCK: '⏳' };
+  const periodTxt = (S.admin._effStart || S.admin._effExpiry)
+    ? `${S.admin._effStart || '즉시'} ~ ${S.admin._effExpiry || '영구'}`
+    : '영구 이용';
   stage.innerHTML = `
     <div class="nx-license-wall">
-      <div style="font-size:38px;margin-bottom:8px">${st === 'TAMPERED' ? '🛡️' : st === 'REVOKED' ? '🚫' : '⏳'}</div>
+      <div style="font-size:38px;margin-bottom:8px">${iconMap[st] || '🔒'}</div>
       <h2 style="margin:0 0 8px;font-size:19px;font-weight:900">${titleMap[st]}</h2>
       <p style="font-size:13px;color:var(--text-2);margin:0 0 14px">${esc(S.licenseStatus.msg)}</p>
-      <div style="background:var(--surface-2);border:1px solid var(--border);border-radius:10px;padding:10px 12px;font-size:12px;text-align:left;margin-bottom:14px">
+      <div style="background:var(--surface-2);border:1px solid var(--border);border-radius:10px;padding:10px 12px;font-size:12px;text-align:left;margin-bottom:14px;line-height:1.6">
         <div><b>라이선스 ID</b>: <code>${esc(S.tenantId)}</code></div>
-        <div><b>고객사 / 브랜드</b>: ${esc(S.admin.companyName || S.admin.brandTitle)}</div>
-        <div><b>담당 판매자</b>: ${esc(S.admin.sellerName || '본사 직판')}</div>
+        <div><b>고객사 / 수령인</b>: ${esc(S.admin.companyName || S.admin.brandTitle)}</div>
+        <div><b>허용 사용기간</b>: ${esc(periodTxt)}</div>
+        ${S.licenseStatus.reason ? `<div><b>중지 사유</b>: <span style="color:#be123c;font-weight:700">${esc(S.licenseStatus.reason)}</span></div>` : ''}
+        <div><b>담당 관리자</b>: ${esc(S.admin.sellerName || '본사 직판')}</div>
       </div>
       <div style="display:flex;gap:8px;justify-content:center;flex-wrap:wrap">
-        <button id="btnWallMasterBack" type="button" class="btn btn-primary btn-sm">🔄 판매자 마스터 모드 복귀</button>
+        <button id="btnWallRecheck" type="button" class="btn btn-emerald btn-sm">🔄 재개 여부 다시 확인</button>
+        <button id="btnWallMasterBack" type="button" class="btn btn-primary btn-sm">🛡️ 판매자 마스터 모드 복귀</button>
       </div>
     </div>`;
+  $('btnWallRecheck')?.addEventListener('click', async () => {
+    toast('🔄 원격 라이선스 상태를 확인 중입니다…');
+    await fetchAndApplyRemoteLicenseControl();
+  });
   $('btnWallMasterBack')?.addEventListener('click', () => openMasterEscapePrompt());
   return true;
 }
@@ -1441,7 +1605,197 @@ function openCustomerEditModal(licId) {
   });
 }
 
-// ===== SELLER MASTER CONSOLE (5 TABS: ISSUE · STATUS/RESET · SELLERS · TOP 10 EXPERT · AUDIT) =====
+// ===== AUTHORITY CONTROL MODAL (SUSPEND · RESUME · USAGE PERIOD · REMOTE SYNC) =====
+function openAuthorityControlModal(licId, isFree = false) {
+  const reg = loadSellerRegistry();
+  const list = isFree ? (reg.freeDist || []) : (reg.sales || []);
+  const item = list.find((x) => x.licId === licId);
+  if (!item) return;
+  const eo = reg.expertOpts || defaultExpertOpts();
+  const todayIso = new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 10);
+  const isSuspended = item.status === 'revoked' || (reg.revoked || []).includes(licId);
+  const displayName = isFree ? `${item.recipientName}${item.affiliation ? ` (${item.affiliation})` : ''}` : item.companyName;
+  const rs = { ...defaultRemoteSyncConfig(), ...(reg.remoteSync || {}) };
+
+  $('adminModalTitle').textContent = `🚦 직권 중지 · 재개 · 사용기간 제한 — ${displayName}`;
+  $('adminModalSub').textContent = `라이선스 ${licId} · 관리자 직권 즉시 중지/재개 및 허용 사용기간(시작일~종료일) 정밀 통제`;
+
+  $('adminBody').innerHTML = `
+    <div class="domain-box" style="margin-bottom:10px;border-color:${isSuspended ? 'rgba(225,29,72,.45)' : 'rgba(16,185,129,.45)'};background:${isSuspended ? 'rgba(225,29,72,.05)' : 'rgba(16,185,129,.05)'}">
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+        <div>
+          <span style="font-size:12px;color:var(--muted)">현재 라이선스 상태</span><br>
+          <b style="font-size:15px;color:${isSuspended ? '#be123c' : '#047857'}">${isSuspended ? '🚫 관리자 직권 중지됨 (접근 차단 상태)' : '✅ 정상 이용 가능 상태'}</b>
+          ${isSuspended && item.suspendReason ? `<div style="font-size:12px;color:#be123c;margin-top:3px">중지 사유: ${esc(item.suspendReason)}</div>` : ''}
+        </div>
+        <div style="text-align:right;font-size:12px">
+          <div><b>허용 기간</b>: ${esc(item.startDate || '즉시')} ~ ${esc(item.expiryDate || '영구')}</div>
+          <div style="color:var(--muted)">${isFree ? '무료 배포' : `유료 납품 (${esc((item.pkg || '').toUpperCase())})`}</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="domain-box" style="margin-bottom:10px">
+      <h4 style="margin:0 0 8px">1. 📅 사용기간 제한 설정 (시작일 ~ 종료일)</h4>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px">
+        <label style="font-size:11.5px;color:var(--muted)">사용 시작일 (비우면 즉시 개통 / 미래 날짜 시 예약 개통)
+          <input id="acStartDate" class="input" type="date" value="${esc(item.startDate || '')}" style="width:100%;margin-top:3px;font-size:12px" />
+        </label>
+        <label style="font-size:11.5px;color:var(--muted)">사용 종료(만료)일 (비우면 영구 이용)
+          <input id="acExpiryDate" class="input" type="date" value="${esc(item.expiryDate || '')}" style="width:100%;margin-top:3px;font-size:12px" />
+        </label>
+      </div>
+      <div style="display:flex;gap:5px;flex-wrap:wrap;align-items:center;margin-bottom:8px">
+        <span style="font-size:11px;color:var(--muted)">빠른 기간 제한:</span>
+        <button type="button" class="btn btn-sm" data-ac-days="7">7일</button>
+        <button type="button" class="btn btn-sm" data-ac-days="14">14일</button>
+        <button type="button" class="btn btn-sm" data-ac-days="30">30일</button>
+        <button type="button" class="btn btn-sm" data-ac-days="90">90일</button>
+        <button type="button" class="btn btn-sm" data-ac-days="365">1년(365일)</button>
+        <button type="button" class="btn btn-emerald btn-sm" id="btnAcPlus30">+30일 연장</button>
+        <button type="button" class="btn btn-sm" data-ac-days="0">♾️ 기간제한 해제(영구)</button>
+      </div>
+      <button id="btnAcSavePeriod" class="btn btn-primary btn-sm" type="button">📅 사용기간 제한 적용 & 서명링크 갱신</button>
+    </div>
+
+    <div class="domain-box" style="margin-bottom:10px;border-color:rgba(225,29,72,.35)">
+      <h4 style="margin:0 0 8px">2. 🚦 관리자 직권 중지 · 직권 재개</h4>
+      <div style="display:grid;grid-template-columns:1fr 1.2fr;gap:8px;margin-bottom:10px">
+        <label style="font-size:11.5px;color:var(--muted)">중지 사유 프리셋
+          <select id="acReasonPreset" class="select" style="width:100%;margin-top:3px;font-size:12px">
+            <option value="">직접 입력 또는 선택…</option>
+            ${SUSPEND_REASONS.map((r) => `<option value="${esc(r)}" ${item.suspendReason === r ? 'selected' : ''}>${esc(r)}</option>`).join('')}
+          </select>
+        </label>
+        <label style="font-size:11.5px;color:var(--muted)">고객 화면에 표시될 중지 사유
+          <input id="acReason" class="input" value="${esc(item.suspendReason || '')}" placeholder="예: 대금 미납으로 인한 관리자 직권 중지" style="width:100%;margin-top:3px;font-size:12px" />
+        </label>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button id="btnAcSuspend" class="btn btn-rose btn-sm" type="button">🚫 관리자 직권 사용 중지</button>
+        <button id="btnAcResume" class="btn btn-emerald btn-sm" type="button">▶️ 관리자 직권 사용 재개</button>
+      </div>
+    </div>
+
+    <div class="domain-box" style="background:rgba(79,70,229,.04);border-color:rgba(79,70,229,.3)">
+      <h4 style="margin:0 0 6px">3. ☁️ 원격 고객 PC·스마트폰 즉시 반영 (<code>data/license_control.json</code>)</h4>
+      <div style="font-size:11.5px;color:var(--text-2);line-height:1.5;margin-bottom:8px">
+        • 동일 브라우저에서는 위 버튼 클릭 즉시 반영됩니다.<br>
+        • <b>다른 PC/모바일의 원격 고객 기기</b>까지 즉시 중지·재개·기간변경을 반영하려면 <b>[☁️ 원격 고객 기기 즉시 동기화]</b>(TOP 10 탭에서 GitHub 토큰 1회 등록) 또는 <b>[📥 license_control.json 다운로드]</b> 후 리포지토리 <code>data/</code>에 업로드하세요.
+      </div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+        <button id="btnAcRemotePush" class="btn btn-primary btn-sm" type="button">☁️ 원격 고객 기기 즉시 동기화${rs.token ? ' (토큰 연결됨)' : ''}</button>
+        <button id="btnAcDownloadJson" class="btn btn-sm" type="button">📥 license_control.json 다운로드</button>
+        <button id="btnAcGoSyncCfg" class="btn btn-sm" type="button">⚙️ 원격 동기화 토큰 설정</button>
+      </div>
+    </div>
+  `;
+
+  $('adminFoot').innerHTML = `
+    <button id="btnAcPreview" class="btn btn-sm" type="button">👁️ 새 탭에서 고객 화면 확인</button>
+    <button id="btnAcBack" class="btn btn-primary btn-sm" type="button" style="margin-left:auto">← ${isFree ? '무료배포 목록' : '납품고객 목록'}으로</button>
+  `;
+
+  const syncOverride = (statusStr, reasonStr) => {
+    item.startDate = $('acStartDate')?.value || '';
+    item.expiryDate = $('acExpiryDate')?.value || '';
+    if (statusStr === 'suspended') {
+      item.status = 'revoked';
+      item.suspendReason = reasonStr || '관리자 직권으로 사용이 중지되었습니다.';
+      item.suspendedAt = new Date().toLocaleString('ko-KR');
+    } else if (statusStr === 'active') {
+      item.status = 'active';
+      item.suspendReason = '';
+      item.resumedAt = new Date().toLocaleString('ko-KR');
+    }
+    const revokedSet = new Set(reg.revoked || []);
+    if (item.status === 'revoked') revokedSet.add(licId);
+    else revokedSet.delete(licId);
+    reg.revoked = [...revokedSet];
+    if (!reg.controlOverrides) reg.controlOverrides = {};
+    reg.controlOverrides[licId] = {
+      status: item.status === 'revoked' ? 'suspended' : 'active',
+      reason: item.status === 'revoked' ? (item.suspendReason || '') : '',
+      startDate: item.startDate || '',
+      expiryDate: item.expiryDate || '',
+      updatedAt: new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 19).replace('T', ' '),
+    };
+    if (item.cfg) {
+      item.cfg.startDate = item.startDate;
+      item.cfg.expiryDate = item.expiryDate;
+      item.signedUrl = `${location.origin}${location.pathname}?lic=${encodeSignedLicense(item.cfg, eo)}`;
+    }
+    saveSellerRegistry(reg);
+  };
+
+  $('acReasonPreset')?.addEventListener('change', (e) => {
+    if (e.target.value && $('acReason')) $('acReason').value = e.target.value;
+  });
+
+  $('adminBody').querySelectorAll('[data-ac-days]').forEach((b) => {
+    b.addEventListener('click', () => {
+      const d = Number(b.dataset.acDays) || 0;
+      if ($('acExpiryDate')) $('acExpiryDate').value = d > 0 ? addDaysKstIso(d) : '';
+      if (d === 0 && $('acStartDate')) $('acStartDate').value = '';
+    });
+  });
+
+  $('btnAcPlus30')?.addEventListener('click', () => {
+    const cur = $('acExpiryDate')?.value || '';
+    const baseMs = (cur && cur >= todayIso) ? new Date(`${cur}T12:00:00+09:00`).getTime() : Date.now();
+    if ($('acExpiryDate')) $('acExpiryDate').value = new Date(baseMs + 30 * 86400 * 1000).toISOString().slice(0, 10);
+  });
+
+  $('btnAcSavePeriod')?.addEventListener('click', () => {
+    syncOverride(null, '');
+    appendAudit('PERIOD_UPDATED', licId, `${displayName} 사용기간 → ${item.startDate || '즉시'} ~ ${item.expiryDate || '영구'}`);
+    navigator.clipboard?.writeText(item.signedUrl);
+    toast(`📅 ${displayName} 사용기간(${item.startDate || '즉시'} ~ ${item.expiryDate || '영구'}) 적용 & 갱신 링크 복사 완료!`);
+    openAuthorityControlModal(licId, isFree);
+  });
+
+  $('btnAcSuspend')?.addEventListener('click', () => {
+    const rsn = $('acReason')?.value.trim() || $('acReasonPreset')?.value || '관리자 직권으로 사용이 중지되었습니다.';
+    syncOverride('suspended', rsn);
+    appendAudit('AUTHORITY_SUSPENDED', licId, `${displayName} 직권 중지 (사유: ${rsn})`);
+    toast(`🚫 ${displayName} 라이선스가 관리자 직권으로 중지되었습니다!`);
+    openAuthorityControlModal(licId, isFree);
+  });
+
+  $('btnAcResume')?.addEventListener('click', () => {
+    syncOverride('active', '');
+    appendAudit('AUTHORITY_RESUMED', licId, `${displayName} 직권 사용 재개`);
+    toast(`▶️ ${displayName} 라이선스가 관리자 직권으로 정상 재개되었습니다!`);
+    openAuthorityControlModal(licId, isFree);
+  });
+
+  $('btnAcRemotePush')?.addEventListener('click', async () => {
+    const btn = $('btnAcRemotePush');
+    if (btn) { btn.disabled = true; btn.textContent = '☁️ 원격 동기화 중…'; }
+    const res = await publishLicenseControlToGithub(reg);
+    if (btn) { btn.disabled = false; btn.textContent = `☁️ 원격 고객 기기 즉시 동기화${rs.token ? ' (토큰 연결됨)' : ''}`; }
+    if (res.ok) {
+      appendAudit('REMOTE_CONTROL_SYNCED', licId, res.msg);
+      toast(`☁️ ${res.msg}`);
+    } else if (res.noToken) {
+      downloadLicenseControlJson(reg);
+      toast('ℹ️ 원격 토큰 미설정: license_control.json 파일을 다운로드했습니다. (자동 동기화는 ⚙️ 토큰 설정에서 1회 입력)');
+    } else {
+      toast(`⚠️ 원격 동기화 실패: ${res.msg}`);
+    }
+  });
+
+  $('btnAcDownloadJson')?.addEventListener('click', () => {
+    downloadLicenseControlJson(reg);
+    toast('📥 license_control.json 다운로드 완료 (data/license_control.json에 반영하세요)');
+  });
+
+  $('btnAcGoSyncCfg')?.addEventListener('click', () => openAdminSalesModal('expert'));
+  $('btnAcPreview')?.addEventListener('click', () => window.open(item.signedUrl, '_blank', 'noopener'));
+  $('btnAcBack')?.addEventListener('click', () => openAdminSalesModal(isFree ? 'free' : 'status'));
+}
+
+// ===== SELLER MASTER CONSOLE (7 TABS: ISSUE · STATUS/CRM · FREE · TAX/API · SELLERS · TOP 10 · AUDIT) =====
 function openAdminSalesModal(tabKey = null) {
   if (S.isBuyerMode) {
     openBuyerAdminModal();
@@ -1588,7 +1942,7 @@ function openAdminSalesModal(tabKey = null) {
             <input id="dPrice" class="input" type="number" min="0" value="${Number(draft.priceMan) || 0}" style="width:100%;margin-top:2px;padding:6px 8px;font-size:12px" />
           </label>
         </div>
-        <div style="display:grid;grid-template-columns:1fr 1fr 130px;gap:6px;margin-bottom:6px">
+        <div style="display:grid;grid-template-columns:1fr 1fr 125px 125px;gap:6px;margin-bottom:6px">
           <label style="font-size:11px;color:var(--muted)">라이선스 코드
             <input id="dLicId" class="input mono" value="${esc(draft.licId)}" style="width:100%;margin-top:2px;padding:6px 8px;font-size:12px" />
           </label>
@@ -1597,9 +1951,20 @@ function openAdminSalesModal(tabKey = null) {
               ${reg.sellers.map((sl) => `<option value="${esc(sl.id)}" ${draft.sellerCode === sl.id ? 'selected' : ''}>${esc(sl.name)} (${sl.commissionPct}%)</option>`).join('')}
             </select>
           </label>
-          <label style="font-size:11px;color:var(--muted)">만료일 (비우면 영구)
+          <label style="font-size:11px;color:var(--muted)">사용 시작일 (비우면 즉시)
+            <input id="dStartDate" class="input" type="date" value="${esc(draft.startDate || '')}" style="width:100%;margin-top:2px;padding:5px 7px;font-size:12px" />
+          </label>
+          <label style="font-size:11px;color:var(--muted)">사용 만료일 (비우면 영구)
             <input id="dExpiry" class="input" type="date" value="${esc(draft.expiryDate || '')}" style="width:100%;margin-top:2px;padding:5px 7px;font-size:12px" />
           </label>
+        </div>
+        <div style="display:flex;gap:5px;align-items:center;flex-wrap:wrap;margin-bottom:6px;font-size:11px;color:var(--muted)">
+          <span>📅 사용기간 빠른 제한:</span>
+          <button type="button" class="btn btn-sm" data-issue-days="7">7일</button>
+          <button type="button" class="btn btn-sm" data-issue-days="30">30일(1개월)</button>
+          <button type="button" class="btn btn-sm" data-issue-days="90">90일(3개월)</button>
+          <button type="button" class="btn btn-sm" data-issue-days="365">1년(365일)</button>
+          <button type="button" class="btn btn-sm" data-issue-days="0">♾️ 영구</button>
         </div>
         <div style="display:grid;grid-template-columns:1.2fr 1fr;gap:6px;margin-bottom:6px">
           <label style="font-size:11px;color:var(--muted)">상단 서브타이틀
@@ -1703,6 +2068,7 @@ function openAdminSalesModal(tabKey = null) {
       draft.sellerCode = $('dSeller')?.value || reg.sellers[0]?.id || 'SLR-001';
       draft.sellerName = reg.sellers.find((x) => x.id === draft.sellerCode)?.name || '본사 직판 (마스터)';
       draft.priceMan = Math.max(0, Number($('dPrice')?.value) || 0);
+      draft.startDate = $('dStartDate')?.value || '';
       draft.expiryDate = $('dExpiry')?.value || '';
       draft.memo = $('dMemo')?.value.trim() || '';
       draft.bizNo = $('dBizNo')?.value.trim() || '';
@@ -1723,6 +2089,16 @@ function openAdminSalesModal(tabKey = null) {
       draft.rbacStrict = eo.rbacStrict !== false;
       draft.expiryMode = eo.expiryMode || 'lock';
     };
+
+    $('adminBody').querySelectorAll('[data-issue-days]').forEach((b) => {
+      b.addEventListener('click', () => {
+        const d = Number(b.dataset.issueDays) || 0;
+        const iso = d > 0 ? addDaysKstIso(d) : '';
+        draft.expiryDate = iso;
+        if ($('dExpiry')) $('dExpiry').value = iso;
+        toast(d > 0 ? `📅 사용 만료일이 ${d}일 뒤(${iso})로 제한되었습니다.` : '♾️ 영구 사용으로 설정되었습니다.');
+      });
+    });
 
     $('admAppLinksMaster')?.addEventListener('change', (e) => {
       const on = e.target.checked;
@@ -1793,7 +2169,9 @@ function openAdminSalesModal(tabKey = null) {
         saleDate: draft.saleDate || todayKst,
         issuedAt: draft.saleDate || todayKst,
         channel: draft.channel || '크몽',
+        startDate: draft.startDate || '',
         expiryDate: draft.expiryDate,
+        suspendReason: '',
         status: 'active',
         resetCount: 0,
         lastResetAt: '',
@@ -1967,11 +2345,11 @@ function openAdminSalesModal(tabKey = null) {
             <td>
               <div style="display:flex;gap:3px;flex-wrap:wrap">
                 <button type="button" class="btn btn-primary btn-sm" data-crm-edit="${esc(x.licId)}" title="고객·입금·세금계산서 수정">✏️ 수정</button>
+                <button type="button" class="btn ${isRev ? 'btn-emerald' : 'btn-rose'} btn-sm" data-crm-auth="${esc(x.licId)}" title="직권 중지 · 직권 재개 · 사용기간 제한">${isRev ? '▶️ 재개·기간' : '🚦 직권·기간'}</button>
                 <button type="button" class="btn btn-sm" data-crm-copy="${esc(x.licId)}" title="판매링크 복사">🔗</button>
                 <button type="button" class="btn btn-amber btn-sm" data-crm-reset="${esc(x.licId)}" title="구매자 비밀번호 admin 초기화">🔑 비번</button>
                 <button type="button" class="btn btn-sm" data-crm-prev="${esc(x.licId)}" title="구매자 미리보기">👁️</button>
                 <button type="button" class="btn btn-sm" data-crm-kit="${esc(x.licId)}" title="납품 키트">📦</button>
-                <button type="button" class="btn btn-sm" data-crm-rev="${esc(x.licId)}" title="${isRev ? '복구' : '정지'}">${isRev ? '▶️' : '⏸️'}</button>
                 <button type="button" class="btn btn-sm" data-crm-del="${esc(x.licId)}" title="삭제">🗑️</button>
               </div>
             </td>
@@ -1979,6 +2357,7 @@ function openAdminSalesModal(tabKey = null) {
       }).join('') || '<tr><td colspan="6" style="text-align:center;padding:24px;color:var(--muted)">조건에 맞는 납품 고객 이력이 없습니다.</td></tr>';
 
       tb.querySelectorAll('[data-crm-edit]').forEach((b) => b.addEventListener('click', () => openCustomerEditModal(b.dataset.crmEdit)));
+      tb.querySelectorAll('[data-crm-auth]').forEach((b) => b.addEventListener('click', () => openAuthorityControlModal(b.dataset.crmAuth, false)));
       tb.querySelectorAll('[data-crm-copy]').forEach((b) => b.addEventListener('click', () => {
         const s = reg.sales.find((x) => x.licId === b.dataset.crmCopy);
         if (s) { navigator.clipboard?.writeText(s.signedUrl); toast(`🔗 ${s.companyName} 판매링크가 복사되었습니다.`); }
@@ -2592,7 +2971,7 @@ export default {
                 <button type="button" class="btn btn-sm" data-fr-copy="${esc(x.licId)}" title="무료 배포 링크 복사">🔗</button>
                 <button type="button" class="btn btn-emerald btn-sm" data-fr-kakao="${esc(x.licId)}" title="카톡 안내문 복사">📱 카톡</button>
                 <button type="button" class="btn btn-sm" data-fr-ext="${esc(x.licId)}" title="만료일 +30일 연장 및 새 링크 복사">📅 +30일</button>
-                <button type="button" class="btn btn-sm" data-fr-rev="${esc(x.licId)}" title="${isRev ? '복구' : '접근 회수(정지)'}">${isRev ? '▶️ 복구' : '⏸️ 회수'}</button>
+                <button type="button" class="btn ${isRev ? 'btn-emerald' : 'btn-rose'} btn-sm" data-fr-auth="${esc(x.licId)}" title="직권 중지 · 재개 · 사용기간 제한">${isRev ? '▶️ 재개·기간' : '🚦 직권·기간'}</button>
                 <button type="button" class="btn btn-primary btn-sm" data-fr-conv="${esc(x.licId)}" title="유료 판매 등록으로 전환">💰 유료전환</button>
                 <button type="button" class="btn btn-sm" data-fr-del="${esc(x.licId)}" title="이력 삭제">🗑️</button>
               </div>
@@ -2641,6 +3020,7 @@ export default {
         openAdminSalesModal('free');
         toast(nextRev ? `🚫 ${r.recipientName} 무료 배포 권한이 회수(정지)되었습니다.` : `▶️ ${r.recipientName} 무료 배포 권한이 복구되었습니다.`);
       }));
+      tb.querySelectorAll('[data-fr-auth]').forEach((b) => b.addEventListener('click', () => openAuthorityControlModal(b.dataset.frAuth, true)));
       tb.querySelectorAll('[data-fr-conv]').forEach((b) => b.addEventListener('click', () => {
         const r = (reg.freeDist || []).find((x) => x.licId === b.dataset.frConv);
         if (!r) return;
@@ -2804,6 +3184,27 @@ export default {
         </div>
       </div>
 
+      <div class="domain-box" style="margin-bottom:10px;border-color:rgba(79,70,229,.35);background:rgba(79,70,229,.04)">
+        <h4 style="margin:0 0 6px">☁️ 원격 직권 중지 · 재개 · 기간변경 동기화 설정 (전 고객 기기 실시간 반영)</h4>
+        <div style="font-size:11px;color:var(--muted);margin-bottom:7px">GitHub Personal Access Token (<code>nx1-p7k9v3</code> Contents Read/Write 권한)을 1회 입력해 두면, 직권 중지·재개·기간변경 시 1클릭으로 <code>data/license_control.json</code>이 전 고객 기기에 원격 반영됩니다. (토큰은 본인 브라우저 로컬에만 저장)</div>
+        <div style="display:grid;grid-template-columns:1fr 90px 1.2fr auto;gap:6px;align-items:end;margin-bottom:6px">
+          <label style="font-size:11px;color:var(--muted)">GitHub 저장소
+            <input id="rsRepo" class="input mono" value="${esc(reg.remoteSync?.repo || 'heebonpark/nx1-p7k9v3')}" style="width:100%;margin-top:2px;font-size:11.5px" />
+          </label>
+          <label style="font-size:11px;color:var(--muted)">브랜치
+            <input id="rsBranch" class="input mono" value="${esc(reg.remoteSync?.branch || 'main')}" style="width:100%;margin-top:2px;font-size:11.5px" />
+          </label>
+          <label style="font-size:11px;color:var(--muted)">GitHub PAT 토큰 (로컬 전용)
+            <input id="rsToken" class="input mono" type="password" value="${esc(reg.remoteSync?.token || '')}" placeholder="github_pat_..." style="width:100%;margin-top:2px;font-size:11.5px" />
+          </label>
+          <button id="btnSaveRs" class="btn btn-primary btn-sm" type="button" style="height:34px">저장</button>
+        </div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap">
+          <button id="btnRsPushNow" class="btn btn-emerald btn-sm" type="button">☁️ 지금 전 고객 기기 원격 동기화</button>
+          <button id="btnRsDownload" class="btn btn-sm" type="button">📥 license_control.json 수동 다운로드</button>
+        </div>
+      </div>
+
       <div class="domain-box">
         <h4 style="margin:0 0 6px">🔐 판매자 마스터 전환 PIN 변경 (구매자 화면에서 Ctrl+Shift+A 복귀용)</h4>
         <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
@@ -2817,6 +3218,33 @@ export default {
       <button id="btnSaveExpertOpts" class="btn btn-primary btn-sm" type="button">✅ TOP 10 전문가 옵션 저장</button>
       <button id="btnResetExpertOpts" class="btn btn-sm" type="button" style="margin-left:auto">↺ 권장 기본값(10개 전체 ON)</button>
     `;
+
+    $('btnSaveRs')?.addEventListener('click', () => {
+      reg.remoteSync = {
+        ...defaultRemoteSyncConfig(),
+        repo: $('rsRepo')?.value.trim() || 'heebonpark/nx1-p7k9v3',
+        branch: $('rsBranch')?.value.trim() || 'main',
+        token: $('rsToken')?.value.trim() || '',
+      };
+      saveSellerRegistry(reg);
+      toast('✅ 원격 직권 제어 동기화 설정이 저장되었습니다.');
+    });
+    $('btnRsPushNow')?.addEventListener('click', async () => {
+      reg.remoteSync = {
+        ...defaultRemoteSyncConfig(),
+        repo: $('rsRepo')?.value.trim() || 'heebonpark/nx1-p7k9v3',
+        branch: $('rsBranch')?.value.trim() || 'main',
+        token: $('rsToken')?.value.trim() || '',
+      };
+      saveSellerRegistry(reg);
+      const res = await publishLicenseControlToGithub(reg);
+      if (res.ok) { appendAudit('REMOTE_CONTROL_SYNCED', 'ALL', res.msg); toast(`☁️ ${res.msg}`); }
+      else toast(`⚠️ ${res.msg}`);
+    });
+    $('btnRsDownload')?.addEventListener('click', () => {
+      downloadLicenseControlJson(reg);
+      toast('📥 license_control.json 다운로드 완료');
+    });
 
     $('btnSaveExpertOpts')?.addEventListener('click', () => {
       $('adminBody').querySelectorAll('[data-exp-opt]').forEach((el) => { eo[el.dataset.expOpt] = el.checked; });
@@ -3595,6 +4023,12 @@ async function unlockAndBoot(key) {
   applyAdminConfig(false);
   if (!renderLicenseLockWallIfNeeded()) {
     renderCurrentTab();
+  }
+  if (S.isBuyerMode) {
+    fetchAndApplyRemoteLicenseControl();
+    if (!window._nxRemotePolicyTimer) {
+      window._nxRemotePolicyTimer = setInterval(fetchAndApplyRemoteLicenseControl, 300000);
+    }
   }
   if (BOOT_CTX.justResetPw) {
     appendAudit('REMOTE_PW_RESET', S.tenantId, '1회용 원격 초기화 링크로 구매자 비밀번호 admin 초기화 완료');

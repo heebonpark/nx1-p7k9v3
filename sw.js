@@ -1,5 +1,5 @@
-const CACHE = 'nexusone-pro-v34';
-const SHELL = ['./', './index.html', './manual.html', './styles.css?v=33', './app.js?v=34', './manifest.json', './vendor/leaflet.css', './vendor/leaflet.min.js'];
+const CACHE = 'nexusone-pro-v35';
+const SHELL = ['./', './index.html', './manual.html', './styles.css?v=35', './app.js?v=35', './manifest.json', './vendor/leaflet.css', './vendor/leaflet.min.js'];
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));

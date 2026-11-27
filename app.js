@@ -1682,7 +1682,7 @@ function openDeliveryKitModal(sale) {
   const pkgInfo = SALES_PACKAGES[sale.pkg] || SALES_PACKAGES.deluxe;
   const tabNames = { overview: '통합 360°', corp: '기업분석(12만)', bid: '입찰·사전규격', sbiz: '상권지도(275만)', realestate: '청약·착공', hub: 'API·CRM' };
   const activeTabs = Object.entries(sale.cfg?.tabs || {}).filter(([, v]) => v).map(([k]) => tabNames[k] || k).join(' · ');
-  const kakaoTxt = `[${sale.brandTitle} ${sale.brandBadge || 'PRO'} 납품 완료 안내]\n• 고객사(시설): ${sale.companyName}${sale.contactName ? ` (${sale.contactName})` : ''}\n• 연락처/이메일: ${sale.phone || '-'} / ${sale.email || '-'}\n• 주소: ${sale.address || '-'}\n• 라이선스: ${sale.licId} (${pkgInfo.label})\n• 판매일자/경로: ${sale.saleDate || sale.issuedAt || '-'} (${sale.channel || '본사직판'})\n• 사용기간: ${sale.expiryDate || '영구 소장'}\n• 전용 접속 링크:\n${sale.signedUrl}\n\n🔐 구매자 자체 관리자 안내\n1) 앱 우측 상단 [🏢 사내관리] 클릭\n2) 초기 비밀번호: admin 입력\n3) 보안을 위해 즉시 새 비밀번호로 변경 후 사용\n• 담당 판매자: ${sale.sellerName || '본사 직판'}`;
+  const kakaoTxt = `[${sale.brandTitle} ${sale.brandBadge || 'PRO'} 납품 완료 안내]\n• 고객사(시설): ${sale.companyName}${sale.contactName ? ` (${sale.contactName})` : ''}\n• 연락처/이메일: ${sale.phone || '-'} / ${sale.email || '-'}\n• 주소: ${sale.address || '-'}\n• 라이선스: ${sale.licId} (${pkgInfo.label})\n• 판매일자/경로: ${sale.saleDate || sale.issuedAt || '-'} (${sale.channel || '본사직판'})\n• 사용기간: ${sale.expiryDate || '영구 소장'}\n• 전용 접속 링크:\n${sale.signedUrl}\n\n🔐 최초 접속 및 관리자 설정 (2단계)\n1) 앱 잠금화면: 별도 보안 채널로 전달받은 [통합 볼트 비밀번호] 입력 (영문 소문자)\n2) 잠금 해제 후 우측 상단 [🏢 사내관리] → 초기 비밀번호 admin 입력 후 새 비밀번호로 변경\n• 담당 판매자: ${sale.sellerName || '본사 직판'}`;
 
   $('adminModalTitle').textContent = `📦 고객 납품 키트 · ${sale.companyName}`;
   $('adminModalSub').textContent = `라이선스 ${sale.licId} · 담당자 ${sale.contactName || '-'} · 카톡 전달 문구 복사 & 확인`;
@@ -10580,16 +10580,53 @@ async function init() {
     } catch {}
   }
 
-  // Manual password submit
+  // Show/hide password toggle & KakaoTalk/Naver in-app browser tip
+  $('lockPwToggle')?.addEventListener('click', () => {
+    const inp = $('lockPw');
+    if (!inp) return;
+    const show = inp.type === 'password';
+    inp.type = show ? 'text' : 'password';
+    $('lockPwToggle').textContent = show ? '🙈' : '👁️';
+    $('lockPwToggle').setAttribute('aria-label', show ? '비밀번호 숨김' : '비밀번호 표시');
+    inp.focus();
+  });
+  if (/KAKAOTALK|NAVER|LINE|FBAN|Instagram/i.test(navigator.userAgent || '')) {
+    const tip = $('lockInAppTip');
+    if (tip) {
+      tip.textContent = '💡 카카오톡 등 인앱 브라우저에서는 우측 메뉴 [⋯ → 다른 브라우저로 열기(Safari/Chrome)]로 접속하시면 로그인 유지 및 대용량 지도 로딩이 가장 안정적입니다.';
+      tip.classList.remove('hidden');
+    }
+  }
+
+  // Manual password submit (auto-trim fallback + role-mistake / IME guidance)
   $('lockForm').addEventListener('submit', async (e) => {
     e.preventDefault();
-    const pw = $('lockPw').value;
+    const rawPw = $('lockPw').value || '';
+    const trimmedPw = rawPw.trim();
     const btn = $('lockBtn'), err = $('lockErr');
+    if (!trimmedPw) {
+      err.textContent = '통합 볼트 비밀번호를 입력해 주세요.';
+      return;
+    }
     btn.disabled = true; btn.textContent = '🔓 PBKDF2 키 유도 및 복호화 중…'; err.textContent = '';
     try {
-      const key = await deriveKey(pw, S.vault.salt, S.vault.iter);
-      if (!await verifyKey(key, S.vault)) {
-        err.textContent = '비밀번호가 일치하지 않습니다.';
+      let key = await deriveKey(rawPw, S.vault.salt, S.vault.iter);
+      let ok = await verifyKey(key, S.vault);
+      if (!ok && trimmedPw !== rawPw) {
+        key = await deriveKey(trimmedPw, S.vault.salt, S.vault.iter);
+        ok = await verifyKey(key, S.vault);
+      }
+      if (!ok) {
+        const low = trimmedPw.toLowerCase();
+        if (low === BUYER_DEFAULT_PW) {
+          err.textContent = '⚠️ "admin"은 잠금 해제 후 우측 상단 [🏢 사내관리]용 초기 비밀번호입니다. 이곳에는 별도 전달받은 통합 볼트 비밀번호(영문 소문자)를 입력하세요.';
+        } else if (low === 'nx1master') {
+          err.textContent = '⚠️ "nx1master"는 마스터 모드 전환 PIN(Ctrl+Shift+A)입니다. 이곳에는 최초 잠금 해제용 통합 볼트 비밀번호를 입력하세요.';
+        } else if (/[ㄱ-ㅎㅏ-ㅣ가-힣]/.test(trimmedPw)) {
+          err.textContent = '⚠️ 한글이 입력되었습니다. 한영키를 영문 소문자로 전환한 뒤 통합 볼트 비밀번호를 입력하세요. (우측 👁️ 버튼으로 입력값 확인)';
+        } else {
+          err.textContent = '비밀번호가 일치하지 않습니다. 영문 대소문자·한영 전환 여부를 우측 👁️ 버튼으로 확인해 주세요.';
+        }
         btn.disabled = false; btn.textContent = '🔐 통합 볼트 잠금 해제';
         return;
       }

@@ -10,7 +10,7 @@
   <link rel="manifest" href="manifest.json" />
   <link rel="icon" type="image/svg+xml" href="icons/icon.svg" />
   <link rel="stylesheet" href="vendor/leaflet.css" />
-  <link rel="stylesheet" href="styles.css?v=33" />
+  <link rel="stylesheet" href="styles.css?v=35" />
 </head>
 <body>
   <!-- ===== UNIFIED VAULT LOCK SCREEN ===== -->
@@ -33,13 +33,17 @@
       </div>
 
       <form id="lockForm">
-        <input id="lockPw" class="lock-input" type="password" placeholder="통합 마스터 비밀번호 입력" autocomplete="current-password" required />
+        <div class="lock-pw-wrap">
+          <input id="lockPw" class="lock-input" type="password" placeholder="통합 볼트 비밀번호 입력 (영문 소문자)" autocomplete="current-password" autocapitalize="none" autocorrect="off" spellcheck="false" required />
+          <button id="lockPwToggle" class="lock-pw-toggle" type="button" title="비밀번호 표시/숨김" aria-label="비밀번호 표시">👁️</button>
+        </div>
         <label class="lock-remember">
           <input id="lockRemember" type="checkbox" checked />
           <span>이 기기에서 로그인 유지 (추출 불가 WebCrypto 키 보관)</span>
         </label>
         <button id="lockBtn" class="lock-btn" type="submit">🔐 통합 볼트 잠금 해제</button>
         <div id="lockErr" class="lock-err"></div>
+        <div id="lockInAppTip" class="lock-inapp-tip hidden"></div>
       </form>
       <div class="lock-foot">PBKDF2-HMAC-SHA256 (310,000회) · 서버 평문 0바이트 · 4대 도메인 원패스 복호화</div>
     </div>
@@ -188,6 +192,6 @@
   <div id="toast" class="toast hidden"></div>
 
   <script src="vendor/leaflet.min.js"></script>
-  <script type="module" src="app.js?v=34"></script>
+  <script type="module" src="app.js?v=35"></script>
 </body>
 </html>

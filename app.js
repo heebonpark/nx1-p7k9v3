@@ -3805,9 +3805,18 @@ const S = {
   mapMetric: 'total',
   rankSort: 'total',
 
-  // Corp filters
+  // Corp filters & v40 Corp Pro GIS Map state
   corpQ: '', corpSd: '', corpType: '', corpTag: '', corpStatus: '', corpRevMin: '', corpSort: 'rev', corpPage: 1,
   corpIndMult: new Map(),
+  corpView: 'map', // map | list
+  corpMapOptOpen: window.innerWidth > 820,
+  corpMapMode: 'cluster', // cluster | pins
+  corpMapBase: 'vbase',
+  corpWms: { cadastral: false, zoning: false, heat: false },
+  corpRadius: 3000,
+  corpRulerMode: false, corpRulerPts: [],
+  corpLeafletMap: null, corpLeafletLayer: null, corpLeafletTile: null, corpLeafletHybrid: null, corpLeafletWms: {}, corpLeafletHeat: null, corpLeafletCatch: null, corpLeafletRuler: null, corpLeafletGps: null,
+  corpCatchment: null,
   // Universal Collapsible Panel / Mobile Bottom-Sheet State (v37)
   ovOptOpen: window.innerWidth > 820,
   ovVizOpen: window.innerWidth > 820,
@@ -3823,6 +3832,15 @@ const S = {
   sbizYmOpen: window.innerWidth > 820,
   reFilterOpen: window.innerWidth > 820,
   reOnlyFit: false,
+  reView: 'map', // map | list
+  reMapOptOpen: window.innerWidth > 820,
+  reMapMode: 'pins', // cluster | pins
+  reMapBase: 'vbase',
+  reWms: { cadastral: false, zoning: false, heat: false },
+  reRadius: 3000,
+  reRulerMode: false, reRulerPts: [],
+  reLeafletMap: null, reLeafletLayer: null, reLeafletTile: null, reLeafletHybrid: null, reLeafletWms: {}, reLeafletHeat: null, reLeafletCatch: null, reLeafletRuler: null, reLeafletGps: null,
+  reCatchment: null,
   hubDiagOpen: window.innerWidth > 820,
   hubTaxOpen: window.innerWidth > 820,
   bidMyKeywords: (() => { try { return localStorage.getItem('nx1_bid_my_kw_v1') || 'CCTV,관제,보안,소방,승강기,시설,경비,미화,전기,통신,보험'; } catch { return 'CCTV,관제,보안,소방,승강기,시설,경비,미화,전기,통신,보험'; } })(),
@@ -4739,6 +4757,16 @@ function renderCurrentTab() {
     S.bidLeafletMap = null;
     S.bidLeafletLayer = null;
   }
+  if (S.tab !== 'corp' && S.corpLeafletMap) {
+    S.corpLeafletMap.remove();
+    S.corpLeafletMap = null;
+    S.corpLeafletLayer = null;
+  }
+  if (S.tab !== 'realestate' && S.reLeafletMap) {
+    S.reLeafletMap.remove();
+    S.reLeafletMap = null;
+    S.reLeafletLayer = null;
+  }
   if (S.tab === 'overview') renderOverview();
   else if (S.tab === 'corp') renderCorpTab();
   else if (S.tab === 'bid') renderBidTab();
@@ -5608,6 +5636,114 @@ function fmtRevEok(won) {
   return `${fmt(Math.round(won / 1e4))}만`;
 }
 
+// ===== SHARED PRO GIS HELPERS (V40: CORP + REALESTATE + BID + SBIZ UNIFIED) =====
+function scatterFromRid(rid, seedStr, spread = 0.014) {
+  const [la, lo] = regionCentroidLatLon(rid);
+  let h = 2166136261;
+  const key = String(seedStr || rid);
+  for (let i = 0; i < key.length; i++) {
+    h ^= key.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  const ang = ((h >>> 0) % 360) * Math.PI / 180;
+  const frac = (((h >>> 10) & 0x3ff) / 1024);
+  const rad = 0.0015 + frac * spread;
+  return [+(la + Math.sin(ang) * rad).toFixed(5), +(lo + Math.cos(ang) * rad * 1.25).toFixed(5)];
+}
+
+function applyDomainBaseMap(map, stateKeys, mode) {
+  if (!map) return;
+  if (S[stateKeys.tile]) { map.removeLayer(S[stateKeys.tile]); S[stateKeys.tile] = null; }
+  if (S[stateKeys.hyb]) { map.removeLayer(S[stateKeys.hyb]); S[stateKeys.hyb] = null; }
+  const { vworld } = getApiKeys();
+  if (mode === 'osm' || !vworld) {
+    S[stateKeys.tile] = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '© OpenStreetMap' }).addTo(map);
+    return;
+  }
+  if (mode === 'vhyb') {
+    S[stateKeys.tile] = L.tileLayer(`https://api.vworld.kr/req/wmts/1.0.0/${encodeURIComponent(vworld)}/Satellite/{z}/{y}/{x}.jpeg`, { maxZoom: 19, attribution: '© VWorld' }).addTo(map);
+    S[stateKeys.hyb] = L.tileLayer(`https://api.vworld.kr/req/wmts/1.0.0/${encodeURIComponent(vworld)}/Hybrid/{z}/{y}/{x}.png`, { maxZoom: 19, zIndex: 260 }).addTo(map);
+  } else if (mode === 'vmidnight') {
+    S[stateKeys.tile] = L.tileLayer(`https://api.vworld.kr/req/wmts/1.0.0/${encodeURIComponent(vworld)}/midnight/{z}/{y}/{x}.png`, { maxZoom: 18, attribution: '© VWorld' }).addTo(map);
+  } else {
+    S[stateKeys.tile] = L.tileLayer(`https://api.vworld.kr/req/wmts/1.0.0/${encodeURIComponent(vworld)}/Base/{z}/{y}/{x}.png`, { maxZoom: 19, attribution: '© VWorld' }).addTo(map);
+  }
+}
+
+function applyDomainWms(map, wmsStoreKey, flags) {
+  if (!map) return;
+  const { vworld } = getApiKeys();
+  const isLocal = /^(127\.0\.0\.1|localhost)$/.test(location.hostname);
+  const dom = (!isLocal && location.origin && /^https?:/.test(location.origin)) ? location.origin : 'https://heebonpark.github.io';
+  for (const k of ['cadastral', 'zoning']) {
+    const cfg = VWORLD_WMS_CFG[k];
+    if (flags[k] && vworld && cfg) {
+      if (!S[wmsStoreKey][k]) {
+        S[wmsStoreKey][k] = L.tileLayer.wms('https://api.vworld.kr/req/wms', {
+          layers: cfg.layers, styles: cfg.styles, format: 'image/png', transparent: true,
+          version: '1.3.0', key: vworld, domain: dom, opacity: cfg.opacity, maxZoom: 20, minZoom: cfg.minZoom, zIndex: 250,
+        }).addTo(map);
+      }
+      if (k === 'cadastral' && map.getZoom() < 15) map.setZoom(15);
+    } else if (S[wmsStoreKey][k]) {
+      map.removeLayer(S[wmsStoreKey][k]);
+      delete S[wmsStoreKey][k];
+    }
+  }
+}
+
+function locateGpsOnDomainMap(map, gpsLayer, zoom, onLocated) {
+  if (!navigator.geolocation) return toast('브라우저에서 GPS 위치 정보를 지원하지 않습니다.');
+  toast('📍 현재 GPS 위치 확인 중…');
+  navigator.geolocation.getCurrentPosition(
+    (pos) => {
+      const { latitude: lat, longitude: lon, accuracy: acc } = pos.coords;
+      S.gpsPos = { lat, lon, acc: acc || 30, ts: Date.now() };
+      if (map) {
+        map.setView([lat, lon], zoom);
+        if (gpsLayer) {
+          gpsLayer.clearLayers();
+          if (acc > 0 && acc <= 3000) L.circle([lat, lon], { radius: acc, color: '#2563eb', fillColor: '#3b82f6', fillOpacity: 0.14, weight: 1.5 }).addTo(gpsLayer);
+          L.marker([lat, lon], {
+            zIndexOffset: 3000,
+            icon: L.divIcon({ className: '', html: '<div class="nx-gps-dot"></div>', iconSize: [16, 16], iconAnchor: [8, 8] }),
+          }).bindTooltip(`📍 내 현재 위치 (±${Math.round(acc || 0)}m)`, { direction: 'top', offset: [0, -10] }).addTo(gpsLayer);
+        }
+      }
+      onLocated?.(lat, lon, acc);
+    },
+    (err) => toast(`📍 GPS 조회 실패: ${err.code === 1 ? '위치 권한을 허용해 주세요.' : err.message}`),
+    { enableHighAccuracy: true, timeout: 10000, maximumAge: 15000 }
+  );
+}
+
+function handleDomainRulerClick(map, rulerLayer, ptsArr, latlng) {
+  ptsArr.push([latlng.lat, latlng.lng]);
+  rulerLayer.clearLayers();
+  ptsArr.forEach((pt, idx) => {
+    L.circleMarker(pt, { radius: 6, color: '#fff', fillColor: idx === 0 ? '#059669' : '#4f46e5', fillOpacity: 1, weight: 2 })
+      .bindTooltip(`${idx + 1}번 지점`, { direction: 'top', offset: [0, -6] }).addTo(rulerLayer);
+  });
+  if (ptsArr.length >= 2) {
+    let totalM = 0;
+    for (let i = 1; i < ptsArr.length; i++) totalM += haversineM(ptsArr[i - 1][0], ptsArr[i - 1][1], ptsArr[i][0], ptsArr[i][1]);
+    const walkMin = Math.max(1, Math.round(totalM / 70));
+    const distLbl = totalM >= 1000 ? `${(totalM / 1000).toFixed(2)}km (도보 약 ${walkMin}분)` : `${Math.round(totalM)}m (도보 약 ${walkMin}분)`;
+    let areaHtml = '';
+    if (ptsArr.length >= 3) {
+      const areaM2 = polygonAreaM2(ptsArr);
+      const pyeong = Math.round(areaM2 / 3.305785);
+      L.polygon(ptsArr, { color: '#4f46e5', fillColor: '#6366f1', fillOpacity: 0.14, weight: 2.5, dashArray: '6 4' }).addTo(rulerLayer);
+      areaHtml = `<div style="margin-top:3px;color:#059669">📐 면적: <b>${fmt(Math.round(areaM2))}㎡</b> (약 <b>${fmt(pyeong)}평</b>)</div>`;
+    } else {
+      L.polyline(ptsArr, { color: '#4f46e5', weight: 3, dashArray: '6 4' }).addTo(rulerLayer);
+    }
+    L.popup({ closeButton: true }).setLatLng(ptsArr[ptsArr.length - 1])
+      .setContent(`<div style="font-size:12.5px;line-height:1.5"><b>📏 누적 거리(${ptsArr.length}점): ${distLbl}</b>${areaHtml}<div style="font-size:10.5px;color:#64748b;margin-top:3px">추가 클릭=연장 · 우클릭=초기화</div></div>`)
+      .openOn(map);
+  }
+}
+
 function renderCorpTab() {
   if (!S.corpLoaded) {
     $('mainStage').innerHTML = `
@@ -5694,6 +5830,9 @@ function renderCorpTab() {
           <p class="card-sub">DART 공시매출 (${fmt(dartCnt)}사) + 국민연금 실급여·업종보정 추정매출 (${fmt(estCnt)}사) · 총 ${fmt(dartCnt + estCnt)}사 매출 분석 지원</p>
         </div>
         <div style="display:flex;gap:6px;flex-wrap:wrap">
+          <button id="btnCorpViewMap" class="btn btn-sm ${S.corpView === 'map' ? 'btn-primary' : ''}" type="button">🗺️ 기업 지도</button>
+          <button id="btnCorpViewList" class="btn btn-sm ${S.corpView === 'list' ? 'btn-primary' : ''}" type="button">📋 리스트만</button>
+          ${S.corpView === 'map' ? `<button id="btnCorpMapOptToggle" class="btn btn-sm ${S.corpMapOptOpen ? 'btn-primary' : ''}" type="button">🎛️ 지도옵션 ${S.corpMapOptOpen ? '▴' : '▾'}</button>` : ''}
           <button id="btnCorpCsv" class="btn btn-emerald btn-sm" type="button">📥 조건결과 CSV</button>
           <button id="btnCorpReset" class="btn btn-sm" type="button">초기화</button>
         </div>
@@ -5785,6 +5924,59 @@ function renderCorpTab() {
           </div>
         </div>
       </div>
+
+      ${S.corpView === 'map' ? `
+        <div id="corpMapOptPanelWrap" class="nx-filter-panel-wrap ${S.corpMapOptOpen ? 'open' : ''}">
+          <div class="nx-sheet-scrim" id="corpMapOptScrim"></div>
+          <div id="corpMapOptDeck" class="gis-deck nx-collapsible-panel ${S.corpMapOptOpen ? '' : 'collapsed'}" style="margin-bottom:10px;padding:7px 11px">
+            <div class="nx-sheet-head">
+              <span>🎛️ 기업분석 GIS 지도 · 전문가 옵션</span>
+              <button type="button" class="icon-btn" id="btnCorpMapOptClose" style="padding:3px 9px">✕</button>
+            </div>
+            <div class="nx-sheet-body">
+              <div class="gis-row">
+                <span class="gis-label">🗺️ 배경지도:</span>
+                ${[['vbase', '브이월드 기본'], ['vhyb', '🛰️ 위성+도로'], ['vmidnight', '🌙 다크'], ['osm', 'OSM']].map(([k, lb]) => `<button class="toggle-pill ${S.corpMapBase === k ? 'on' : ''}" data-cm-base="${k}" type="button">${lb}</button>`).join('')}
+                <button class="toggle-pill ${S.corpWms.heat ? 'on-emerald' : ''}" data-cm-wms="heat" type="button">🔥 매출·밀도 히트맵</button>
+                <button class="toggle-pill ${S.corpWms.cadastral ? 'on-emerald' : ''}" data-cm-wms="cadastral" type="button">📐 연속지적도</button>
+                <button class="toggle-pill ${S.corpWms.zoning ? 'on-emerald' : ''}" data-cm-wms="zoning" type="button">🏙️ 용도지역(산단)</button>
+              </div>
+              <div class="gis-row">
+                <span class="gis-label">📊 표시·전문가:</span>
+                <button class="toggle-pill ${S.corpMapMode === 'cluster' ? 'on' : ''}" data-cm-mode="cluster" type="button">🔵 시군구 매출집계</button>
+                <button class="toggle-pill ${S.corpMapMode === 'pins' ? 'on' : ''}" data-cm-mode="pins" type="button">📍 개별 법인핀(매출비례)</button>
+                <span class="gis-label" style="margin-left:4px">🎯 반경:</span>
+                ${[1000, 3000, 5000, 10000].map((r) => `<button class="toggle-pill ${S.corpRadius === r ? 'on' : ''}" data-cm-rad="${r}" type="button">${r / 1000}km</button>`).join('')}
+                <button class="toggle-pill ${S.corpRulerMode ? 'on' : ''}" id="btnCorpRuler" type="button">📐 거리·면적측정</button>
+                <button id="btnCorpMapFit" class="btn btn-sm" style="margin-left:auto" type="button">🎯 결과 맞춤</button>
+              </div>
+            </div>
+            <div class="nx-sheet-foot">
+              <button type="button" class="btn btn-primary btn-sm" id="btnCorpMapOptDone" style="flex:1">✅ 지도 옵션 적용</button>
+            </div>
+          </div>
+        </div>
+
+        <div style="margin-bottom:12px">
+          <div class="sbiz-map-wrap">
+            <div id="corpMap" class="nx-domain-map-box"></div>
+            <div class="sbiz-map-hud" aria-label="기업 지도 빠른 조작">
+              <button id="hudCorpGps" class="sbiz-hud-btn" type="button" title="현위치 주변 법인·매출 분석">📍</button>
+              <button id="hudCorpCenter" class="sbiz-hud-btn" type="button" title="현재 지도 중심 반경 법인 분석">🎯</button>
+              <button id="hudCorpSat" class="sbiz-hud-btn ${S.corpMapBase === 'vhyb' ? 'on' : ''}" type="button" title="기본도 ↔ 위성+도로 전환">🛰️</button>
+            </div>
+            <button id="btnCorpGpsPill" class="nx-map-gps-pill" type="button">📍 내 현위치</button>
+          </div>
+          <div class="marker-legend">
+            <span class="gis-label">범례:</span>
+            <span class="ml-item"><span class="ml-dot" style="background:#059669"></span>💰 DART 공시매출</span>
+            <span class="ml-item"><span class="ml-dot" style="background:#4f46e5"></span>📊 국민연금 추정매출</span>
+            <span class="ml-item"><span class="ml-dot" style="background:#f59e0b"></span>👑 상장사(금테)</span>
+            <span class="ml-item" style="margin-left:auto;color:var(--muted)">지도 클릭 시 반경 ${S.corpRadius / 1000}km 법인·매출 정밀진단</span>
+          </div>
+          <div id="corpCatchBox"></div>
+        </div>
+      ` : ''}
 
       <div class="table-wrap">
         <table class="data-table">
@@ -5891,6 +6083,250 @@ function renderCorpTab() {
   $('mainStage').querySelectorAll('tr[data-corp-idx]').forEach((tr) => {
     tr.addEventListener('click', () => openCorpDrawer(Number(tr.dataset.corpIdx)));
   });
+
+  // View toggle & Corp GIS Map wiring
+  $('btnCorpViewMap')?.addEventListener('click', () => { S.corpView = 'map'; renderCorpTab(); });
+  $('btnCorpViewList')?.addEventListener('click', () => { S.corpView = 'list'; renderCorpTab(); });
+  const toggleCorpMapOpt = (forceVal) => {
+    S.corpMapOptOpen = typeof forceVal === 'boolean' ? forceVal : !S.corpMapOptOpen;
+    $('corpMapOptPanelWrap')?.classList.toggle('open', S.corpMapOptOpen);
+    $('corpMapOptDeck')?.classList.toggle('collapsed', !S.corpMapOptOpen);
+    const b = $('btnCorpMapOptToggle');
+    if (b) { b.classList.toggle('btn-primary', S.corpMapOptOpen); b.textContent = `🎛️ 지도옵션 ${S.corpMapOptOpen ? '▴' : '▾'}`; }
+  };
+  $('btnCorpMapOptToggle')?.addEventListener('click', () => toggleCorpMapOpt());
+  $('btnCorpMapOptClose')?.addEventListener('click', () => toggleCorpMapOpt(false));
+  $('corpMapOptScrim')?.addEventListener('click', () => toggleCorpMapOpt(false));
+  $('btnCorpMapOptDone')?.addEventListener('click', () => toggleCorpMapOpt(false));
+
+  if (S.corpView === 'map') {
+    window._nxOpenCorp = (idx) => openCorpDrawer(idx);
+    initCorpLeaflet(filtered, corpTypes, inds);
+  } else if (S.corpLeafletMap) {
+    S.corpLeafletMap.remove();
+    S.corpLeafletMap = null;
+  }
+}
+
+function initCorpLeaflet(filtered, corpTypes, inds) {
+  const el = $('corpMap');
+  if (!el || typeof L === 'undefined') return;
+  if (S.corpLeafletMap) { S.corpLeafletMap.remove(); S.corpLeafletMap = null; }
+  S.corpLeafletWms = {};
+  S.corpLeafletHeat = null;
+  S.corpLeafletMap = L.map(el, { preferCanvas: true }).setView([36.4, 127.85], 7);
+  applyDomainBaseMap(S.corpLeafletMap, { tile: 'corpLeafletTile', hyb: 'corpLeafletHybrid' }, S.corpMapBase);
+  S.corpLeafletLayer = L.layerGroup().addTo(S.corpLeafletMap);
+  S.corpLeafletCatch = L.layerGroup().addTo(S.corpLeafletMap);
+  S.corpLeafletRuler = L.layerGroup().addTo(S.corpLeafletMap);
+  S.corpLeafletGps = L.layerGroup().addTo(S.corpLeafletMap);
+  applyDomainWms(S.corpLeafletMap, 'corpLeafletWms', S.corpWms);
+
+  const drawCorpMarkers = (fit = false) => {
+    if (!S.corpLeafletMap || !S.corpLeafletLayer) return;
+    S.corpLeafletLayer.clearLayers();
+    if (S.corpLeafletHeat) { S.corpLeafletMap.removeLayer(S.corpLeafletHeat); S.corpLeafletHeat = null; }
+    const bounds = [];
+
+    if (S.corpWms.heat) {
+      const pts = [];
+      const byRid = new Map();
+      for (const x of filtered) {
+        const rid = x.r[15];
+        if (rid < 0) continue;
+        byRid.set(rid, (byRid.get(rid) || 0) + (x.revInfo.won > 0 ? 2 : 1));
+      }
+      for (const [rid, w] of byRid.entries()) {
+        const [la, lo] = regionCentroidLatLon(rid);
+        pts.push([la, lo, Math.min(4, Math.log10(w + 1))]);
+      }
+      S.corpLeafletHeat = createCanvasHeatLayer(pts).addTo(S.corpLeafletMap);
+    }
+
+    if (S.corpMapMode === 'cluster') {
+      const byRid = new Map();
+      for (const x of filtered) {
+        const rid = x.r[15];
+        if (rid < 0) continue;
+        let g = byRid.get(rid);
+        if (!g) {
+          const [la, lo] = regionCentroidLatLon(rid);
+          const reg = S.fusionByRid.get(rid);
+          g = { rid, name: reg?.fullName || `지역#${rid}`, la, lo, cnt: 0, revEok: 0, dart: 0, listed: 0, top: [] };
+          byRid.set(rid, g);
+        }
+        g.cnt++;
+        if (x.revInfo.won > 0) g.revEok += x.revInfo.won / 1e8;
+        if (x.revInfo.kind === 'dart') g.dart++;
+        if (x.r[5] <= 1) g.listed++;
+        if (g.top.length < 6) g.top.push(x);
+      }
+      for (const g of byRid.values()) {
+        bounds.push([g.la, g.lo]);
+        const sz = g.cnt >= 1000 ? 38 : g.cnt >= 300 ? 32 : g.cnt >= 50 ? 26 : 22;
+        const bg = g.revEok >= 50000 ? '#059669' : g.revEok >= 5000 ? '#4f46e5' : '#6366f1';
+        const icon = L.divIcon({
+          className: '',
+          html: `<div class="nx-bid-pin ${g.listed > 0 ? 'early-ring' : ''}" style="width:${sz}px;height:${sz}px;background:${bg}">${g.cnt >= 1000 ? `${(g.cnt / 1000).toFixed(1)}k` : g.cnt}</div>`,
+          iconSize: [sz, sz], iconAnchor: [sz / 2, sz / 2],
+        });
+        const mk = L.marker([g.la, g.lo], { icon });
+        mk.bindTooltip(`<b>${esc(g.name)}</b> · ${fmt(g.cnt)}사 · 합산매출 ${g.revEok >= 10000 ? `${fmtDec(g.revEok / 10000, 1)}조` : `${fmt(Math.round(g.revEok))}억`}`, { direction: 'top' });
+        mk.bindPopup(() => `
+          <div style="min-width:240px;max-width:300px;font-size:12px;line-height:1.45">
+            <div style="font-weight:800;font-size:13.5px;margin-bottom:4px">🏢 ${esc(g.name)} (${fmt(g.cnt)}사)</div>
+            <div style="font-size:11.5px;color:#475569;margin-bottom:6px">DART 공시 ${fmt(g.dart)}사 · 상장 ${fmt(g.listed)}사 · 합산매출 <b>${g.revEok >= 10000 ? `${fmtDec(g.revEok / 10000, 1)}조원` : `${fmt(Math.round(g.revEok))}억원`}</b></div>
+            <div class="nx-pop-list">${g.top.map((x) => `<div class="nx-pop-row" style="cursor:pointer" onclick="window._nxOpenCorp(${x.i})"><span style="font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(x.r[0])}</span><b style="color:${x.revInfo.kind === 'dart' ? '#059669' : '#4f46e5'};flex-shrink:0">${x.revInfo.won ? fmtRevEok(x.revInfo.won) : '-'}</b></div>`).join('')}</div>
+          </div>`, { maxWidth: 320 });
+        mk.on('click', (ev) => { S._justClickedCorpMk = true; L.DomEvent.stopPropagation(ev); });
+        mk.addTo(S.corpLeafletLayer);
+      }
+    } else {
+      const cap = Math.min(filtered.length, 600);
+      for (let k = 0; k < cap; k++) {
+        const x = filtered[k];
+        if (x.r[15] < 0) continue;
+        const [la, lo] = scatterFromRid(x.r[15], x.bizClean || x.r[0]);
+        bounds.push([la, lo]);
+        const isDart = x.revInfo.kind === 'dart';
+        const isListed = x.r[5] <= 1;
+        const rPx = x.revInfo.won >= 1000e8 ? 9 : x.revInfo.won >= 100e8 ? 7 : 5.5;
+        const mk = L.circleMarker([la, lo], {
+          radius: rPx,
+          color: isListed ? '#f59e0b' : '#ffffff',
+          fillColor: isDart ? '#059669' : (x.revInfo.won > 0 ? '#4f46e5' : '#64748b'),
+          fillOpacity: 0.9, weight: isListed ? 2.4 : 1.5,
+        });
+        mk.bindTooltip(`<b>${esc(x.r[0])}</b> · ${x.revInfo.won ? fmtRevEok(x.revInfo.won) : '-'} · ${esc(inds[x.r[12]] || '')}`, { direction: 'top' });
+        mk.on('click', (ev) => { S._justClickedCorpMk = true; L.DomEvent.stopPropagation(ev); openCorpDrawer(x.i); });
+        mk.addTo(S.corpLeafletLayer);
+      }
+    }
+    if (fit && bounds.length) S.corpLeafletMap.fitBounds(bounds, { maxZoom: 12, padding: [24, 24] });
+  };
+
+  const runCorpCatchment = async (lat, lon, label = '선택 지점') => {
+    const rad = S.corpRadius;
+    S.corpLeafletCatch.clearLayers();
+    L.circle([lat, lon], { radius: rad, color: '#4f46e5', fillColor: '#6366f1', fillOpacity: 0.13, weight: 2, dashArray: '5 4' }).addTo(S.corpLeafletCatch);
+    L.marker([lat, lon], {
+      zIndexOffset: 2500,
+      icon: L.divIcon({ className: '', html: '<div style="width:16px;height:16px;border-radius:50%;background:#4f46e5;border:3px solid #fff;box-shadow:0 0 0 4px rgba(79,70,229,.3)"></div>', iconSize: [16, 16], iconAnchor: [8, 8] }),
+    }).addTo(S.corpLeafletCatch);
+
+    // Match all filtered corps whose sigungu centroid is within radius (or nearest sigungu if rad is small)
+    const nearbyRids = new Set();
+    for (const r of (S.fusion?.regions || [])) {
+      const [rLa, rLo] = regionCentroidLatLon(r.rid);
+      if (haversineM(lat, lon, rLa, rLo) <= Math.max(rad, 5000)) nearbyRids.add(r.rid);
+    }
+    if (!nearbyRids.size && S.fusion?.regions?.length) {
+      let bestRid = 0, bestD = Infinity;
+      for (const r of S.fusion.regions) {
+        const [rLa, rLo] = regionCentroidLatLon(r.rid);
+        const d = haversineM(lat, lon, rLa, rLo);
+        if (d < bestD) { bestD = d; bestRid = r.rid; }
+      }
+      nearbyRids.add(bestRid);
+    }
+    const hits = filtered.filter((x) => nearbyRids.has(x.r[15]));
+    const sumEok = hits.reduce((a, x) => a + (x.revInfo.won > 0 ? x.revInfo.won / 1e8 : 0), 0);
+    const dartH = hits.filter((x) => x.revInfo.kind === 'dart').length;
+    const listedH = hits.filter((x) => x.r[5] <= 1).length;
+    const top5 = [...hits].sort((a, b) => (b.revInfo.won || 0) - (a.revInfo.won || 0)).slice(0, 5);
+
+    const renderBox = (vw) => {
+      const box = $('corpCatchBox');
+      if (!box) return;
+      box.innerHTML = `
+        <div class="catchment-card" style="margin-top:10px">
+          <div class="card-head" style="margin-bottom:8px">
+            <div>
+              <h3 class="card-title">🏢 반경 ${rad / 1000}km 기업 생태계 정밀 진단 (${esc(label)})</h3>
+              <p class="card-sub">${vw ? `📍 <b>${esc(vw.addr)}</b> · 용도지역 <b>${esc(vw.zoning)}</b> · 공시지가 <b>${esc(vw.jiga)}</b>` : `📍 좌표 (${lat.toFixed(4)}, ${lon.toFixed(4)}) · 브이월드 용도지역·공시지가 조회 중…`}</p>
+            </div>
+            <div style="display:flex;gap:5px;flex-wrap:wrap">
+              <a class="btn btn-sm" href="https://map.kakao.com/link/roadview/${lat.toFixed(6)},${lon.toFixed(6)}" target="_blank" rel="noopener">🗺️ 로드뷰 ↗</a>
+              <button id="btnCorpCatchCsv" class="btn btn-emerald btn-sm" type="button">📥 반경 법인 CSV (${fmt(hits.length)})</button>
+            </div>
+          </div>
+          <div class="quant-strip" style="margin-bottom:8px">
+            <div class="quant-box"><div class="q-lbl">반경 권역 법인</div><div class="q-val" style="color:var(--c-corp)">${fmt(hits.length)}사</div><div class="q-sub">상장 ${fmt(listedH)}사</div></div>
+            <div class="quant-box"><div class="q-lbl">DART 공시법인</div><div class="q-val" style="color:var(--c-sbiz)">${fmt(dartH)}사</div><div class="q-sub">재무 3개년</div></div>
+            <div class="quant-box"><div class="q-lbl">합산 매출 규모</div><div class="q-val">${sumEok >= 10000 ? `${fmtDec(sumEok / 10000, 1)}조` : `${fmt(Math.round(sumEok))}억`}</div><div class="q-sub">공시+추정</div></div>
+            <div class="quant-box"><div class="q-lbl">용도지역 / 지가</div><div class="q-val" style="font-size:13px">${esc(vw?.zoning || '조회중')}</div><div class="q-sub">${vw?.pyeongMan ? `평당 ${fmt(vw.pyeongMan)}만` : '-'}</div></div>
+          </div>
+          ${top5.length ? `<div style="display:grid;gap:4px">${top5.map((x, idx) => `<div style="display:flex;justify-content:space-between;align-items:center;font-size:12px;padding:4px 0;border-bottom:1px dashed var(--border);cursor:pointer" data-cc-open="${x.i}"><span><b>${idx + 1}. ${esc(x.r[0])}</b> <span style="color:var(--muted)">(${esc(inds[x.r[12]] || '-')})</span></span><b style="color:${x.revInfo.kind === 'dart' ? '#059669' : '#4f46e5'}">${x.revInfo.won ? fmtRevEok(x.revInfo.won) : '-'}</b></div>`).join('')}</div>` : ''}
+        </div>`;
+      box.querySelectorAll('[data-cc-open]').forEach((el) => el.addEventListener('click', () => openCorpDrawer(Number(el.dataset.ccOpen))));
+      $('btnCorpCatchCsv')?.addEventListener('click', () => {
+        downloadCsv(`기업반경_${rad / 1000}km_${getTodayKstIso()}.csv`, ['기업명', '시장', '대표자', '사업자번호', '업종', '매출(억)', '구분', '주소'],
+          hits.slice(0, 3000).map((x) => [x.r[0], corpTypes[x.r[5]] || '기타', x.r[4] || '', x.r[6] || '', inds[x.r[12]] || '', x.revInfo.won ? +(x.revInfo.won / 1e8).toFixed(1) : '', x.revInfo.label || '-', x.r[7] || '']));
+        toast(`📥 반경 권역 법인 ${fmt(Math.min(hits.length, 3000))}사 CSV 다운로드 완료!`);
+      });
+    };
+    renderBox(null);
+    try { renderBox(await queryVworldPoint(lon.toFixed(6), lat.toFixed(6))); } catch {}
+  };
+
+  drawCorpMarkers(Boolean(S.corpSd || S.corpQ));
+
+  S.corpLeafletMap.on('contextmenu', () => {
+    if (S.corpRulerMode && S.corpRulerPts.length) { S.corpRulerPts = []; S.corpLeafletRuler.clearLayers(); toast('🧹 측정 초기화'); }
+  });
+  S.corpLeafletMap.on('click', (e) => {
+    if (S._justClickedCorpMk) { S._justClickedCorpMk = false; return; }
+    if (S.corpRulerMode) { handleDomainRulerClick(S.corpLeafletMap, S.corpLeafletRuler, S.corpRulerPts, e.latlng); return; }
+    runCorpCatchment(e.latlng.lat, e.latlng.lng, '지도 선택 지점');
+  });
+
+  const doCorpGps = () => locateGpsOnDomainMap(S.corpLeafletMap, S.corpLeafletGps, 12, (la, lo) => runCorpCatchment(la, lo, '내 현재 위치'));
+  $('hudCorpGps')?.addEventListener('click', doCorpGps);
+  $('btnCorpGpsPill')?.addEventListener('click', doCorpGps);
+  $('hudCorpCenter')?.addEventListener('click', () => { const c = S.corpLeafletMap.getCenter(); runCorpCatchment(c.lat, c.lng, '지도 중심'); });
+  $('hudCorpSat')?.addEventListener('click', () => {
+    S.corpMapBase = S.corpMapBase === 'vhyb' ? 'vbase' : 'vhyb';
+    $('hudCorpSat')?.classList.toggle('on', S.corpMapBase === 'vhyb');
+    $('mainStage').querySelectorAll('[data-cm-base]').forEach((x) => x.classList.toggle('on', x.dataset.cmBase === S.corpMapBase));
+    applyDomainBaseMap(S.corpLeafletMap, { tile: 'corpLeafletTile', hyb: 'corpLeafletHybrid' }, S.corpMapBase);
+  });
+  $('mainStage').querySelectorAll('[data-cm-base]').forEach((b) => {
+    b.addEventListener('click', () => {
+      S.corpMapBase = b.dataset.cmBase;
+      $('mainStage').querySelectorAll('[data-cm-base]').forEach((x) => x.classList.toggle('on', x.dataset.cmBase === S.corpMapBase));
+      $('hudCorpSat')?.classList.toggle('on', S.corpMapBase === 'vhyb');
+      applyDomainBaseMap(S.corpLeafletMap, { tile: 'corpLeafletTile', hyb: 'corpLeafletHybrid' }, S.corpMapBase);
+    });
+  });
+  $('mainStage').querySelectorAll('[data-cm-wms]').forEach((b) => {
+    b.addEventListener('click', () => {
+      const k = b.dataset.cmWms;
+      S.corpWms[k] = !S.corpWms[k];
+      b.classList.toggle('on-emerald', S.corpWms[k]);
+      if (k === 'heat') drawCorpMarkers(false);
+      else applyDomainWms(S.corpLeafletMap, 'corpLeafletWms', S.corpWms);
+    });
+  });
+  $('mainStage').querySelectorAll('[data-cm-mode]').forEach((b) => {
+    b.addEventListener('click', () => {
+      S.corpMapMode = b.dataset.cmMode;
+      $('mainStage').querySelectorAll('[data-cm-mode]').forEach((x) => x.classList.toggle('on', x.dataset.cmMode === S.corpMapMode));
+      drawCorpMarkers(false);
+    });
+  });
+  $('mainStage').querySelectorAll('[data-cm-rad]').forEach((b) => {
+    b.addEventListener('click', () => {
+      S.corpRadius = Number(b.dataset.cmRad) || 3000;
+      $('mainStage').querySelectorAll('[data-cm-rad]').forEach((x) => x.classList.toggle('on', Number(x.dataset.cmRad) === S.corpRadius));
+      toast(`🎯 기업 반경분석 기준: ${S.corpRadius / 1000}km`);
+    });
+  });
+  $('btnCorpRuler')?.addEventListener('click', (e) => {
+    S.corpRulerMode = !S.corpRulerMode; S.corpRulerPts = []; S.corpLeafletRuler?.clearLayers();
+    e.currentTarget.classList.toggle('on', S.corpRulerMode);
+    toast(S.corpRulerMode ? '📐 거리·면적측정 ON (우클릭=초기화)' : '📐 거리·면적측정 OFF');
+  });
+  $('btnCorpMapFit')?.addEventListener('click', () => drawCorpMarkers(true));
 }
 
 function openCorpDrawer(idx) {
@@ -6465,7 +6901,14 @@ function renderBidMapWorkspace() {
 
     <div class="bid-workspace">
       <div>
-        <div id="bidLeafletBox" class="leaflet-box"></div>
+        <div class="sbiz-map-wrap">
+          <div id="bidLeafletBox" class="leaflet-box"></div>
+          <div class="sbiz-map-hud" aria-label="입찰 지도 빠른 조작">
+            <button id="hudBidGps" class="sbiz-hud-btn" type="button" title="내 현위치 주변 입찰 공고 보기">📍</button>
+            <button id="hudBidSat" class="sbiz-hud-btn ${S.bidMapBase === 'vhyb' ? 'on' : ''}" type="button" title="기본도 ↔ 위성+도로 전환">🛰️</button>
+          </div>
+          <button id="btnBidGpsPill" class="nx-map-gps-pill" type="button">📍 내 현위치</button>
+        </div>
         <div class="marker-legend">
           <span class="gis-label">범례:</span>
           <span class="ml-item"><span class="ml-dot" style="background:#7c3aed"></span>🔭 사전규격(조기포착)</span>
@@ -6488,6 +6931,26 @@ function renderBidMapWorkspace() {
 
   initBidLeaflet();
   wireBidFilterControls(updateBidMapAndList);
+
+  const doBidGps = () => {
+    if (!S.bidLeafletMap) return;
+    if (!S.bidLeafletGps) S.bidLeafletGps = L.layerGroup().addTo(S.bidLeafletMap);
+    locateGpsOnDomainMap(S.bidLeafletMap, S.bidLeafletGps, 12, (la, lo) => {
+      S.bidMapMode = 'pins';
+      $('bidBody')?.querySelectorAll('[data-bm-mode]').forEach((x) => x.classList.toggle('on', x.dataset.bmMode === 'pins'));
+      updateBidMapAndList(false);
+      S.bidLeafletMap?.setView([la, lo], 12);
+      toast('📍 내 현위치 기준 주변 입찰·사전규격·인허가 공고를 표시했습니다!');
+    });
+  };
+  $('hudBidGps')?.addEventListener('click', doBidGps);
+  $('btnBidGpsPill')?.addEventListener('click', doBidGps);
+  $('hudBidSat')?.addEventListener('click', () => {
+    S.bidMapBase = S.bidMapBase === 'vhyb' ? 'vbase' : 'vhyb';
+    $('hudBidSat')?.classList.toggle('on', S.bidMapBase === 'vhyb');
+    $('bidBody')?.querySelectorAll('[data-bm-base]').forEach((x) => x.classList.toggle('on', x.dataset.bmBase === S.bidMapBase));
+    applyBidBaseMap();
+  });
 
   $('bidBody').querySelectorAll('[data-bm-base]').forEach((b) => {
     b.addEventListener('click', () => {
@@ -8662,6 +9125,7 @@ function renderSbizTab() {
               <button id="hudSbizExpand" class="sbiz-hud-btn ${S.sbizMapExpanded ? 'on' : ''}" type="button" title="지도 화면 확장/축소">⛶</button>
             </div>
             <div id="sbizGpsStatusChip" class="nx-gps-status-chip ${S.gpsPos ? '' : 'hidden'}"></div>
+            <button id="btnSbizGpsPill" class="nx-map-gps-pill" type="button">📍 내 현위치</button>
           </div>
           <div id="sbizMarkerLegend" class="marker-legend"></div>
         </div>
@@ -8809,6 +9273,7 @@ function renderSbizTab() {
   $('btnSbizGps')?.addEventListener('click', () => locateAndAnalyzeGps({ autoLoadSido: true }));
   $('btnSbizQuickGpsBanner')?.addEventListener('click', () => locateAndAnalyzeGps({ autoLoadSido: true }));
   $('hudSbizGps')?.addEventListener('click', () => locateAndAnalyzeGps({ autoLoadSido: true }));
+  $('btnSbizGpsPill')?.addEventListener('click', () => locateAndAnalyzeGps({ autoLoadSido: true }));
   $('btnSbizTrack')?.addEventListener('click', toggleGpsWatch);
   $('hudSbizTrack')?.addEventListener('click', toggleGpsWatch);
   $('hudSbizCenter')?.addEventListener('click', () => {
@@ -10126,9 +10591,14 @@ function renderRealEstateTab() {
       <div class="card-head">
         <div>
           <h2 class="card-title">🏠 부동산 · 청약 · 분양가 · 착공 PRO</h2>
-          <p class="card-sub">청약홈 6종 실시간 API · 내 청약가점/예산 적합도 · 지자체 착공 + 국토부 건축인허가 통합</p>
+          <p class="card-sub">청약홈 6종 실시간 API · 분양/착공 GIS 지도 · 내 청약가점/예산 적합도 · 국토부 건축인허가 통합</p>
         </div>
-        <button id="btnReRefresh" class="btn btn-rose btn-sm" type="button">🔄 청약홈 6종 API 새로고침</button>
+        <div style="display:flex;gap:5px;flex-wrap:wrap">
+          <button id="btnReViewMap" class="btn btn-sm ${S.reView === 'map' ? 'btn-primary' : ''}" type="button">🗺️ 분양·착공 지도</button>
+          <button id="btnReViewList" class="btn btn-sm ${S.reView === 'list' ? 'btn-primary' : ''}" type="button">📋 리스트만</button>
+          ${S.reView === 'map' ? `<button id="btnReMapOptToggle" class="btn btn-sm ${S.reMapOptOpen ? 'btn-primary' : ''}" type="button">🎛️ 지도옵션 ${S.reMapOptOpen ? '▴' : '▾'}</button>` : ''}
+          <button id="btnReRefresh" class="btn btn-rose btn-sm" type="button">🔄 청약홈 새로고침</button>
+        </div>
       </div>
 
       <div class="chips nx-swipe-chips" style="margin-bottom:8px">
@@ -10182,9 +10652,76 @@ function renderRealEstateTab() {
           </div>
         </div>` : ''}
 
+      ${S.reView === 'map' ? `
+        <div id="reMapOptPanelWrap" class="nx-filter-panel-wrap ${S.reMapOptOpen ? 'open' : ''}">
+          <div class="nx-sheet-scrim" id="reMapOptScrim"></div>
+          <div id="reMapOptDeck" class="gis-deck nx-collapsible-panel ${S.reMapOptOpen ? '' : 'collapsed'}" style="margin-bottom:10px;padding:7px 11px">
+            <div class="nx-sheet-head">
+              <span>🎛️ 청약·착공 GIS 지도 · 전문가 옵션</span>
+              <button type="button" class="icon-btn" id="btnReMapOptClose" style="padding:3px 9px">✕</button>
+            </div>
+            <div class="nx-sheet-body">
+              <div class="gis-row">
+                <span class="gis-label">🗺️ 배경지도:</span>
+                ${[['vbase', '브이월드 기본'], ['vhyb', '🛰️ 위성+도로'], ['vmidnight', '🌙 다크'], ['osm', 'OSM']].map(([k, lb]) => `<button class="toggle-pill ${S.reMapBase === k ? 'on' : ''}" data-rm-base="${k}" type="button">${lb}</button>`).join('')}
+                <button class="toggle-pill ${S.reWms.heat ? 'on-emerald' : ''}" data-rm-wms="heat" type="button">🔥 공급 밀도 히트맵</button>
+                <button class="toggle-pill ${S.reWms.cadastral ? 'on-emerald' : ''}" data-rm-wms="cadastral" type="button">📐 연속지적도</button>
+                <button class="toggle-pill ${S.reWms.zoning ? 'on-emerald' : ''}" data-rm-wms="zoning" type="button">🏙️ 용도지역(주거·정비)</button>
+              </div>
+              <div class="gis-row">
+                <span class="gis-label">📊 표시·전문가:</span>
+                <button class="toggle-pill ${S.reMapMode === 'pins' ? 'on' : ''}" data-rm-mode="pins" type="button">📍 개별 단지·현장핀</button>
+                <button class="toggle-pill ${S.reMapMode === 'cluster' ? 'on' : ''}" data-rm-mode="cluster" type="button">🔵 시군구 공급집계</button>
+                <span class="gis-label" style="margin-left:4px">🎯 반경:</span>
+                ${[1000, 3000, 5000, 10000].map((r) => `<button class="toggle-pill ${S.reRadius === r ? 'on' : ''}" data-rm-rad="${r}" type="button">${r / 1000}km</button>`).join('')}
+                <button class="toggle-pill ${S.reRulerMode ? 'on' : ''}" id="btnReRuler" type="button">📐 거리·면적측정</button>
+                <button id="btnReMapFit" class="btn btn-sm" style="margin-left:auto" type="button">🎯 결과 맞춤</button>
+              </div>
+            </div>
+            <div class="nx-sheet-foot">
+              <button type="button" class="btn btn-primary btn-sm" id="btnReMapOptDone" style="flex:1">✅ 지도 옵션 적용</button>
+            </div>
+          </div>
+        </div>
+
+        <div style="margin-bottom:12px">
+          <div class="sbiz-map-wrap">
+            <div id="reMap" class="nx-domain-map-box"></div>
+            <div class="sbiz-map-hud" aria-label="청약착공 지도 빠른 조작">
+              <button id="hudReGps" class="sbiz-hud-btn" type="button" title="현위치 주변 분양·착공 공급 진단">📍</button>
+              <button id="hudReCenter" class="sbiz-hud-btn" type="button" title="현재 지도 중심 반경 공급 진단">🎯</button>
+              <button id="hudReSat" class="sbiz-hud-btn ${S.reMapBase === 'vhyb' ? 'on' : ''}" type="button" title="기본도 ↔ 위성+도로 전환">🛰️</button>
+            </div>
+            <button id="btnReGpsPill" class="nx-map-gps-pill" type="button">📍 내 현위치</button>
+          </div>
+          <div class="marker-legend">
+            <span class="gis-label">범례:</span>
+            <span class="ml-item"><span class="ml-dot" style="background:#e11d48"></span>🏢 APT 분양 (초록테=내조건적합)</span>
+            <span class="ml-item"><span class="ml-dot" style="background:#d97706"></span>🎯 무순위·오피스텔</span>
+            <span class="ml-item"><span class="ml-dot" style="background:#7c3aed"></span>🏗️ 착공·건축인허가</span>
+            <span class="ml-item"><span class="ml-dot" style="background:#059669"></span>🏘️ K-apt 기축단지</span>
+          </div>
+          <div id="reCatchBox"></div>
+        </div>
+      ` : ''}
+
       <div id="reBody"></div>
     </div>
   `;
+
+  $('btnReViewMap')?.addEventListener('click', () => { S.reView = 'map'; renderRealEstateTab(); });
+  $('btnReViewList')?.addEventListener('click', () => { S.reView = 'list'; renderRealEstateTab(); });
+  const toggleReMapOpt = (forceVal) => {
+    S.reMapOptOpen = typeof forceVal === 'boolean' ? forceVal : !S.reMapOptOpen;
+    $('reMapOptPanelWrap')?.classList.toggle('open', S.reMapOptOpen);
+    $('reMapOptDeck')?.classList.toggle('collapsed', !S.reMapOptOpen);
+    const b = $('btnReMapOptToggle');
+    if (b) { b.classList.toggle('btn-primary', S.reMapOptOpen); b.textContent = `🎛️ 지도옵션 ${S.reMapOptOpen ? '▴' : '▾'}`; }
+  };
+  $('btnReMapOptToggle')?.addEventListener('click', () => toggleReMapOpt());
+  $('btnReMapOptClose')?.addEventListener('click', () => toggleReMapOpt(false));
+  $('reMapOptScrim')?.addEventListener('click', () => toggleReMapOpt(false));
+  $('btnReMapOptDone')?.addEventListener('click', () => toggleReMapOpt(false));
 
   const toggleReFilter = (forceVal) => {
     S.reFilterOpen = typeof forceVal === 'boolean' ? forceVal : !S.reFilterOpen;
@@ -10215,6 +10752,250 @@ function renderRealEstateTab() {
   $('btnReRefresh')?.addEventListener('click', refreshLiveRealEstate);
 
   renderReSubBody();
+  if (S.reView === 'map') {
+    initReLeaflet();
+  } else if (S.reLeafletMap) {
+    S.reLeafletMap.remove();
+    S.reLeafletMap = null;
+  }
+}
+
+function getReMapItems() {
+  const q = S.reQ.trim().toLowerCase();
+  const out = [];
+  const pushGeo = (obj, seed) => {
+    let lat = obj.lat || 0, lon = obj.lon || 0;
+    const rid = matchOppRid({ title: obj.name, org: obj.builder, region: `${obj.area || ''} ${obj.addr || ''}` });
+    if ((!lat || !lon) && rid >= 0) [lat, lon] = scatterFromRid(rid, seed, 0.015);
+    if (lat && lon) out.push({ ...obj, rid, lat, lon });
+  };
+  for (const l of (S.re.listings || [])) {
+    if (q && !`${l.name} ${l.addr} ${l.area} ${l.builder}`.toLowerCase().includes(q)) continue;
+    const minEok = l.minPriceMan ? l.minPriceMan / 10000 : (l.maxPriceMan ? l.maxPriceMan / 10000 : 0);
+    const cut = l.minScore || l.avgScore || 0;
+    const isFit = (!minEok || minEok <= S.myBudgetEok) && (!cut || S.myScore >= cut);
+    if (S.reOnlyFit && !isFit) continue;
+    pushGeo({
+      id: l.id, kind: l.kind === 'apt' ? 'apt' : 'remndr', name: l.name, addr: l.addr || l.area || '',
+      area: l.area || '', builder: l.builder || '', units: Number(l.units) || 0, minEok, isFit,
+      sub: `${l.builder || '-'} · ${fmt(l.units || 0)}세대${minEok ? ` · ${fmtDec(minEok, 1)}억~` : ''}`,
+      url: l.url || '',
+    }, l.id || l.name);
+  }
+  for (const s of (S.re.starts || [])) {
+    if (q && !`${s.name} ${s.addr} ${s.builder} ${s.source}`.toLowerCase().includes(q)) continue;
+    pushGeo({
+      id: `st:${s.name}`, kind: 'starts', name: s.name, addr: s.addr || '', area: s.source || '',
+      builder: s.builder || '', units: 0, minEok: 0, isFit: false, sub: `${s.source || '착공'} · ${s.usage || ''}`,
+      lat: s.lat, lon: s.lon,
+    }, s.name + s.addr);
+  }
+  for (const o of S.opps.filter((x) => x.stageType === 'permit')) {
+    if (q && !`${o.title} ${o.region} ${o.org}`.toLowerCase().includes(q)) continue;
+    pushGeo({
+      id: o.id, kind: 'starts', name: o.title, addr: o._regionFull || o.region || '', area: o.region || '',
+      builder: o.org || '', units: 0, minEok: 0, isFit: false, sub: `건축인허가 · ${o.org || ''}`,
+      lat: o.lat, lon: o.lon,
+    }, o.id);
+  }
+  for (const c of (S.re.complexes || [])) {
+    if (q && !`${c.name} ${c.addr} ${c.area}`.toLowerCase().includes(q)) continue;
+    pushGeo({
+      id: `kp:${c.name}`, kind: 'kapt', name: c.name, addr: c.addr || '', area: c.area || '',
+      builder: c.builder || '', units: Number(c.units) || 0, minEok: 0, isFit: false,
+      sub: `K-apt 기축 · ${fmt(c.units || 0)}세대`, lat: c.lat, lon: c.lon,
+    }, c.name + c.addr);
+  }
+  return out;
+}
+
+function initReLeaflet() {
+  const el = $('reMap');
+  if (!el || typeof L === 'undefined') return;
+  if (S.reLeafletMap) { S.reLeafletMap.remove(); S.reLeafletMap = null; }
+  S.reLeafletWms = {};
+  S.reLeafletHeat = null;
+  S.reLeafletMap = L.map(el, { preferCanvas: true }).setView([36.8, 127.6], 7);
+  applyDomainBaseMap(S.reLeafletMap, { tile: 'reLeafletTile', hyb: 'reLeafletHybrid' }, S.reMapBase);
+  S.reLeafletLayer = L.layerGroup().addTo(S.reLeafletMap);
+  S.reLeafletCatch = L.layerGroup().addTo(S.reLeafletMap);
+  S.reLeafletRuler = L.layerGroup().addTo(S.reLeafletMap);
+  S.reLeafletGps = L.layerGroup().addTo(S.reLeafletMap);
+  applyDomainWms(S.reLeafletMap, 'reLeafletWms', S.reWms);
+
+  const items = getReMapItems();
+  const colMap = { apt: '#e11d48', remndr: '#d97706', starts: '#7c3aed', kapt: '#059669' };
+  const lblMap = { apt: '🏢 APT 분양', remndr: '🎯 무순위·오피스텔', starts: '🏗️ 착공·인허가', kapt: '🏘️ K-apt' };
+
+  const drawReMarkers = (fit = false) => {
+    if (!S.reLeafletMap || !S.reLeafletLayer) return;
+    S.reLeafletLayer.clearLayers();
+    if (S.reLeafletHeat) { S.reLeafletMap.removeLayer(S.reLeafletHeat); S.reLeafletHeat = null; }
+    const bounds = [];
+
+    if (S.reWms.heat) {
+      const pts = items.map((x) => [x.lat, x.lon, x.kind === 'apt' ? 2.5 : 1.5]);
+      S.reLeafletHeat = createCanvasHeatLayer(pts).addTo(S.reLeafletMap);
+    }
+
+    if (S.reMapMode === 'cluster') {
+      const byRid = new Map();
+      for (const x of items) {
+        if (x.rid < 0) continue;
+        let g = byRid.get(x.rid);
+        if (!g) {
+          const [la, lo] = regionCentroidLatLon(x.rid);
+          const reg = S.fusionByRid.get(x.rid);
+          g = { rid: x.rid, name: reg?.fullName || x.area || '지역', la, lo, cnt: 0, apt: 0, starts: 0, units: 0 };
+          byRid.set(x.rid, g);
+        }
+        g.cnt++;
+        if (x.kind === 'apt' || x.kind === 'remndr') g.apt++;
+        if (x.kind === 'starts') g.starts++;
+        g.units += x.units || 0;
+      }
+      for (const g of byRid.values()) {
+        bounds.push([g.la, g.lo]);
+        const sz = g.cnt >= 20 ? 34 : g.cnt >= 8 ? 28 : 23;
+        const bg = g.apt > 0 ? '#e11d48' : (g.starts > 0 ? '#7c3aed' : '#059669');
+        const icon = L.divIcon({ className: '', html: `<div class="nx-bid-pin" style="width:${sz}px;height:${sz}px;background:${bg}">${g.cnt}</div>`, iconSize: [sz, sz], iconAnchor: [sz / 2, sz / 2] });
+        const mk = L.marker([g.la, g.lo], { icon });
+        mk.bindTooltip(`<b>${esc(g.name)}</b> · 총 ${g.cnt}건 (분양 ${g.apt} · 착공/인허가 ${g.starts} · ${fmt(g.units)}세대)`, { direction: 'top' });
+        mk.on('click', (ev) => { S._justClickedReMk = true; L.DomEvent.stopPropagation(ev); runReCatchment(g.la, g.lo, g.name); });
+        mk.addTo(S.reLeafletLayer);
+      }
+    } else {
+      for (const x of items) {
+        bounds.push([x.lat, x.lon]);
+        const mk = L.circleMarker([x.lat, x.lon], {
+          radius: x.kind === 'apt' ? 7 : 6,
+          color: x.isFit ? '#10b981' : '#ffffff',
+          fillColor: colMap[x.kind] || '#e11d48',
+          fillOpacity: 0.92,
+          weight: x.isFit ? 2.8 : 1.5,
+        });
+        mk.bindTooltip(`<b>${lblMap[x.kind] || ''} ${esc(x.name)}</b><br/>${esc(x.sub)}`, { direction: 'top' });
+        mk.bindPopup(() => `
+          <div style="min-width:220px;font-size:12px;line-height:1.5">
+            <div style="font-weight:800;font-size:13px;margin-bottom:3px">${esc(x.name)}</div>
+            <div style="color:${colMap[x.kind]};font-weight:700;font-size:11.5px">${lblMap[x.kind]}${x.isFit ? ' · ✓ 내 조건 적합' : ''}</div>
+            <div style="color:#475569;margin:3px 0">${esc(x.addr)}</div>
+            <div style="color:#334155">${esc(x.sub)}</div>
+            <div style="display:flex;gap:5px;margin-top:6px;flex-wrap:wrap">
+              <a class="btn btn-sm" style="padding:3px 7px;font-size:11px" href="https://map.kakao.com/link/roadview/${x.lat.toFixed(6)},${x.lon.toFixed(6)}" target="_blank" rel="noopener">🗺️ 로드뷰</a>
+              ${x.url ? `<a class="btn btn-rose btn-sm" style="padding:3px 7px;font-size:11px" href="${esc(x.url)}" target="_blank" rel="noopener">청약홈 ↗</a>` : ''}
+            </div>
+          </div>`, { maxWidth: 300 });
+        mk.on('click', (ev) => { S._justClickedReMk = true; L.DomEvent.stopPropagation(ev); });
+        mk.addTo(S.reLeafletLayer);
+      }
+    }
+    if (fit && bounds.length) S.reLeafletMap.fitBounds(bounds, { maxZoom: 12, padding: [24, 24] });
+  };
+
+  const runReCatchment = async (lat, lon, label = '선택 지점') => {
+    const rad = S.reRadius;
+    S.reLeafletCatch.clearLayers();
+    L.circle([lat, lon], { radius: rad, color: '#e11d48', fillColor: '#fb7185', fillOpacity: 0.13, weight: 2, dashArray: '5 4' }).addTo(S.reLeafletCatch);
+    L.marker([lat, lon], {
+      zIndexOffset: 2500,
+      icon: L.divIcon({ className: '', html: '<div style="width:16px;height:16px;border-radius:50%;background:#e11d48;border:3px solid #fff;box-shadow:0 0 0 4px rgba(225,29,72,.3)"></div>', iconSize: [16, 16], iconAnchor: [8, 8] }),
+    }).addTo(S.reLeafletCatch);
+
+    const hits = items.filter((x) => haversineM(lat, lon, x.lat, x.lon) <= rad);
+    const aptH = hits.filter((x) => x.kind === 'apt' || x.kind === 'remndr');
+    const stH = hits.filter((x) => x.kind === 'starts');
+    const kpH = hits.filter((x) => x.kind === 'kapt');
+    const fitH = aptH.filter((x) => x.isFit).length;
+    const sumUnits = hits.reduce((a, x) => a + (x.units || 0), 0);
+    const priced = aptH.filter((x) => x.minEok > 0);
+    const avgEok = priced.length ? (priced.reduce((a, x) => a + x.minEok, 0) / priced.length) : 0;
+
+    const renderBox = (vw) => {
+      const box = $('reCatchBox');
+      if (!box) return;
+      box.innerHTML = `
+        <div class="catchment-card" style="margin-top:10px">
+          <div class="card-head" style="margin-bottom:8px">
+            <div>
+              <h3 class="card-title">🏠 반경 ${rad / 1000}km 분양·착공·공급 정밀 진단 (${esc(label)})</h3>
+              <p class="card-sub">${vw ? `📍 <b>${esc(vw.addr)}</b> · 용도지역 <b>${esc(vw.zoning)}</b> · 공시지가 <b>${esc(vw.jiga)}</b>` : `📍 좌표 (${lat.toFixed(4)}, ${lon.toFixed(4)}) · 브이월드 용도지역·공시지가 조회 중…`}</p>
+            </div>
+            <div style="display:flex;gap:5px;flex-wrap:wrap">
+              <a class="btn btn-sm" href="https://map.kakao.com/link/roadview/${lat.toFixed(6)},${lon.toFixed(6)}" target="_blank" rel="noopener">🗺️ 로드뷰 ↗</a>
+              <a class="btn btn-sm" href="https://map.naver.com/p/search/${encodeURIComponent(vw?.addr || `${lat.toFixed(5)},${lon.toFixed(5)}`)}" target="_blank" rel="noopener">🧭 네이버지도 ↗</a>
+            </div>
+          </div>
+          <div class="quant-strip">
+            <div class="quant-box"><div class="q-lbl">반경 내 분양·무순위</div><div class="q-val" style="color:var(--c-re)">${fmt(aptH.length)}건</div><div class="q-sub">내 조건 적합 ${fmt(fitH)}건</div></div>
+            <div class="quant-box"><div class="q-lbl">착공 · 인허가 / K-apt</div><div class="q-val" style="color:var(--c-corp)">${fmt(stH.length)} / ${fmt(kpH.length)}</div><div class="q-sub">총 ${fmt(sumUnits)}세대</div></div>
+            <div class="quant-box"><div class="q-lbl">평균 최저분양가</div><div class="q-val">${avgEok ? `${fmtDec(avgEok, 1)}억` : '-'}</div><div class="q-sub">내 예산 ${S.myBudgetEok}억</div></div>
+            <div class="quant-box"><div class="q-lbl">용도지역 / 지가</div><div class="q-val" style="font-size:13px">${esc(vw?.zoning || '조회중')}</div><div class="q-sub">${vw?.pyeongMan ? `평당 ${fmt(vw.pyeongMan)}만` : '-'}</div></div>
+          </div>
+        </div>`;
+    };
+    renderBox(null);
+    try { renderBox(await queryVworldPoint(lon.toFixed(6), lat.toFixed(6))); } catch {}
+  };
+
+  drawReMarkers(Boolean(S.reQ));
+
+  S.reLeafletMap.on('contextmenu', () => {
+    if (S.reRulerMode && S.reRulerPts.length) { S.reRulerPts = []; S.reLeafletRuler.clearLayers(); toast('🧹 측정 초기화'); }
+  });
+  S.reLeafletMap.on('click', (e) => {
+    if (S._justClickedReMk) { S._justClickedReMk = false; return; }
+    if (S.reRulerMode) { handleDomainRulerClick(S.reLeafletMap, S.reLeafletRuler, S.reRulerPts, e.latlng); return; }
+    runReCatchment(e.latlng.lat, e.latlng.lng, '지도 선택 지점');
+  });
+
+  const doReGps = () => locateGpsOnDomainMap(S.reLeafletMap, S.reLeafletGps, 12, (la, lo) => runReCatchment(la, lo, '내 현재 위치'));
+  $('hudReGps')?.addEventListener('click', doReGps);
+  $('btnReGpsPill')?.addEventListener('click', doReGps);
+  $('hudReCenter')?.addEventListener('click', () => { const c = S.reLeafletMap.getCenter(); runReCatchment(c.lat, c.lng, '지도 중심'); });
+  $('hudReSat')?.addEventListener('click', () => {
+    S.reMapBase = S.reMapBase === 'vhyb' ? 'vbase' : 'vhyb';
+    $('hudReSat')?.classList.toggle('on', S.reMapBase === 'vhyb');
+    $('mainStage').querySelectorAll('[data-rm-base]').forEach((x) => x.classList.toggle('on', x.dataset.rmBase === S.reMapBase));
+    applyDomainBaseMap(S.reLeafletMap, { tile: 'reLeafletTile', hyb: 'reLeafletHybrid' }, S.reMapBase);
+  });
+  $('mainStage').querySelectorAll('[data-rm-base]').forEach((b) => {
+    b.addEventListener('click', () => {
+      S.reMapBase = b.dataset.rmBase;
+      $('mainStage').querySelectorAll('[data-rm-base]').forEach((x) => x.classList.toggle('on', x.dataset.rmBase === S.reMapBase));
+      $('hudReSat')?.classList.toggle('on', S.reMapBase === 'vhyb');
+      applyDomainBaseMap(S.reLeafletMap, { tile: 'reLeafletTile', hyb: 'reLeafletHybrid' }, S.reMapBase);
+    });
+  });
+  $('mainStage').querySelectorAll('[data-rm-wms]').forEach((b) => {
+    b.addEventListener('click', () => {
+      const k = b.dataset.rmWms;
+      S.reWms[k] = !S.reWms[k];
+      b.classList.toggle('on-emerald', S.reWms[k]);
+      if (k === 'heat') drawReMarkers(false);
+      else applyDomainWms(S.reLeafletMap, 'reLeafletWms', S.reWms);
+    });
+  });
+  $('mainStage').querySelectorAll('[data-rm-mode]').forEach((b) => {
+    b.addEventListener('click', () => {
+      S.reMapMode = b.dataset.rmMode;
+      $('mainStage').querySelectorAll('[data-rm-mode]').forEach((x) => x.classList.toggle('on', x.dataset.rmMode === S.reMapMode));
+      drawReMarkers(false);
+    });
+  });
+  $('mainStage').querySelectorAll('[data-rm-rad]').forEach((b) => {
+    b.addEventListener('click', () => {
+      S.reRadius = Number(b.dataset.rmRad) || 3000;
+      $('mainStage').querySelectorAll('[data-rm-rad]').forEach((x) => x.classList.toggle('on', Number(x.dataset.rmRad) === S.reRadius));
+      toast(`🎯 청약·착공 반경분석 기준: ${S.reRadius / 1000}km`);
+    });
+  });
+  $('btnReRuler')?.addEventListener('click', (e) => {
+    S.reRulerMode = !S.reRulerMode; S.reRulerPts = []; S.reLeafletRuler?.clearLayers();
+    e.currentTarget.classList.toggle('on', S.reRulerMode);
+    toast(S.reRulerMode ? '📐 거리·면적측정 ON (우클릭=초기화)' : '📐 거리·면적측정 OFF');
+  });
+  $('btnReMapFit')?.addEventListener('click', () => drawReMarkers(true));
 }
 
 function renderReSubBody() {

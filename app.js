@@ -131,6 +131,7 @@ const LEGACY_ADMIN_KEY = 'nx1_admin_sales_v1';
 const MASTER_CFG_KEY = 'nx1_master_cfg_v26';
 const MASTER_REG_KEY = 'nx1_seller_registry_v26';
 const MASTER_AUDIT_KEY = 'nx1_audit_log_v26';
+const MASTER_CONSENT_LOG_KEY = 'nx1_consent_log_v32';
 const BUYER_DEFAULT_PW = 'admin';
 const BUYER_DEFAULT_PW_HASH = '8c6976e5b5410415bde908bd4dee15dfb167a9c873fc4bb8a81f6f2ab448a918'; // sha256('admin')
 const MASTER_DEFAULT_PIN_HASH = '849a1538e94c65c43747c85670b73eb5477b2c87f9e33fdd66e47f49c504427f'; // sha256('nx1master')
@@ -322,6 +323,8 @@ function encodeSignedLicense(cfg, expertOpts = null) {
     fr: cfg.isFree ? 1 : 0,
     ft: cfg.freeType || '',
     sm: cfg.simpleFreeMode ? 1 : 0,
+    ce: (cfg.consentEnabled !== undefined ? cfg.consentEnabled : (loadSellerRegistry().consentPolicy?.enabled !== false)) ? 1 : 0,
+    cv: cfg.consentVersion || loadSellerRegistry().consentPolicy?.version || '2026.11-v1',
   };
   const b64 = toBase64Url(compact);
   return `${b64}.${signTokenStr(b64)}`;
@@ -349,6 +352,8 @@ function decodeSignedLicense(token, requireSig = true) {
     base.isFree = Boolean(c.fr);
     base.freeType = c.ft || '';
     base.simpleFreeMode = Boolean(c.sm);
+    base.consentEnabled = c.ce !== 0;
+    base.consentVersion = c.cv || '';
     base.forcePwChange = base.simpleFreeMode ? false : (c.fp !== 0);
     base.a4Watermark = c.wm !== 0;
     base.rbacStrict = c.rb !== 0;
@@ -461,6 +466,221 @@ function defaultRemoteSyncConfig() {
     path: 'data/license_control.json',
     token: '',
   };
+}
+
+// ===== V32 FIRST-LOGIN PRIVACY, TERMS & SECURITY CONSENT GOVERNANCE =====
+function defaultConsentPolicy() {
+  return {
+    enabled: true,
+    skipForMaster: false,
+    version: '2026.11-v1',
+    title: '개인정보보호 및 서비스 이용약관 동의 안내',
+    cpoName: '개인정보보호책임자 (관리자)',
+    cpoContact: '본사 담당자 문의',
+    customNotice: '본 플랫폼은 서버 평문 0바이트·AES-256-GCM 브라우저 로컬 암호화 원칙으로 동작하며, 조회된 공공·기업 데이터는 합법적인 B2B 영업 및 입찰 검토 목적으로만 활용해야 합니다.',
+  };
+}
+
+function consentStateKey(tid) {
+  return `nx1_consent_${tid || 'MASTER'}_v32`;
+}
+
+function loadConsentState(tid) {
+  try { return JSON.parse(localStorage.getItem(consentStateKey(tid)) || 'null'); } catch { return null; }
+}
+
+function saveConsentState(tid, rec) {
+  try { localStorage.setItem(consentStateKey(tid), JSON.stringify(rec)); } catch {}
+}
+
+function loadConsentLogs() {
+  try { return JSON.parse(localStorage.getItem(MASTER_CONSENT_LOG_KEY) || '[]'); } catch { return []; }
+}
+
+function appendConsentLog(rec) {
+  try {
+    const list = loadConsentLogs();
+    list.unshift(rec);
+    localStorage.setItem(MASTER_CONSENT_LOG_KEY, JSON.stringify(list.slice(0, 300)));
+  } catch {}
+}
+
+function getEffectiveConsentPolicy() {
+  const reg = loadSellerRegistry();
+  const base = { ...defaultConsentPolicy(), ...(reg.consentPolicy || {}) };
+  if (typeof S !== 'undefined' && S?.isBuyerMode) {
+    if (S.admin?.consentEnabled === false) base.enabled = false;
+    if (S.admin?.consentVersion && S.admin.consentVersion > base.version) base.version = S.admin.consentVersion;
+  }
+  return base;
+}
+
+function openConsentModal(opts = {}) {
+  const preview = Boolean(opts.preview);
+  const readOnly = Boolean(opts.readOnly);
+  const cp = getEffectiveConsentPolicy();
+  const tid = S.tenantId || 'MASTER';
+  const curRec = loadConsentState(tid);
+  const brandLabel = `${S.admin?.brandTitle || '넥서스원'} ${S.admin?.brandBadge || 'PRO'}`.trim();
+  const defaultSigner = curRec?.signer || (S.isBuyerMode ? (S.admin?.companyName || '') : '마스터 관리자');
+
+  $('consentModalTitle').textContent = `📋 ${cp.title || '개인정보보호 및 서비스 이용약관 동의'}`;
+  $('consentModalSub').textContent = `${brandLabel} · 약관 버전 ${cp.version}${preview ? ' (관리자 미리보기)' : ''}${readOnly ? ' (동의 완료 내역 열람)' : ''}`;
+  $('consentClosePreview')?.classList.toggle('hidden', !(preview || readOnly));
+
+  const checkedAll = readOnly && Boolean(curRec);
+  $('consentBody').innerHTML = `
+    <div class="domain-box" style="margin-bottom:10px;border-color:rgba(79,70,229,.35);background:rgba(79,70,229,.05)">
+      <div style="font-size:12px;line-height:1.55;color:var(--text-2)">
+        <b>🛡️ 안내사항</b>: ${esc(cp.customNotice)}<br>
+        <span style="font-size:11px;color:var(--muted)">• 개인정보보호책임자(CPO): <b>${esc(cp.cpoName)}</b> (${esc(cp.cpoContact)}) · 라이선스: <code>${esc(tid)}</code></span>
+      </div>
+    </div>
+
+    ${readOnly && curRec ? `
+      <div class="domain-box" style="margin-bottom:10px;border-color:rgba(16,185,129,.4);background:rgba(16,185,129,.06);font-size:12px">
+        ✅ <b>동의 완료 기록</b> — 동의자: <b>${esc(curRec.signer)}</b> · 일시: <b>${esc(curRec.agreedAt)}</b> · 버전: <code>${esc(curRec.version)}</code> · 마케팅 수신: <b>${curRec.marketing ? '동의' : '미동의'}</b>
+      </div>` : ''}
+
+    <div class="domain-box" style="margin-bottom:10px;background:var(--surface-2)">
+      <label style="display:flex;align-items:center;gap:8px;font-size:13px;font-weight:800;cursor:pointer">
+        <input id="cAllAgree" type="checkbox" ${checkedAll ? 'checked disabled' : ''} style="width:16px;height:16px" />
+        <span>전체 약관 및 개인정보보호·보안서약에 모두 동의합니다. (선택 포함)</span>
+      </label>
+    </div>
+
+    <div style="display:grid;gap:8px;margin-bottom:10px">
+      <div class="domain-box">
+        <label style="display:flex;align-items:center;gap:7px;font-size:12.5px;font-weight:700;cursor:pointer">
+          <input id="cReqPrivacy" type="checkbox" class="c-req" ${checkedAll ? 'checked disabled' : ''} />
+          <span style="color:#e11d48">[필수]</span> <span>개인정보 수집·이용 및 개인정보보호법 준수 동의</span>
+        </label>
+        <details style="margin-top:5px;font-size:11.5px;color:var(--muted)">
+          <summary style="cursor:pointer;font-weight:700;color:var(--c-corp)">전문 보기</summary>
+          <div style="margin-top:5px;padding:7px 9px;background:var(--surface-2);border-radius:7px;line-height:1.55">
+            1. <b>수집·보관 항목</b>: 접속 브라우저 내 사내 설정, 동의자 성명/부서, 동의 일시, CRM 파이프라인 및 서류함 메모.<br>
+            2. <b>보안 원칙</b>: 모든 핵심 데이터는 <b>AES-256-GCM 클라이언트 암호화 및 브라우저 로컬 스토리지</b>에만 보관되며 외부 서버에 평문 전송되지 않습니다.<br>
+            3. <b>보유·파기</b>: 이용 종료 또는 브라우저 캐시·스토리지 초기화 시 즉시 파기됩니다. (개인정보보호법 제15조 준수)
+          </div>
+        </details>
+      </div>
+
+      <div class="domain-box">
+        <label style="display:flex;align-items:center;gap:7px;font-size:12.5px;font-weight:700;cursor:pointer">
+          <input id="cReqTerms" type="checkbox" class="c-req" ${checkedAll ? 'checked disabled' : ''} />
+          <span style="color:#e11d48">[필수]</span> <span>서비스 이용약관 및 라이선스 범위 준수 동의</span>
+        </label>
+        <details style="margin-top:5px;font-size:11.5px;color:var(--muted)">
+          <summary style="cursor:pointer;font-weight:700;color:var(--c-corp)">전문 보기</summary>
+          <div style="margin-top:5px;padding:7px 9px;background:var(--surface-2);border-radius:7px;line-height:1.55">
+            1. 발급된 전용 링크 및 라이선스는 계약된 고객사·임직원(또는 지정 수령인)의 내부 업무 용도로만 사용할 수 있습니다.<br>
+            2. 전용 링크의 무단 재배포, 제3자 양도, URL 토큰 위변조 시도 시 관리자 직권으로 즉시 사용이 중지될 수 있습니다.<br>
+            3. 기간 제한 라이선스는 지정된 시작일~종료일 범위 내에서만 제공됩니다.
+          </div>
+        </details>
+      </div>
+
+      <div class="domain-box">
+        <label style="display:flex;align-items:center;gap:7px;font-size:12.5px;font-weight:700;cursor:pointer">
+          <input id="cReqSecurity" type="checkbox" class="c-req" ${checkedAll ? 'checked disabled' : ''} />
+          <span style="color:#e11d48">[필수]</span> <span>공공·기업·상권 데이터 적법 활용 및 보안서약</span>
+        </label>
+        <details style="margin-top:5px;font-size:11.5px;color:var(--muted)">
+          <summary style="cursor:pointer;font-weight:700;color:var(--c-corp)">전문 보기</summary>
+          <div style="margin-top:5px;padding:7px 9px;background:var(--surface-2);border-radius:7px;line-height:1.55">
+            1. 나라장터·DART·국민연금·소상공인·부동산 공공데이터 및 추정매출 지표는 의사결정 참고용이며, 최종 투찰·계약 책임은 이용자에게 있습니다.<br>
+            2. 조회된 연락처·기업정보를 불법 스팸, 무차별 대량 발송, 개인정보 침해 용도로 활용하지 않을 것을 서약합니다.
+          </div>
+        </details>
+      </div>
+
+      <div class="domain-box">
+        <label style="display:flex;align-items:center;gap:7px;font-size:12px;cursor:pointer">
+          <input id="cOptMkt" type="checkbox" ${readOnly ? `${curRec?.marketing ? 'checked' : ''} disabled` : ''} />
+          <span style="color:var(--muted)">[선택]</span> <span>신규 기능 업데이트 · 업그레이드 · 세무/입찰 가이드 안내 수신 동의</span>
+        </label>
+      </div>
+    </div>
+
+    ${!readOnly ? `
+      <label style="font-size:11.5px;color:var(--muted);display:block">동의 확인자 성명 / 부서 (동의 이력 보관용)
+        <input id="cSigner" class="input" value="${esc(defaultSigner)}" placeholder="예: 홍길동 팀장 / 영업기획팀" style="width:100%;margin-top:3px;font-size:12px" />
+      </label>` : ''}
+  `;
+
+  $('consentFoot').innerHTML = readOnly
+    ? `<button id="btnConsentCloseOk" class="btn btn-primary btn-sm" type="button" style="margin-left:auto">확인 닫기</button>`
+    : (preview
+      ? `<button id="btnConsentCloseOk" class="btn btn-primary btn-sm" type="button" style="margin-left:auto">미리보기 닫기</button>`
+      : `
+        <button id="btnConsentDecline" class="btn btn-sm" type="button">🚪 미동의 (로그아웃)</button>
+        <button id="btnConsentAccept" class="btn btn-primary btn-sm" type="button" disabled style="margin-left:auto">✅ 필수 항목 동의하고 시작하기</button>
+      `);
+
+  $('consentBackdrop')?.classList.remove('hidden');
+
+  const closeModal = () => $('consentBackdrop')?.classList.add('hidden');
+  $('consentClosePreview')?.addEventListener('click', closeModal);
+  $('btnConsentCloseOk')?.addEventListener('click', closeModal);
+
+  if (!readOnly && !preview) {
+    const reqBoxes = Array.from($('consentBody').querySelectorAll('.c-req'));
+    const optBox = $('cOptMkt');
+    const allBox = $('cAllAgree');
+    const acceptBtn = $('btnConsentAccept');
+    const syncConsentBtns = () => {
+      const allReq = reqBoxes.every((cb) => cb.checked);
+      if (acceptBtn) acceptBtn.disabled = !allReq;
+      if (allBox) allBox.checked = allReq && Boolean(optBox?.checked);
+    };
+    allBox?.addEventListener('change', () => {
+      const on = allBox.checked;
+      reqBoxes.forEach((cb) => { cb.checked = on; });
+      if (optBox) optBox.checked = on;
+      syncConsentBtns();
+    });
+    [...reqBoxes, optBox].forEach((cb) => cb?.addEventListener('change', syncConsentBtns));
+
+    $('btnConsentDecline')?.addEventListener('click', async () => {
+      appendAudit('CONSENT_DECLINED', tid, `약관 버전 ${cp.version} 미동의 — 잠금 화면 복귀`);
+      await idbClearKey();
+      location.reload();
+    });
+
+    acceptBtn?.addEventListener('click', () => {
+      if (!reqBoxes.every((cb) => cb.checked)) {
+        toast('필수 항목 3가지를 모두 체크해 주세요.');
+        return;
+      }
+      const signer = $('cSigner')?.value.trim() || (S.isBuyerMode ? (S.admin?.companyName || '구매자') : '마스터 관리자');
+      const rec = {
+        tenantId: tid,
+        brand: brandLabel,
+        signer,
+        version: cp.version,
+        agreedAt: new Date().toLocaleString('ko-KR'),
+        privacy: true,
+        terms: true,
+        security: true,
+        marketing: Boolean(optBox?.checked),
+      };
+      saveConsentState(tid, rec);
+      appendConsentLog(rec);
+      appendAudit('CONSENT_AGREED', tid, `약관 ${cp.version} 동의 완료 (동의자: ${signer}, 마케팅: ${rec.marketing ? 'Y' : 'N'})`);
+      closeModal();
+      toast(`✅ 개인정보보호 및 이용약관(${cp.version}) 동의가 완료되었습니다.`);
+    });
+  }
+}
+
+function maybePromptConsentOnLogin() {
+  if (S.isBuyerMode && ['TAMPERED', 'REVOKED', 'NOT_STARTED', 'EXPIRED_LOCK'].includes(S.licenseStatus?.state)) return;
+  const cp = getEffectiveConsentPolicy();
+  if (!cp.enabled) return;
+  if (!S.isBuyerMode && cp.skipForMaster) return;
+  const cur = loadConsentState(S.tenantId || 'MASTER');
+  if (cur && cur.version === cp.version && cur.privacy && cur.terms && cur.security) return;
+  openConsentModal({ preview: false, readOnly: false });
 }
 
 function buildLicenseControlPayload(reg) {
@@ -769,6 +989,7 @@ function defaultSellerRegistry() {
     revoked: [],
     controlOverrides: {},
     remoteSync: defaultRemoteSyncConfig(),
+    consentPolicy: defaultConsentPolicy(),
     expertOpts: defaultExpertOpts(),
     taxConfig: defaultTaxConfig(),
     masterPinHash: MASTER_DEFAULT_PIN_HASH,
@@ -812,6 +1033,7 @@ function loadSellerRegistry() {
         revoked: Array.isArray(raw.revoked) ? raw.revoked : [],
         controlOverrides: (raw.controlOverrides && typeof raw.controlOverrides === 'object') ? raw.controlOverrides : {},
         remoteSync: { ...defaultRemoteSyncConfig(), ...(raw.remoteSync || {}) },
+        consentPolicy: { ...defaultConsentPolicy(), ...(raw.consentPolicy || {}) },
         expertOpts: { ...defaultExpertOpts(), ...(raw.expertOpts || {}) },
         taxConfig: { ...defaultTaxConfig(), ...(raw.taxConfig || {}) },
         masterPinHash: raw.masterPinHash || MASTER_DEFAULT_PIN_HASH,
@@ -1166,6 +1388,11 @@ function openMasterEscapePrompt() {
     <button id="btnMasterEscClose" class="btn btn-sm" type="button">닫기</button>
   `;
   $('adminBackdrop')?.classList.remove('hidden');
+
+  $('btnByViewConsent')?.addEventListener('click', () => {
+    const cRec = loadConsentState(S.tenantId);
+    openConsentModal({ readOnly: Boolean(cRec), preview: false });
+  });
   $('btnMasterEscClose')?.addEventListener('click', () => $('adminBackdrop')?.classList.add('hidden'));
   const verifyAndReturn = async () => {
     const pin = $('masterEscPin')?.value || '';
@@ -1225,6 +1452,11 @@ function openBuyerAdminModal() {
       <button id="btnBuyerModalClose" class="btn btn-sm" type="button">닫기</button>
     `;
     $('adminBackdrop')?.classList.remove('hidden');
+
+  $('btnByViewConsent')?.addEventListener('click', () => {
+    const cRec = loadConsentState(S.tenantId);
+    openConsentModal({ readOnly: Boolean(cRec), preview: false });
+  });
     $('btnBuyerModalClose')?.addEventListener('click', () => $('adminBackdrop')?.classList.add('hidden'));
     const doLogin = async () => {
       const pw = $('buyerLoginPw')?.value || '';
@@ -1272,6 +1504,11 @@ function openBuyerAdminModal() {
       <button id="btnBuyerForceCancel" class="btn btn-sm" type="button">나중에</button>
     `;
     $('adminBackdrop')?.classList.remove('hidden');
+
+  $('btnByViewConsent')?.addEventListener('click', () => {
+    const cRec = loadConsentState(S.tenantId);
+    openConsentModal({ readOnly: Boolean(cRec), preview: false });
+  });
     $('btnBuyerForceCancel')?.addEventListener('click', () => { S.buyerAuthed = false; $('adminBackdrop')?.classList.add('hidden'); });
     const doRotate = async () => {
       const p1 = $('buyerNewPw1')?.value || '';
@@ -1305,8 +1542,12 @@ function openBuyerAdminModal() {
         <div><span style="color:var(--muted)">계약 패키지</span><br><b>${esc(SALES_PACKAGES[cfg.pkg]?.label || cfg.pkg)}</b></div>
         <div><span style="color:var(--muted)">만료일 / 담당 판매자</span><br><b>${esc(cfg.expiryDate || '영구 소장')}</b> · ${esc(cfg.sellerName || '본사')}</div>
       </div>
-      <div style="margin-top:8px;display:flex;gap:5px;flex-wrap:wrap">
+      <div style="margin-top:8px;display:flex;gap:5px;flex-wrap:wrap;align-items:center">
         ${enabledTabs.map((k) => `<span class="nx-lic-badge nx-lic-active">✓ ${tabLabels[k] || k}</span>`).join('')}
+        ${(() => {
+          const cRec = loadConsentState(S.tenantId);
+          return `<button id="btnByViewConsent" type="button" class="btn btn-sm" style="margin-left:auto;font-size:11px">📋 개인정보·약관 동의내역${cRec ? ` (${esc(cRec.version)})` : ''}</button>`;
+        })()}
       </div>
     </div>
 
@@ -1359,6 +1600,11 @@ function openBuyerAdminModal() {
     <button id="btnByLogout" class="btn btn-sm" type="button" style="margin-left:auto">🔒 사내 관리자 로그아웃</button>
   `;
   $('adminBackdrop')?.classList.remove('hidden');
+
+  $('btnByViewConsent')?.addEventListener('click', () => {
+    const cRec = loadConsentState(S.tenantId);
+    openConsentModal({ readOnly: Boolean(cRec), preview: false });
+  });
 
   $('btnBySave')?.addEventListener('click', () => {
     bSt.notice = $('byNotice')?.value.trim() || '';
@@ -3229,6 +3475,51 @@ export default {
         </div>
       </div>
 
+      <div class="domain-box" style="margin-bottom:10px;border-color:rgba(16,185,129,.4);background:rgba(16,185,129,.04)">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap">
+          <h4 style="margin:0">📋 개인정보보호 · 이용약관 최초 로그인 동의 관리</h4>
+          <div style="display:flex;gap:10px;flex-wrap:wrap;font-size:11.5px;font-weight:700">
+            <label style="display:inline-flex;align-items:center;gap:4px;cursor:pointer"><input id="cpEnabled" type="checkbox" ${(reg.consentPolicy?.enabled !== false) ? 'checked' : ''} /> 최초 로그인 동의 팝업 ON</label>
+            <label style="display:inline-flex;align-items:center;gap:4px;cursor:pointer"><input id="cpSkipMaster" type="checkbox" ${reg.consentPolicy?.skipForMaster ? 'checked' : ''} /> 마스터 본인은 건너뛰기</label>
+          </div>
+        </div>
+        <div style="display:grid;grid-template-columns:130px 1.2fr 1fr 1fr;gap:6px;margin-bottom:6px">
+          <label style="font-size:11px;color:var(--muted)">약관 버전 (변경 시 재동의)
+            <input id="cpVersion" class="input mono" value="${esc(reg.consentPolicy?.version || '2026.11-v1')}" style="width:100%;margin-top:2px;font-size:11.5px" />
+          </label>
+          <label style="font-size:11px;color:var(--muted)">팝업 제목
+            <input id="cpTitle" class="input" value="${esc(reg.consentPolicy?.title || '개인정보보호 및 서비스 이용약관 동의 안내')}" style="width:100%;margin-top:2px;font-size:11.5px" />
+          </label>
+          <label style="font-size:11px;color:var(--muted)">개인정보보호책임자(CPO)
+            <input id="cpCpoName" class="input" value="${esc(reg.consentPolicy?.cpoName || '개인정보보호책임자 (관리자)')}" style="width:100%;margin-top:2px;font-size:11.5px" />
+          </label>
+          <label style="font-size:11px;color:var(--muted)">CPO 연락처 / 이메일
+            <input id="cpCpoContact" class="input" value="${esc(reg.consentPolicy?.cpoContact || '본사 담당자 문의')}" style="width:100%;margin-top:2px;font-size:11.5px" />
+          </label>
+        </div>
+        <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:7px">동의 팝업 상단 핵심 안내문
+          <input id="cpNotice" class="input" value="${esc(reg.consentPolicy?.customNotice || '')}" style="width:100%;margin-top:2px;font-size:11.5px" />
+        </label>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px">
+          <button id="btnSaveConsentPol" class="btn btn-primary btn-sm" type="button">✅ 동의 정책 저장</button>
+          <button id="btnPreviewConsent" class="btn btn-sm" type="button">👁️ 동의 팝업 미리보기</button>
+          <button id="btnResetMyConsent" class="btn btn-amber btn-sm" type="button">🔄 재동의 초기화 (테스트)</button>
+          <button id="btnConsentCsv" class="btn btn-emerald btn-sm" type="button" style="margin-left:auto">📥 동의 이력 CSV (${loadConsentLogs().length}건)</button>
+        </div>
+        ${(() => {
+          const cLogs = loadConsentLogs().slice(0, 6);
+          return cLogs.length ? `
+            <div class="table-wrap" style="max-height:130px;overflow-y:auto">
+              <table class="data-table" style="font-size:11px">
+                <thead><tr><th>동의 일시</th><th>라이선스</th><th>동의자</th><th>약관버전</th><th>필수/마케팅</th></tr></thead>
+                <tbody>
+                  ${cLogs.map((l) => `<tr><td>${esc(l.agreedAt)}</td><td><code>${esc(l.tenantId)}</code></td><td><b>${esc(l.signer)}</b></td><td><code>${esc(l.version)}</code></td><td>필수3/3 · 마케팅 ${l.marketing ? '동의' : '미동의'}</td></tr>`).join('')}
+                </tbody>
+              </table>
+            </div>` : '<div style="font-size:11px;color:var(--muted)">아직 기록된 동의 이력이 없습니다.</div>';
+        })()}
+      </div>
+
       <div class="domain-box" style="margin-bottom:10px;border-color:rgba(79,70,229,.35);background:rgba(79,70,229,.04)">
         <h4 style="margin:0 0 6px">☁️ 원격 직권 중지 · 재개 · 기간변경 동기화 설정 (전 고객 기기 실시간 반영)</h4>
         <div style="font-size:11px;color:var(--muted);margin-bottom:7px">GitHub Personal Access Token (<code>nx1-p7k9v3</code> Contents Read/Write 권한)을 1회 입력해 두면, 직권 중지·재개·기간변경 시 1클릭으로 <code>data/license_control.json</code>이 전 고객 기기에 원격 반영됩니다. (토큰은 본인 브라우저 로컬에만 저장)</div>
@@ -3263,6 +3554,37 @@ export default {
       <button id="btnSaveExpertOpts" class="btn btn-primary btn-sm" type="button">✅ TOP 10 전문가 옵션 저장</button>
       <button id="btnResetExpertOpts" class="btn btn-sm" type="button" style="margin-left:auto">↺ 권장 기본값(10개 전체 ON)</button>
     `;
+
+    $('btnSaveConsentPol')?.addEventListener('click', () => {
+      reg.consentPolicy = {
+        enabled: Boolean($('cpEnabled')?.checked),
+        skipForMaster: Boolean($('cpSkipMaster')?.checked),
+        version: $('cpVersion')?.value.trim() || '2026.11-v1',
+        title: $('cpTitle')?.value.trim() || '개인정보보호 및 서비스 이용약관 동의 안내',
+        cpoName: $('cpCpoName')?.value.trim() || '개인정보보호책임자 (관리자)',
+        cpoContact: $('cpCpoContact')?.value.trim() || '본사 담당자 문의',
+        customNotice: $('cpNotice')?.value.trim() || defaultConsentPolicy().customNotice,
+      };
+      saveSellerRegistry(reg);
+      appendAudit('CONSENT_POLICY_SAVED', 'MASTER', `활성:${reg.consentPolicy.enabled ? 'Y' : 'N'}, 버전:${reg.consentPolicy.version}`);
+      toast(`✅ 동의 정책(${reg.consentPolicy.version})이 저장되었습니다!`);
+      openAdminSalesModal('expert');
+    });
+    $('btnPreviewConsent')?.addEventListener('click', () => openConsentModal({ preview: true }));
+    $('btnResetMyConsent')?.addEventListener('click', () => {
+      try { localStorage.removeItem(consentStateKey(S.tenantId || 'MASTER')); } catch {}
+      $('adminBackdrop')?.classList.add('hidden');
+      toast('🔄 동의 기록이 초기화되었습니다. 최초 로그인 동의 팝업을 표시합니다.');
+      setTimeout(() => openConsentModal({ preview: false, readOnly: false }), 150);
+    });
+    $('btnConsentCsv')?.addEventListener('click', () => {
+      const logs = loadConsentLogs();
+      const hd = '동의일시,라이선스ID,브랜드,동의자,약관버전,개인정보동의,이용약관동의,보안서약동의,마케팅수신동의\n';
+      const rows = logs.map((l) => [l.agreedAt, l.tenantId, l.brand, l.signer, l.version, l.privacy ? 'Y' : 'N', l.terms ? 'Y' : 'N', l.security ? 'Y' : 'N', l.marketing ? 'Y' : 'N'].map((v) => `"${String(v ?? '').replace(/"/g, '""')}"`).join(',')).join('\n');
+      const blob = new Blob(['\uFEFF' + hd + rows], { type: 'text/csv;charset=utf-8' });
+      const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `nexusone_consent_logs_${new Date().toISOString().slice(0, 10)}.csv`; a.click();
+      toast('📥 개인정보·약관 동의 이력 CSV 다운로드 완료');
+    });
 
     $('btnSaveRs')?.addEventListener('click', () => {
       reg.remoteSync = {
@@ -3362,6 +3684,11 @@ export default {
     b.addEventListener('click', () => openAdminSalesModal(b.dataset.admNav));
   });
   $('adminBackdrop')?.classList.remove('hidden');
+
+  $('btnByViewConsent')?.addEventListener('click', () => {
+    const cRec = loadConsentState(S.tenantId);
+    openConsentModal({ readOnly: Boolean(cRec), preview: false });
+  });
 }
 
 // ===== GLOBAL APPLICATION STATE =====
@@ -4081,6 +4408,8 @@ async function unlockAndBoot(key) {
     setTimeout(() => openBuyerAdminModal(), 350);
   } else if (BOOT_CTX.resetErr) {
     toast(`⚠️ ${BOOT_CTX.resetErr}`);
+  } else {
+    maybePromptConsentOnLogin();
   }
 
   // Auto background real-time sync (same live APIs as KakaoTalk Alert Bot!)

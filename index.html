@@ -139,6 +139,21 @@
     </div>
   </div>
 
+  <!-- ===== FIRST-LOGIN PRIVACY & TERMS CONSENT MODAL (v32) ===== -->
+  <div id="consentBackdrop" class="modal-backdrop hidden" style="z-index:980">
+    <div class="modal-card" role="dialog" aria-modal="true" style="max-width:680px">
+      <div class="drawer-head">
+        <div>
+          <h3 id="consentModalTitle" style="margin:0;font-size:16px;font-weight:800">📋 개인정보보호 및 서비스 이용약관 동의 안내</h3>
+          <div id="consentModalSub" style="font-size:12px;color:var(--muted);margin-top:2px">최초 로그인 시 필수 약관 및 보안서약 동의 후 서비스를 안전하게 이용하실 수 있습니다.</div>
+        </div>
+        <button id="consentClosePreview" class="icon-btn hidden" type="button">✕</button>
+      </div>
+      <div id="consentBody" class="drawer-body"></div>
+      <div id="consentFoot" class="drawer-foot"></div>
+    </div>
+  </div>
+
   <!-- ===== EXECUTIVE COMMERCIAL OPPORTUNITY REPORT MODAL (PRINT/PDF READY) ===== -->
   <div id="reportBackdrop" class="modal-backdrop hidden">
     <div class="report-card" role="dialog" aria-modal="true">
@@ -157,6 +172,6 @@
   <div id="toast" class="toast hidden"></div>
 
   <script src="vendor/leaflet.min.js"></script>
-  <script type="module" src="app.js?v=31"></script>
+  <script type="module" src="app.js?v=32"></script>
 </body>
 </html>

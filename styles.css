@@ -868,12 +868,12 @@ table.data-table tbody tr:hover { background: var(--surface-2); }
   .nx-swipe-chips > * { flex-shrink: 0; }
   .nx-opt-grid-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
   .nx-filter-panel-wrap.open .nx-sheet-scrim {
-    display: block; position: fixed; inset: 0; z-index: 950;
+    display: block; position: fixed; inset: 0; z-index: 1200;
     background: rgba(15, 23, 42, 0.58); backdrop-filter: blur(2px);
   }
   .nx-filter-panel-wrap.open .nx-collapsible-panel {
     display: flex !important; flex-direction: column;
-    position: fixed; left: 0; right: 0; bottom: 0; z-index: 960;
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 1210;
     max-height: 84vh; margin: 0 !important; padding: 0 !important;
     border-radius: 20px 20px 0 0 !important;
     background: var(--surface) !important;
@@ -986,7 +986,7 @@ table.data-table tbody tr:hover { background: var(--surface-2); }
 }
 
 /* ===== V38 COMMERCIAL MAP PRO GIS · GPS PULSE · EXPERT HUD ===== */
-.sbiz-map-wrap { position: relative; width: 100%; max-width: 100%; overflow: hidden; border-radius: 12px; }
+.sbiz-map-wrap { position: relative; z-index: 1; isolation: isolate; width: 100%; max-width: 100%; overflow: hidden; border-radius: 12px; }
 .sbiz-map-hud {
   position: absolute; right: 10px; top: 10px; z-index: 420;
   display: flex; flex-direction: column; gap: 6px;

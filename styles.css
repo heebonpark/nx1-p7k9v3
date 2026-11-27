@@ -834,10 +834,38 @@ table.data-table tbody tr:hover { background: var(--surface-2); }
   display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
   margin-bottom: 8px;
 }
+.nx-opt-grid-2 {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 8px; width: 100%;
+}
+.nx-opt-field {
+  display: flex; flex-direction: column; gap: 3px;
+  font-size: 11px; font-weight: 700; color: var(--muted);
+}
+.nx-opt-field .select, .nx-opt-field .input {
+  width: 100%; font-size: 12.5px; padding: 7px 9px; min-height: 36px;
+}
+.nx-section-toggle {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 8px 12px; border-radius: 11px; margin-bottom: 10px;
+  background: var(--surface); border: 1px solid var(--border);
+  cursor: pointer; user-select: none;
+}
+.nx-section-toggle:hover { border-color: var(--c-accent); }
+.nx-swipe-chips {
+  display: flex; gap: 6px; flex-wrap: wrap;
+}
 
 @media (max-width: 820px) {
   .nx-filter-bar { padding: 7px 8px; gap: 5px; }
   .nx-filter-bar .nx-q-inp { width: 100%; flex: 1 1 100%; order: -1; }
+  .nx-swipe-chips {
+    flex-wrap: nowrap; overflow-x: auto; max-width: 100%;
+    -webkit-overflow-scrolling: touch; scrollbar-width: none; padding-bottom: 2px;
+  }
+  .nx-swipe-chips::-webkit-scrollbar { display: none; }
+  .nx-swipe-chips > * { flex-shrink: 0; }
+  .nx-opt-grid-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
   .nx-filter-panel-wrap.open .nx-sheet-scrim {
     display: block; position: fixed; inset: 0; z-index: 950;
     background: rgba(15, 23, 42, 0.58); backdrop-filter: blur(2px);
@@ -845,7 +873,7 @@ table.data-table tbody tr:hover { background: var(--surface-2); }
   .nx-filter-panel-wrap.open .nx-collapsible-panel {
     display: flex !important; flex-direction: column;
     position: fixed; left: 0; right: 0; bottom: 0; z-index: 960;
-    max-height: 82vh; margin: 0 !important; padding: 0 !important;
+    max-height: 84vh; margin: 0 !important; padding: 0 !important;
     border-radius: 20px 20px 0 0 !important;
     background: var(--surface) !important;
     box-shadow: 0 -16px 48px rgba(0, 0, 0, 0.35);

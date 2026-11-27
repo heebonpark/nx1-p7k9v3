@@ -3800,6 +3800,10 @@ const S = {
   // Corp filters
   corpQ: '', corpSd: '', corpType: '', corpTag: '', corpStatus: '', corpRevMin: '', corpSort: 'rev', corpPage: 1,
   corpIndMult: new Map(),
+  // Universal Collapsible Panel / Mobile Bottom-Sheet State (v37)
+  ovOptOpen: window.innerWidth > 820,
+  ovVizOpen: window.innerWidth > 820,
+  corpFilterOpen: window.innerWidth > 820,
   // Bid filters & v8~v15 Early-Detection Radar GIS Map + Practical Suite state
   bidSub: 'map', bidQ: '', bidStage: '', bidField: '', bidUrgency: '', bidBudgetMin: 0, bidSd: '', bidPage: 1,
   bidHideCancelled: true, bidMyKwOnly: false, bidMyBizOnly: false,
@@ -3807,6 +3811,12 @@ const S = {
   bidMapOptOpen: window.innerWidth > 820,
   sbizSidoOpen: window.innerWidth > 820,
   sbizGisOpen: window.innerWidth > 820,
+  sbizFilterOpen: window.innerWidth > 820,
+  sbizYmOpen: window.innerWidth > 820,
+  reFilterOpen: window.innerWidth > 820,
+  reOnlyFit: false,
+  hubDiagOpen: window.innerWidth > 820,
+  hubTaxOpen: window.innerWidth > 820,
   bidMyKeywords: (() => { try { return localStorage.getItem('nx1_bid_my_kw_v1') || 'CCTV,관제,보안,소방,승강기,시설,경비,미화,전기,통신,보험'; } catch { return 'CCTV,관제,보안,소방,승강기,시설,경비,미화,전기,통신,보험'; } })(),
   myBiz: (() => { try { return JSON.parse(localStorage.getItem('nx1_mybiz_v1') || '{}') || {}; } catch { return {}; } })(),
   qualProfile: (() => { try { return Object.assign({ credit: 'BBB', perfEok: 15, bonus: 1.5, cutoff: 95 }, JSON.parse(localStorage.getItem('nx1_qual_profile_v1') || '{}') || {}); } catch { return { credit: 'BBB', perfEok: 15, bonus: 1.5, cutoff: 95 }; } })(),
@@ -4779,30 +4789,46 @@ function renderOverview() {
       </div>
     </div>
 
-    <!-- EXPERT TOP 10 TECHNIQUES RIBBON -->
-    <div class="top10-ribbon">
-      <span class="gis-label">🏆 전문가 TOP 10 기법:</span>
-      <button class="top10-pill" data-t10="sliders" type="button">① 4축 가중치·5전략</button>
-      <button class="top10-pill" data-t10="radar" type="button">② 4-Way 레이더</button>
-      <button class="top10-pill" data-t10="hhi" type="button">③ 업종 HHI 집중도</button>
-      <button class="top10-pill" data-t10="lq" type="button">④ 입지계수 LQ</button>
-      <button class="top10-pill" data-t10="pareto" type="button">⑤ 파레토·지니곡선</button>
-      <button class="top10-pill" data-t10="blue" type="button">⑥ 블루오션 지수</button>
-      <button class="top10-pill" data-t10="bcg" type="button">⑦ BCG 4분면 매트릭스</button>
-      <button class="top10-pill" data-t10="sido" type="button">⑧ 17시도 누적비교</button>
-      <button class="top10-pill" data-t10="gis" type="button">⑨ 히트맵·반경·건물스택</button>
-      <button class="top10-pill" data-t10="cmp" type="button">⑩ 2지역 비교·전략진단</button>
+    <!-- COLLAPSIBLE STRATEGY · WEIGHTS · TOP 10 DECK (v37 Mobile-First) -->
+    <div class="nx-collapse-bar" style="margin-top:10px">
+      <button id="btnOvOptToggle" class="btn btn-sm ${S.ovOptOpen ? 'btn-primary' : ''}" type="button">
+        🧠 전략·가중치·TOP 10 옵션 <span class="tag tag-corp" style="margin-left:4px">${esc(STRATEGY_PRESETS[S.opts.preset]?.label || '커스텀')}</span> ${S.ovOptOpen ? '▴' : '▾'}
+      </button>
+      <button id="btnToggleSlidersQuick" class="btn btn-sm ${S.showSliders ? 'btn-primary' : ''}" type="button">
+        🎚️ 가중치 (${wPct(w.corp)}/${wPct(w.bid)}/${wPct(w.sbiz)}/${wPct(w.re)})
+      </button>
+      ${S.opts.showBcgCharts ? `
+        <button id="btnOvVizToggle" class="btn btn-sm ${S.ovVizOpen ? 'btn-primary' : ''}" type="button" style="margin-left:auto">
+          📊 BCG·17시도 차트 ${S.ovVizOpen ? '▴' : '▾'}
+        </button>` : ''}
     </div>
 
-    <!-- EXPERT STRATEGY PRESET BAR -->
-    <div class="preset-bar">
-      <span class="gis-label">🧠 전문가 전략 모델:</span>
-      ${Object.entries(STRATEGY_PRESETS).map(([k, p]) => `
-        <button class="chip ${S.opts.preset === k ? 'active' : ''}" data-preset="${k}" title="${esc(p.desc)}">${p.label}</button>
-      `).join('')}
-      <button id="btnToggleSliders" class="btn btn-sm" style="margin-left:auto" type="button">
-        🎚️ 가중치 커스텀 (${wPct(w.corp)}/${wPct(w.bid)}/${wPct(w.sbiz)}/${wPct(w.re)})
-      </button>
+    <div id="ovOptDeck" class="nx-collapsible-panel ${S.ovOptOpen ? '' : 'collapsed'}">
+      <!-- EXPERT TOP 10 TECHNIQUES RIBBON -->
+      <div class="top10-ribbon">
+        <span class="gis-label">🏆 전문가 TOP 10 기법:</span>
+        <button class="top10-pill" data-t10="sliders" type="button">① 4축 가중치·5전략</button>
+        <button class="top10-pill" data-t10="radar" type="button">② 4-Way 레이더</button>
+        <button class="top10-pill" data-t10="hhi" type="button">③ 업종 HHI 집중도</button>
+        <button class="top10-pill" data-t10="lq" type="button">④ 입지계수 LQ</button>
+        <button class="top10-pill" data-t10="pareto" type="button">⑤ 파레토·지니곡선</button>
+        <button class="top10-pill" data-t10="blue" type="button">⑥ 블루오션 지수</button>
+        <button class="top10-pill" data-t10="bcg" type="button">⑦ BCG 4분면 매트릭스</button>
+        <button class="top10-pill" data-t10="sido" type="button">⑧ 17시도 누적비교</button>
+        <button class="top10-pill" data-t10="gis" type="button">⑨ 히트맵·반경·건물스택</button>
+        <button class="top10-pill" data-t10="cmp" type="button">⑩ 2지역 비교·전략진단</button>
+      </div>
+
+      <!-- EXPERT STRATEGY PRESET BAR -->
+      <div class="preset-bar">
+        <span class="gis-label">🧠 전문가 전략 모델:</span>
+        ${Object.entries(STRATEGY_PRESETS).map(([k, p]) => `
+          <button class="chip ${S.opts.preset === k ? 'active' : ''}" data-preset="${k}" title="${esc(p.desc)}">${p.label}</button>
+        `).join('')}
+        <button id="btnToggleSliders" class="btn btn-sm" style="margin-left:auto" type="button">
+          🎚️ 가중치 커스텀 (${wPct(w.corp)}/${wPct(w.bid)}/${wPct(w.sbiz)}/${wPct(w.re)})
+        </button>
+      </div>
     </div>
 
     ${S.showSliders ? `
@@ -4846,7 +4872,7 @@ function renderOverview() {
           </select>
         </div>
 
-        <div class="chips" style="margin-bottom:10px">
+        <div class="chips nx-swipe-chips" style="margin-bottom:10px">
           ${quickRids.map((r) => `<button class="chip ${r.rid === reg.rid ? 'active' : ''}" data-pick-rid="${r.rid}">${esc(r.sidoShort)} ${esc(r.name)}</button>`).join('')}
         </div>
 
@@ -4875,7 +4901,7 @@ function renderOverview() {
 
     ${cmpReg ? renderCompareMatrixCard(reg, cmpReg) : ''}
 
-    ${S.opts.showBcgCharts ? renderVisualizationsDeck(reg) : ''}
+    ${S.opts.showBcgCharts ? `<div id="ovVizWrap" class="nx-collapsible-panel ${S.ovVizOpen ? '' : 'collapsed'}">${renderVisualizationsDeck(reg)}</div>` : ''}
 
     <!-- TOP 25 RANKING + PARETO/LORENZ EXPERT CARD -->
     <div class="card" style="margin-top:16px">
@@ -4887,8 +4913,8 @@ function renderOverview() {
             (${lorenz.gini >= 0.45 ? '고집중·핵심거점 타깃팅 유리' : '전국 분산형 시장'})
           </p>
         </div>
-        <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
-          <div class="chips">
+        <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;max-width:100%">
+          <div class="chips nx-swipe-chips">
             ${[
               ['total', '통합점수'],
               ['blueOcean', '💎 블루오션'],
@@ -4947,6 +4973,9 @@ function renderOverview() {
   `;
 
   // Wire Overview Events
+  $('btnOvOptToggle')?.addEventListener('click', () => { S.ovOptOpen = !S.ovOptOpen; renderOverview(); });
+  $('btnToggleSlidersQuick')?.addEventListener('click', () => { S.showSliders = !S.showSliders; renderOverview(); });
+  $('btnOvVizToggle')?.addEventListener('click', () => { S.ovVizOpen = !S.ovVizOpen; renderOverview(); });
   $('mainStage').querySelectorAll('[data-jump]').forEach((el) => el.addEventListener('click', () => switchTab(el.dataset.jump)));
   $('mainStage').querySelectorAll('[data-t10]').forEach((el) => {
     el.addEventListener('click', () => {
@@ -4954,7 +4983,7 @@ function renderOverview() {
       if (k === 'sliders') { S.showSliders = true; renderOverview(); }
       else if (k === 'lq') { S.mapMetric = 'lq'; renderOverview(); }
       else if (k === 'blue') { S.mapMetric = 'blueOcean'; S.rankSort = 'blueOcean'; renderOverview(); }
-      else if (k === 'bcg' || k === 'sido') { S.opts.showBcgCharts = true; saveOpts(); renderOverview(); setTimeout(() => $('vizDeck')?.scrollIntoView({ behavior: 'smooth' }), 60); }
+      else if (k === 'bcg' || k === 'sido') { S.opts.showBcgCharts = true; S.ovVizOpen = true; saveOpts(); renderOverview(); setTimeout(() => $('vizDeck')?.scrollIntoView({ behavior: 'smooth' }), 60); }
       else if (k === 'pareto') { $('btnExport229Csv')?.scrollIntoView({ behavior: 'smooth' }); }
       else if (k === 'gis') { switchTab('sbiz'); }
       else if (k === 'cmp') { $('btnAiStrategy')?.click(); }
@@ -4972,7 +5001,7 @@ function renderOverview() {
       renderOverview();
     });
   });
-  $('btnToggleSliders').addEventListener('click', () => { S.showSliders = !S.showSliders; renderOverview(); });
+  $('btnToggleSliders')?.addEventListener('click', () => { S.showSliders = !S.showSliders; renderOverview(); });
   $('mainStage').querySelectorAll('input[data-w-key]').forEach((inp) => {
     inp.addEventListener('input', () => {
       S.opts.preset = 'custom';
@@ -5631,6 +5660,16 @@ function renderCorpTab() {
   const pageRows = filtered.slice((S.corpPage - 1) * perPage, S.corpPage * perPage);
   const stLabel = (c) => (c === 1 ? '<span class="tag tag-sbiz">계속</span>' : c === 2 ? '<span class="tag tag-bid">휴업</span>' : c === 3 ? '<span class="tag tag-re">폐업</span>' : '<span class="tag tag-gray">미확인</span>');
 
+  const corpRevLabels = { dart: '💰 DART 공시매출만', any: '📊 공시+추정 매출 보유', 10: '10억+', 50: '50억+', 100: '100억+', 500: '500억+', 1000: '1,000억+' };
+  const corpStLabels = { 1: '계속사업자', 2: '휴업자', 3: '폐업자' };
+  const corpActiveTags = [];
+  if (S.corpSd) corpActiveTags.push(['sd', `📍 ${sidos.find((s) => s.sd === S.corpSd)?.n || S.corpSd}`]);
+  if (S.corpRevMin) corpActiveTags.push(['rev', corpRevLabels[S.corpRevMin] || `${S.corpRevMin}억+`]);
+  if (S.corpType !== '') corpActiveTags.push(['type', `시장: ${corpTypes[Number(S.corpType)] || S.corpType}`]);
+  if (S.corpTag) corpActiveTags.push(['tag', `태그: ${S.corpTags.find((t) => t.id === S.corpTag)?.label || S.corpTag}`]);
+  if (S.corpStatus) corpActiveTags.push(['status', `국세청: ${corpStLabels[S.corpStatus] || S.corpStatus}`]);
+  const corpFilterCnt = corpActiveTags.length;
+
   $('mainStage').innerHTML = `
     <div class="card">
       <div class="card-head">
@@ -5644,50 +5683,91 @@ function renderCorpTab() {
         </div>
       </div>
 
-      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;margin-bottom:10px">
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px;margin-bottom:10px">
         <div class="domain-box" style="padding:8px 10px"><div style="font-size:11px;color:var(--muted)">조회 법인</div><b style="font-size:15px">${fmt(filtered.length)}사</b></div>
         <div class="domain-box" style="padding:8px 10px"><div style="font-size:11px;color:var(--muted)">DART 공시매출</div><b style="font-size:15px;color:#059669">${fmt(dartCnt)}사</b></div>
         <div class="domain-box" style="padding:8px 10px"><div style="font-size:11px;color:var(--muted)">국민연금 추정매출</div><b style="font-size:15px;color:#4f46e5">${fmt(estCnt)}사</b></div>
         <div class="domain-box" style="padding:8px 10px"><div style="font-size:11px;color:var(--muted)">합산 매출 규모</div><b style="font-size:15px">${totalRevEok >= 10000 ? `${fmtDec(totalRevEok / 10000, 1)}조원` : `${fmt(Math.round(totalRevEok))}억원`}</b></div>
       </div>
 
-      <div class="toolbar">
-        <input id="fCorpQ" class="input" style="flex:1;min-width:190px" value="${esc(S.corpQ)}" placeholder="기업명 · 대표자 · 사업자번호 · 주소 · 업종 검색" />
-        <select id="fCorpSd" class="select">
-          <option value="">전국 시도</option>
-          ${sidos.map((s) => `<option value="${s.sd}" ${S.corpSd === s.sd ? 'selected' : ''}>${esc(s.n)}</option>`).join('')}
-        </select>
-        <select id="fCorpRev" class="select">
-          <option value="" ${S.corpRevMin === '' ? 'selected' : ''}>전체 매출</option>
-          <option value="dart" ${S.corpRevMin === 'dart' ? 'selected' : ''}>💰 DART 공시매출만</option>
-          <option value="any" ${S.corpRevMin === 'any' ? 'selected' : ''}>📊 공시+추정 매출 보유</option>
-          <option value="10" ${S.corpRevMin === '10' ? 'selected' : ''}>10억 이상</option>
-          <option value="50" ${S.corpRevMin === '50' ? 'selected' : ''}>50억 이상</option>
-          <option value="100" ${S.corpRevMin === '100' ? 'selected' : ''}>100억 이상</option>
-          <option value="500" ${S.corpRevMin === '500' ? 'selected' : ''}>500억 이상</option>
-          <option value="1000" ${S.corpRevMin === '1000' ? 'selected' : ''}>1,000억 이상</option>
-        </select>
-        <select id="fCorpType" class="select">
-          <option value="">전체 시장</option>
-          ${corpTypes.map((c, idx) => `<option value="${idx}" ${S.corpType === String(idx) ? 'selected' : ''}>${esc(c)}</option>`).join('')}
-        </select>
-        <select id="fCorpTag" class="select">
-          <option value="">전체 태그</option>
-          ${S.corpTags.map((t) => `<option value="${t.id}" ${S.corpTag === t.id ? 'selected' : ''}>${esc(t.label)} (${fmt(t.set.size)})</option>`).join('')}
-        </select>
-        <select id="fCorpStatus" class="select">
-          <option value="">국세청 전체</option>
-          <option value="1" ${S.corpStatus === '1' ? 'selected' : ''}>계속사업자</option>
-          <option value="2" ${S.corpStatus === '2' ? 'selected' : ''}>휴업자</option>
-          <option value="3" ${S.corpStatus === '3' ? 'selected' : ''}>폐업자</option>
-        </select>
-        <select id="fCorpSort" class="select">
-          <option value="rev" ${S.corpSort === 'rev' ? 'selected' : ''}>매출 높은순 (공시+추정)</option>
-          <option value="dartRev" ${S.corpSort === 'dartRev' ? 'selected' : ''}>DART 공시매출순</option>
-          <option value="emp" ${S.corpSort === 'emp' ? 'selected' : ''}>국민연금 인원순</option>
-          <option value="net" ${S.corpSort === 'net' ? 'selected' : ''}>최근 순증(채용)순</option>
-          <option value="est" ${S.corpSort === 'est' ? 'selected' : ''}>최근 설립순</option>
-        </select>
+      <div class="nx-filter-bar">
+        <input id="fCorpQ" class="input nx-q-inp" value="${esc(S.corpQ)}" placeholder="🔍 기업명 · 대표자 · 사업자번호 · 주소 · 업종 검색" />
+        <button id="btnCorpQuickAny" type="button" class="toggle-pill ${S.corpRevMin === 'any' ? 'on' : ''}">📊 매출보유</button>
+        <button id="btnCorpQuickDart" type="button" class="toggle-pill ${S.corpRevMin === 'dart' ? 'on-emerald' : ''}">💰 공시만</button>
+        <button id="btnCorpFilterToggle" type="button" class="btn btn-sm ${S.corpFilterOpen ? 'btn-primary' : ''}">
+          🎛️ 상세조건${corpFilterCnt > 0 ? `<span class="nx-filter-badge">${corpFilterCnt}</span>` : ''} ${S.corpFilterOpen ? '▴' : '▾'}
+        </button>
+      </div>
+
+      ${corpActiveTags.length ? `
+        <div class="nx-active-pills">
+          ${corpActiveTags.map(([k, lb]) => `<button type="button" class="nx-active-pill" data-clear-cf="${k}">${esc(lb)} <span>✕</span></button>`).join('')}
+          <button type="button" class="toggle-pill" id="btnCorpResetPills" style="padding:2px 8px;font-size:11px">🔄 초기화</button>
+        </div>` : ''}
+
+      <div id="corpFilterPanelWrap" class="nx-filter-panel-wrap ${S.corpFilterOpen ? 'open' : ''}">
+        <div class="nx-sheet-scrim" id="corpFilterScrim"></div>
+        <div id="corpFilterPanel" class="gis-deck nx-collapsible-panel ${S.corpFilterOpen ? '' : 'collapsed'}" style="margin-bottom:10px">
+          <div class="nx-sheet-head">
+            <span>🎛️ 기업분석 검색 · 선택 조건</span>
+            <button type="button" class="icon-btn" id="btnCorpFilterClose" style="padding:3px 9px">✕</button>
+          </div>
+          <div class="nx-sheet-body">
+            <div class="nx-opt-grid-2">
+              <label class="nx-opt-field">📍 지역 (시도)
+                <select id="fCorpSd" class="select">
+                  <option value="">전국 시도</option>
+                  ${sidos.map((s) => `<option value="${s.sd}" ${S.corpSd === s.sd ? 'selected' : ''}>${esc(s.n)}</option>`).join('')}
+                </select>
+              </label>
+              <label class="nx-opt-field">💰 매출 규모
+                <select id="fCorpRev" class="select">
+                  <option value="" ${S.corpRevMin === '' ? 'selected' : ''}>전체 매출</option>
+                  <option value="dart" ${S.corpRevMin === 'dart' ? 'selected' : ''}>💰 DART 공시매출만</option>
+                  <option value="any" ${S.corpRevMin === 'any' ? 'selected' : ''}>📊 공시+추정 매출 보유</option>
+                  <option value="10" ${S.corpRevMin === '10' ? 'selected' : ''}>10억 이상</option>
+                  <option value="50" ${S.corpRevMin === '50' ? 'selected' : ''}>50억 이상</option>
+                  <option value="100" ${S.corpRevMin === '100' ? 'selected' : ''}>100억 이상</option>
+                  <option value="500" ${S.corpRevMin === '500' ? 'selected' : ''}>500억 이상</option>
+                  <option value="1000" ${S.corpRevMin === '1000' ? 'selected' : ''}>1,000억 이상</option>
+                </select>
+              </label>
+              <label class="nx-opt-field">🏛️ 상장 / 시장 구분
+                <select id="fCorpType" class="select">
+                  <option value="">전체 시장</option>
+                  ${corpTypes.map((c, idx) => `<option value="${idx}" ${S.corpType === String(idx) ? 'selected' : ''}>${esc(c)}</option>`).join('')}
+                </select>
+              </label>
+              <label class="nx-opt-field">🏷️ 강소·인증 태그
+                <select id="fCorpTag" class="select">
+                  <option value="">전체 태그</option>
+                  ${S.corpTags.map((t) => `<option value="${t.id}" ${S.corpTag === t.id ? 'selected' : ''}>${esc(t.label)} (${fmt(t.set.size)})</option>`).join('')}
+                </select>
+              </label>
+              <label class="nx-opt-field">🧾 국세청 사업자상태
+                <select id="fCorpStatus" class="select">
+                  <option value="">국세청 전체</option>
+                  <option value="1" ${S.corpStatus === '1' ? 'selected' : ''}>계속사업자</option>
+                  <option value="2" ${S.corpStatus === '2' ? 'selected' : ''}>휴업자</option>
+                  <option value="3" ${S.corpStatus === '3' ? 'selected' : ''}>폐업자</option>
+                </select>
+              </label>
+              <label class="nx-opt-field">↕️ 정렬 기준
+                <select id="fCorpSort" class="select">
+                  <option value="rev" ${S.corpSort === 'rev' ? 'selected' : ''}>매출 높은순 (공시+추정)</option>
+                  <option value="dartRev" ${S.corpSort === 'dartRev' ? 'selected' : ''}>DART 공시매출순</option>
+                  <option value="emp" ${S.corpSort === 'emp' ? 'selected' : ''}>국민연금 인원순</option>
+                  <option value="net" ${S.corpSort === 'net' ? 'selected' : ''}>최근 순증(채용)순</option>
+                  <option value="est" ${S.corpSort === 'est' ? 'selected' : ''}>최근 설립순</option>
+                </select>
+              </label>
+            </div>
+          </div>
+          <div class="nx-sheet-foot">
+            <button type="button" class="btn btn-sm" id="btnCorpSheetReset" style="flex:1">🔄 초기화</button>
+            <button type="button" class="btn btn-primary btn-sm" id="btnCorpSheetApply" style="flex:2">✅ ${fmt(filtered.length)}사 결과 보기</button>
+          </div>
+        </div>
       </div>
 
       <div class="table-wrap">
@@ -5734,6 +5814,42 @@ function renderCorpTab() {
   `;
 
   let timer = null;
+  const resetCorpAll = () => {
+    S.corpQ = ''; S.corpSd = ''; S.corpRevMin = ''; S.corpType = ''; S.corpTag = ''; S.corpStatus = ''; S.corpPage = 1;
+    if (window.innerWidth <= 820) S.corpFilterOpen = false;
+    renderCorpTab();
+  };
+  const toggleCorpPanel = (forceVal) => {
+    S.corpFilterOpen = typeof forceVal === 'boolean' ? forceVal : !S.corpFilterOpen;
+    $('corpFilterPanelWrap')?.classList.toggle('open', S.corpFilterOpen);
+    $('corpFilterPanel')?.classList.toggle('collapsed', !S.corpFilterOpen);
+    const b = $('btnCorpFilterToggle');
+    if (b) {
+      b.classList.toggle('btn-primary', S.corpFilterOpen);
+      b.innerHTML = b.innerHTML.replace(/[▴▾]/, S.corpFilterOpen ? '▴' : '▾');
+    }
+  };
+  $('btnCorpFilterToggle')?.addEventListener('click', () => toggleCorpPanel());
+  $('btnCorpFilterClose')?.addEventListener('click', () => toggleCorpPanel(false));
+  $('corpFilterScrim')?.addEventListener('click', () => toggleCorpPanel(false));
+  $('btnCorpSheetApply')?.addEventListener('click', () => toggleCorpPanel(false));
+  $('btnCorpSheetReset')?.addEventListener('click', resetCorpAll);
+  $('btnCorpResetPills')?.addEventListener('click', resetCorpAll);
+  $('btnCorpQuickAny')?.addEventListener('click', () => { S.corpRevMin = S.corpRevMin === 'any' ? '' : 'any'; S.corpPage = 1; renderCorpTab(); });
+  $('btnCorpQuickDart')?.addEventListener('click', () => { S.corpRevMin = S.corpRevMin === 'dart' ? '' : 'dart'; S.corpPage = 1; renderCorpTab(); });
+  $('mainStage').querySelectorAll('[data-clear-cf]').forEach((b) => {
+    b.addEventListener('click', () => {
+      const k = b.dataset.clearCf;
+      if (k === 'sd') S.corpSd = '';
+      else if (k === 'rev') S.corpRevMin = '';
+      else if (k === 'type') S.corpType = '';
+      else if (k === 'tag') S.corpTag = '';
+      else if (k === 'status') S.corpStatus = '';
+      S.corpPage = 1;
+      renderCorpTab();
+    });
+  });
+
   $('fCorpQ').addEventListener('input', (e) => { clearTimeout(timer); timer = setTimeout(() => { S.corpQ = e.target.value; S.corpPage = 1; renderCorpTab(); }, 220); });
   $('fCorpSd').addEventListener('change', (e) => { S.corpSd = e.target.value; S.corpPage = 1; renderCorpTab(); });
   $('fCorpRev').addEventListener('change', (e) => { S.corpRevMin = e.target.value; S.corpPage = 1; renderCorpTab(); });
@@ -5741,7 +5857,7 @@ function renderCorpTab() {
   $('fCorpTag').addEventListener('change', (e) => { S.corpTag = e.target.value; S.corpPage = 1; renderCorpTab(); });
   $('fCorpStatus').addEventListener('change', (e) => { S.corpStatus = e.target.value; S.corpPage = 1; renderCorpTab(); });
   $('fCorpSort').addEventListener('change', (e) => { S.corpSort = e.target.value; S.corpPage = 1; renderCorpTab(); });
-  $('btnCorpReset').addEventListener('click', () => { S.corpQ = ''; S.corpSd = ''; S.corpRevMin = ''; S.corpType = ''; S.corpTag = ''; S.corpStatus = ''; S.corpPage = 1; renderCorpTab(); });
+  $('btnCorpReset').addEventListener('click', resetCorpAll);
   $('btnCorpCsv').addEventListener('click', () => {
     downloadCsv(
       `기업분석_${getTodayKstIso()}.csv`,
@@ -5985,7 +6101,7 @@ function renderBidTab() {
           <h2 class="card-title">🎯 공동주택 · 관공서 입찰 & 조기포착 레이더 PRO</h2>
           <p class="card-sub">카톡 알림봇 동일 실시간 소스(나라장터 02 · 사전규격 ao · 청약홈) + 국토부 건축인허가 · K-apt · 건설사 12,198사</p>
         </div>
-        <div class="chips">
+        <div class="chips nx-swipe-chips">
           <button class="chip ${S.bidSub === 'map' ? 'active' : ''}" data-bid-sub="map">🗺️ 조기포착·입찰 지도 (${fmt(S.opps.length)})</button>
           <button class="chip ${S.bidSub === 'opps' ? 'active' : ''}" data-bid-sub="opps">📋 전체 리스트</button>
           <button class="chip ${S.bidSub === 'builders' ? 'active' : ''}" data-bid-sub="builders">🏗️ 건설·시설사 (${fmt(S.core.stats.builderCount)}사)</button>
@@ -6185,15 +6301,20 @@ function wireBidFilterControls(onUpdate) {
   $('btnBidSheetReset')?.addEventListener('click', resetAllFilters);
   $('btnBidResetAll')?.addEventListener('click', resetAllFilters);
 
-  $('btnBidMapOptToggle')?.addEventListener('click', () => {
-    S.bidMapOptOpen = !S.bidMapOptOpen;
+  const toggleBidMapOpt = (forceVal) => {
+    S.bidMapOptOpen = typeof forceVal === 'boolean' ? forceVal : !S.bidMapOptOpen;
+    $('bidMapOptPanelWrap')?.classList.toggle('open', S.bidMapOptOpen);
     $('bidMapOptDeck')?.classList.toggle('collapsed', !S.bidMapOptOpen);
     const b = $('btnBidMapOptToggle');
     if (b) {
       b.classList.toggle('btn-primary', S.bidMapOptOpen);
       b.textContent = `🗺️ 지도옵션 ${S.bidMapOptOpen ? '▴' : '▾'}`;
     }
-  });
+  };
+  $('btnBidMapOptToggle')?.addEventListener('click', () => toggleBidMapOpt());
+  $('btnBidMapOptClose')?.addEventListener('click', () => toggleBidMapOpt(false));
+  $('bidMapOptScrim')?.addEventListener('click', () => toggleBidMapOpt(false));
+  $('btnBidMapOptDone')?.addEventListener('click', () => toggleBidMapOpt(false));
 
   $('btnBidQuickToday')?.addEventListener('click', () => {
     S.bidUrgency = S.bidUrgency === 'todayBid' ? '' : 'todayBid';
@@ -6296,21 +6417,33 @@ function renderBidMapWorkspace() {
   $('bidBody').innerHTML = `
     ${renderBidFilterDeckHtml()}
 
-    <div id="bidMapOptDeck" class="gis-deck nx-collapsible-panel ${S.bidMapOptOpen ? '' : 'collapsed'}" style="margin-bottom:10px;padding:7px 11px">
-      <div class="gis-row">
-        <span class="gis-label">🗺️ 레이더 지도:</span>
-        ${[
-          ['vbase', '브이월드 기본'],
-          ['vhyb', '🛰️ 위성+도로'],
-          ['vmidnight', '🌙 다크'],
-          ['osm', 'OSM'],
-        ].map(([k, lb]) => `<button class="toggle-pill ${S.bidMapBase === k ? 'on' : ''}" data-bm-base="${k}" type="button">${lb}</button>`).join('')}
-        <button class="toggle-pill ${S.bidWms.cadastral ? 'on-emerald' : ''}" data-bm-wms="cadastral" type="button">📐 연속지적도</button>
-        <button class="toggle-pill ${S.bidWms.zoning ? 'on-emerald' : ''}" data-bm-wms="zoning" type="button">🏙️ 용도지역</button>
-        <span class="gis-label" style="margin-left:6px">표시:</span>
-        <button class="toggle-pill ${S.bidMapMode === 'cluster' ? 'on' : ''}" data-bm-mode="cluster" type="button">🔵 시군구 집계</button>
-        <button class="toggle-pill ${S.bidMapMode === 'pins' ? 'on' : ''}" data-bm-mode="pins" type="button">📍 개별 공고핀</button>
-        <button id="btnBidMapFit" class="btn btn-sm" style="margin-left:auto" type="button">🎯 결과 맞춤</button>
+    <div id="bidMapOptPanelWrap" class="nx-filter-panel-wrap ${S.bidMapOptOpen ? 'open' : ''}">
+      <div class="nx-sheet-scrim" id="bidMapOptScrim"></div>
+      <div id="bidMapOptDeck" class="gis-deck nx-collapsible-panel ${S.bidMapOptOpen ? '' : 'collapsed'}" style="margin-bottom:10px;padding:7px 11px">
+        <div class="nx-sheet-head">
+          <span>🗺️ 입찰 레이더 지도 · 지적도 옵션</span>
+          <button type="button" class="icon-btn" id="btnBidMapOptClose" style="padding:3px 9px">✕</button>
+        </div>
+        <div class="nx-sheet-body">
+          <div class="gis-row">
+            <span class="gis-label">🗺️ 레이더 지도:</span>
+            ${[
+              ['vbase', '브이월드 기본'],
+              ['vhyb', '🛰️ 위성+도로'],
+              ['vmidnight', '🌙 다크'],
+              ['osm', 'OSM'],
+            ].map(([k, lb]) => `<button class="toggle-pill ${S.bidMapBase === k ? 'on' : ''}" data-bm-base="${k}" type="button">${lb}</button>`).join('')}
+            <button class="toggle-pill ${S.bidWms.cadastral ? 'on-emerald' : ''}" data-bm-wms="cadastral" type="button">📐 연속지적도</button>
+            <button class="toggle-pill ${S.bidWms.zoning ? 'on-emerald' : ''}" data-bm-wms="zoning" type="button">🏙️ 용도지역</button>
+            <span class="gis-label" style="margin-left:6px">표시:</span>
+            <button class="toggle-pill ${S.bidMapMode === 'cluster' ? 'on' : ''}" data-bm-mode="cluster" type="button">🔵 시군구 집계</button>
+            <button class="toggle-pill ${S.bidMapMode === 'pins' ? 'on' : ''}" data-bm-mode="pins" type="button">📍 개별 공고핀</button>
+            <button id="btnBidMapFit" class="btn btn-sm" style="margin-left:auto" type="button">🎯 결과 맞춤</button>
+          </div>
+        </div>
+        <div class="nx-sheet-foot">
+          <button type="button" class="btn btn-primary btn-sm" id="btnBidMapOptDone" style="flex:1">✅ 지도 옵션 적용</button>
+        </div>
       </div>
     </div>
 
@@ -8331,7 +8464,7 @@ function renderSbizTab() {
         </div>
       `}
 
-      ${active ? `<div id="sbizYmTimeline"></div>` : ''}
+      ${active ? `<div id="sbizYmTimeline" class="nx-collapsible-panel ${S.sbizYmOpen ? '' : 'collapsed'}"></div>` : ''}
 
       <div id="sbizWorkspace" class="sbiz-workspace ${S.sbizSplitView && active ? 'split' : ''}">
         <div>
@@ -8547,45 +8680,91 @@ function renderSbizControlsHtml(active) {
     ? ds.yms.filter(([ym]) => ym.startsWith(S.sbizYear)).map(([ym, cnt]) => [ym.slice(4, 6), cnt])
     : Array.from({ length: 12 }, (_, idx) => [String(idx + 1).padStart(2, '0'), null]);
 
+  const sbTags = [];
+  if (S.sbizSgg) sbTags.push(['sgg', `📍 ${cleanSbizLabel(S.sbizSgg)}`]);
+  if (S.sbizL1) sbTags.push(['l1', `🏪 ${S.sbizL1}`]);
+  if (S.sbizPeriod === 'recent3m') sbTags.push(['period', '🔥 최근 3개월']);
+  else if (S.sbizPeriod === 'old') sbTags.push(['period', '🏛️ 2022~23']);
+  else if (S.sbizYear || S.sbizMonth) sbTags.push(['ym', `📅 ${S.sbizYear || '전체'}년${S.sbizMonth ? ' ' + S.sbizMonth + '월' : ''}`]);
+  const sbFilterCnt = sbTags.length;
+
   return `
-    <div class="toolbar" style="margin-bottom:8px">
-      <input id="fSbizQ" class="input" style="flex:1;min-width:170px" value="${esc(S.sbizQ)}" placeholder="상호명 · 건물명 · 도로명 검색 (${esc(active.name)})" />
-      <select id="fSbizSgg" class="select">
-        <option value="">전체 시군구</option>
-        ${sggs.map((g) => `<option value="${esc(g)}" ${S.sbizSgg === g ? 'selected' : ''}>${esc(cleanSbizLabel(g))}</option>`).join('')}
-      </select>
-      <select id="fSbizL1" class="select">
-        <option value="">전체 업종</option>
-        ${l1s.map((l) => `<option value="${esc(l)}" ${S.sbizL1 === l ? 'selected' : ''}>${esc(l)}</option>`).join('')}
-      </select>
-      <select id="fSbizYear" class="select" title="등재 연도 구분">
-        <option value="">📅 전체 연도</option>
-        ${ds.years.map(([y, cnt]) => `<option value="${y}" ${S.sbizYear === y ? 'selected' : ''}>${y}년 (${fmt(cnt)})</option>`).join('')}
-      </select>
-      <select id="fSbizMonth" class="select" title="등재 월 구분">
-        <option value="">전체 월</option>
-        ${availMonths.map(([m, cnt]) => `<option value="${m}" ${S.sbizMonth === m ? 'selected' : ''}>${m}월${cnt !== null ? ` (${fmt(cnt)})` : ''}</option>`).join('')}
-      </select>
-      <select id="fSbizSort" class="select" title="리스트 정렬">
-        <option value="ymDesc" ${S.sbizSort === 'ymDesc' ? 'selected' : ''}>📅 최신 등재순</option>
-        <option value="ymAsc" ${S.sbizSort === 'ymAsc' ? 'selected' : ''}>📅 오래된 등재순</option>
-        <option value="name" ${S.sbizSort === 'name' ? 'selected' : ''}>🔤 상호명순</option>
-      </select>
+    <div class="nx-filter-bar">
+      <input id="fSbizQ" class="input nx-q-inp" value="${esc(S.sbizQ)}" placeholder="🔍 상호명 · 건물명 · 도로명 검색 (${esc(active.name)})" />
+      <button id="btnSbizQuick2026" type="button" class="toggle-pill ${S.sbizPeriod === '2026' ? 'on-emerald' : ''}">🆕 2026년</button>
+      <button type="button" class="toggle-pill ${S.sbizView === 'stores' ? 'on' : ''}" data-sbiz-view="stores">📋 상가</button>
+      <button type="button" class="toggle-pill ${S.sbizView === 'buildings' ? 'on' : ''}" data-sbiz-view="buildings">🏢 건물</button>
+      <button id="btnSbizFilterToggle" type="button" class="btn btn-sm ${S.sbizFilterOpen ? 'btn-primary' : ''}">
+        🎛️ 상가조건${sbFilterCnt > 0 ? `<span class="nx-filter-badge">${sbFilterCnt}</span>` : ''} ${S.sbizFilterOpen ? '▴' : '▾'}
+      </button>
+      <button id="btnSbizYmToggle" type="button" class="btn btn-sm ${S.sbizYmOpen ? 'btn-primary' : ''}">
+        📈 월별추이 ${S.sbizYmOpen ? '▴' : '▾'}
+      </button>
     </div>
-    <div class="toolbar" style="margin-bottom:8px;justify-content:space-between">
-      <div class="chips">
-        ${[
-          ['', '전체 기간'],
-          ['recent3m', '🔥 최근 3개월'],
-          ['2026', '🆕 2026년'],
-          ['2025', '📅 2025년'],
-          ['2024', '📅 2024년'],
-          ['old', '🏛️ 2022~23'],
-        ].map(([k, lb]) => `<button class="chip ${(S.sbizPeriod === k && !S.sbizMonth) ? 'active' : ''}" data-sbiz-period="${k}" type="button">${lb}</button>`).join('')}
-      </div>
-      <div class="chips">
-        <button class="chip ${S.sbizView === 'stores' ? 'active' : ''}" data-sbiz-view="stores">📋 개별 상가 리스트</button>
-        <button class="chip ${S.sbizView === 'buildings' ? 'active' : ''}" data-sbiz-view="buildings">🏢 대형상가 건물별</button>
+
+    ${sbTags.length ? `
+      <div class="nx-active-pills">
+        ${sbTags.map(([k, lb]) => `<button type="button" class="nx-active-pill" data-clear-sf="${k}">${esc(lb)} <span>✕</span></button>`).join('')}
+        <button type="button" class="toggle-pill" id="btnSbizResetAll" style="padding:2px 8px;font-size:11px">🔄 초기화</button>
+      </div>` : ''}
+
+    <div id="sbizFilterPanelWrap" class="nx-filter-panel-wrap ${S.sbizFilterOpen ? 'open' : ''}">
+      <div class="nx-sheet-scrim" id="sbizFilterScrim"></div>
+      <div id="sbizFilterPanel" class="gis-deck nx-collapsible-panel ${S.sbizFilterOpen ? '' : 'collapsed'}" style="margin-bottom:8px">
+        <div class="nx-sheet-head">
+          <span>🎛️ ${esc(active.name)} 상가 검색 · 기간 조건</span>
+          <button type="button" class="icon-btn" id="btnSbizFilterClose" style="padding:3px 9px">✕</button>
+        </div>
+        <div class="nx-sheet-body">
+          <div class="nx-opt-grid-2">
+            <label class="nx-opt-field">📍 시군구
+              <select id="fSbizSgg" class="select">
+                <option value="">전체 시군구</option>
+                ${sggs.map((g) => `<option value="${esc(g)}" ${S.sbizSgg === g ? 'selected' : ''}>${esc(cleanSbizLabel(g))}</option>`).join('')}
+              </select>
+            </label>
+            <label class="nx-opt-field">🏪 업종 대분류
+              <select id="fSbizL1" class="select">
+                <option value="">전체 업종</option>
+                ${l1s.map((l) => `<option value="${esc(l)}" ${S.sbizL1 === l ? 'selected' : ''}>${esc(l)}</option>`).join('')}
+              </select>
+            </label>
+            <label class="nx-opt-field">📅 등재 연도
+              <select id="fSbizYear" class="select" title="등재 연도 구분">
+                <option value="">전체 연도</option>
+                ${ds.years.map(([y, cnt]) => `<option value="${y}" ${S.sbizYear === y ? 'selected' : ''}>${y}년 (${fmt(cnt)})</option>`).join('')}
+              </select>
+            </label>
+            <label class="nx-opt-field">🗓️ 등재 월
+              <select id="fSbizMonth" class="select" title="등재 월 구분">
+                <option value="">전체 월</option>
+                ${availMonths.map(([m, cnt]) => `<option value="${m}" ${S.sbizMonth === m ? 'selected' : ''}>${m}월${cnt !== null ? ` (${fmt(cnt)})` : ''}</option>`).join('')}
+              </select>
+            </label>
+            <label class="nx-opt-field">↕️ 리스트 정렬
+              <select id="fSbizSort" class="select" title="리스트 정렬">
+                <option value="ymDesc" ${S.sbizSort === 'ymDesc' ? 'selected' : ''}>📅 최신 등재순</option>
+                <option value="ymAsc" ${S.sbizSort === 'ymAsc' ? 'selected' : ''}>📅 오래된 등재순</option>
+                <option value="name" ${S.sbizSort === 'name' ? 'selected' : ''}>🔤 상호명순</option>
+              </select>
+            </label>
+          </div>
+          <div class="gis-row" style="margin-top:4px">
+            <span class="gis-label">📆 기간 빠른선택:</span>
+            ${[
+              ['', '전체 기간'],
+              ['recent3m', '🔥 최근 3개월'],
+              ['2026', '🆕 2026년'],
+              ['2025', '📅 2025년'],
+              ['2024', '📅 2024년'],
+              ['old', '🏛️ 2022~23'],
+            ].map(([k, lb]) => `<button class="toggle-pill ${(S.sbizPeriod === k && !S.sbizMonth) ? 'on' : ''}" data-sbiz-period="${k}" type="button">${lb}</button>`).join('')}
+          </div>
+        </div>
+        <div class="nx-sheet-foot">
+          <button type="button" class="btn btn-sm" id="btnSbizSheetReset" style="flex:1">🔄 초기화</button>
+          <button type="button" class="btn btn-primary btn-sm" id="btnSbizSheetApply" style="flex:2">✅ 적용하고 보기</button>
+        </div>
       </div>
     </div>
   `;
@@ -9143,6 +9322,47 @@ function plotLiveSbizMarkers(items) {
 
 function wireSbizFilters(active) {
   let t = null;
+  const toggleSbizFilter = (forceVal) => {
+    S.sbizFilterOpen = typeof forceVal === 'boolean' ? forceVal : !S.sbizFilterOpen;
+    $('sbizFilterPanelWrap')?.classList.toggle('open', S.sbizFilterOpen);
+    $('sbizFilterPanel')?.classList.toggle('collapsed', !S.sbizFilterOpen);
+    const b = $('btnSbizFilterToggle');
+    if (b) { b.classList.toggle('btn-primary', S.sbizFilterOpen); b.innerHTML = b.innerHTML.replace(/[▴▾]/, S.sbizFilterOpen ? '▴' : '▾'); }
+  };
+  const resetSbizAll = () => {
+    S.sbizQ = ''; S.sbizSgg = ''; S.sbizL1 = ''; S.sbizYear = ''; S.sbizMonth = ''; S.sbizPeriod = ''; S.sbizPage = 1;
+    if (window.innerWidth <= 820) S.sbizFilterOpen = false;
+    renderSbizTab();
+  };
+  $('btnSbizFilterToggle')?.addEventListener('click', () => toggleSbizFilter());
+  $('btnSbizFilterClose')?.addEventListener('click', () => toggleSbizFilter(false));
+  $('sbizFilterScrim')?.addEventListener('click', () => toggleSbizFilter(false));
+  $('btnSbizSheetApply')?.addEventListener('click', () => { toggleSbizFilter(false); renderSbizTab(); });
+  $('btnSbizSheetReset')?.addEventListener('click', resetSbizAll);
+  $('btnSbizResetAll')?.addEventListener('click', resetSbizAll);
+  $('btnSbizYmToggle')?.addEventListener('click', () => {
+    S.sbizYmOpen = !S.sbizYmOpen;
+    $('sbizYmTimeline')?.classList.toggle('collapsed', !S.sbizYmOpen);
+    const b = $('btnSbizYmToggle');
+    if (b) { b.classList.toggle('btn-primary', S.sbizYmOpen); b.textContent = `📈 월별추이 ${S.sbizYmOpen ? '▴' : '▾'}`; }
+  });
+  $('btnSbizQuick2026')?.addEventListener('click', () => {
+    if (S.sbizPeriod === '2026') { S.sbizPeriod = ''; S.sbizYear = ''; S.sbizMonth = ''; }
+    else { S.sbizPeriod = '2026'; S.sbizYear = '2026'; S.sbizMonth = ''; }
+    S.sbizPage = 1;
+    renderSbizTab();
+  });
+  $('mainStage').querySelectorAll('[data-clear-sf]').forEach((b) => {
+    b.addEventListener('click', () => {
+      const k = b.dataset.clearSf;
+      if (k === 'sgg') S.sbizSgg = '';
+      else if (k === 'l1') S.sbizL1 = '';
+      else if (k === 'period' || k === 'ym') { S.sbizPeriod = ''; S.sbizYear = ''; S.sbizMonth = ''; }
+      S.sbizPage = 1;
+      renderSbizTab();
+    });
+  });
+
   $('fSbizQ')?.addEventListener('input', (e) => { clearTimeout(t); t = setTimeout(() => { S.sbizQ = e.target.value; S.sbizPage = 1; updateSbizView(active); }, 220); });
   $('fSbizSgg')?.addEventListener('change', (e) => { S.sbizSgg = e.target.value; S.sbizPage = 1; updateSbizView(active); });
   $('fSbizL1')?.addEventListener('change', (e) => { S.sbizL1 = e.target.value; S.sbizPage = 1; updateSbizView(active); });
@@ -9175,7 +9395,7 @@ function wireSbizFilters(active) {
   document.querySelectorAll('[data-sbiz-view]').forEach((b) => {
     b.addEventListener('click', () => {
       S.sbizView = b.dataset.sbizView;
-      document.querySelectorAll('[data-sbiz-view]').forEach((x) => x.classList.toggle('active', x.dataset.sbizView === S.sbizView));
+      document.querySelectorAll('[data-sbiz-view]').forEach((x) => x.classList.toggle('on', x.dataset.sbizView === S.sbizView));
       renderSbizListPanel(active);
     });
   });
@@ -9447,6 +9667,7 @@ function renderRealEstateTab() {
   const starts = S.re.starts || [];
   const complexes = S.re.complexes || [];
   const archPermits = S.opps.filter((o) => o.stageType === 'permit');
+  const reOptCnt = (S.reOnlyFit ? 1 : 0) + (S.myScore !== 55 ? 1 : 0) + (S.myBudgetEok !== 8 ? 1 : 0);
 
   $('mainStage').innerHTML = `
     <div class="card">
@@ -9455,37 +9676,91 @@ function renderRealEstateTab() {
           <h2 class="card-title">🏠 부동산 · 청약 · 분양가 · 착공 PRO</h2>
           <p class="card-sub">청약홈 6종 실시간 API · 내 청약가점/예산 적합도 · 지자체 착공 + 국토부 건축인허가 통합</p>
         </div>
-        <button id="btnReRefresh" class="btn btn-rose btn-sm" type="button">🔄 청약홈 6종 API 실시간 새로고침</button>
+        <button id="btnReRefresh" class="btn btn-rose btn-sm" type="button">🔄 청약홈 6종 API 새로고침</button>
       </div>
 
-      <div class="toolbar">
-        <div class="chips" style="margin-right:auto">
-          <button class="chip ${S.reSub === 'apt' ? 'active' : ''}" data-re-sub="apt">🏢 APT 분양 (${listings.filter((x) => x.kind === 'apt').length})</button>
-          <button class="chip ${S.reSub === 'remndr' ? 'active' : ''}" data-re-sub="remndr">🎯 무순위·오피스텔 (${listings.filter((x) => x.kind !== 'apt').length})</button>
-          <button class="chip ${S.reSub === 'starts' ? 'active' : ''}" data-re-sub="starts">🏗️ 착공·건축인허가 (${starts.length + archPermits.length})</button>
-          <button class="chip ${S.reSub === 'kapt' ? 'active' : ''}" data-re-sub="kapt">🏘️ K-apt 기축단지 (${complexes.length})</button>
-        </div>
-        <input id="fReQ" class="input" style="min-width:170px" value="${esc(S.reQ)}" placeholder="단지명 · 지역 · 시공사 검색" />
-        <label style="font-size:12px;font-weight:700;display:inline-flex;align-items:center;gap:4px">
-          내 가점 <input id="fMyScore" class="input" type="number" min="0" max="84" value="${S.myScore}" style="width:64px;padding:6px 8px" />
-        </label>
-        <label style="font-size:12px;font-weight:700;display:inline-flex;align-items:center;gap:4px">
-          예산(억) <input id="fMyBudget" class="input" type="number" min="1" max="100" value="${S.myBudgetEok}" style="width:64px;padding:6px 8px" />
-        </label>
+      <div class="chips nx-swipe-chips" style="margin-bottom:8px">
+        <button class="chip ${S.reSub === 'apt' ? 'active' : ''}" data-re-sub="apt">🏢 APT 분양 (${listings.filter((x) => x.kind === 'apt').length})</button>
+        <button class="chip ${S.reSub === 'remndr' ? 'active' : ''}" data-re-sub="remndr">🎯 무순위·오피스텔 (${listings.filter((x) => x.kind !== 'apt').length})</button>
+        <button class="chip ${S.reSub === 'starts' ? 'active' : ''}" data-re-sub="starts">🏗️ 착공·건축인허가 (${starts.length + archPermits.length})</button>
+        <button class="chip ${S.reSub === 'kapt' ? 'active' : ''}" data-re-sub="kapt">🏘️ K-apt 기축단지 (${complexes.length})</button>
       </div>
+
+      <div class="nx-filter-bar">
+        <input id="fReQ" class="input nx-q-inp" value="${esc(S.reQ)}" placeholder="🔍 단지명 · 지역 · 시공사 검색" />
+        ${(S.reSub === 'apt' || S.reSub === 'remndr') ? `
+          <button id="btnReOnlyFit" type="button" class="toggle-pill ${S.reOnlyFit ? 'on-emerald' : ''}">✓ 내 조건 적합만</button>
+          <button id="btnReFilterToggle" type="button" class="btn btn-sm ${S.reFilterOpen ? 'btn-primary' : ''}">
+            🎛️ 가점·예산 조건${reOptCnt > 0 ? `<span class="nx-filter-badge">${reOptCnt}</span>` : ''} ${S.reFilterOpen ? '▴' : '▾'}
+          </button>` : ''}
+      </div>
+
+      ${(S.reSub === 'apt' || S.reSub === 'remndr') ? `
+        <div class="nx-active-pills">
+          <span class="nx-active-pill" style="cursor:default">🎯 내 가점 ${S.myScore}점</span>
+          <span class="nx-active-pill" style="cursor:default">💰 예산 ${S.myBudgetEok}억</span>
+          ${S.reOnlyFit ? `<button type="button" class="nx-active-pill" id="btnReClearFit">✓ 적합 단지만 <span>✕</span></button>` : ''}
+        </div>
+        <div id="reFilterPanelWrap" class="nx-filter-panel-wrap ${S.reFilterOpen ? 'open' : ''}">
+          <div class="nx-sheet-scrim" id="reFilterScrim"></div>
+          <div id="reFilterPanel" class="gis-deck nx-collapsible-panel ${S.reFilterOpen ? '' : 'collapsed'}" style="margin-bottom:10px">
+            <div class="nx-sheet-head">
+              <span>🎛️ 청약 가점 · 예산 맞춤 조건</span>
+              <button type="button" class="icon-btn" id="btnReFilterClose" style="padding:3px 9px">✕</button>
+            </div>
+            <div class="nx-sheet-body">
+              <div class="nx-opt-grid-2">
+                <label class="nx-opt-field">🎯 내 청약가점 (0~84점)
+                  <input id="fMyScore" class="input" type="number" min="0" max="84" value="${S.myScore}" />
+                </label>
+                <label class="nx-opt-field">💰 내 가용 예산 (억원)
+                  <input id="fMyBudget" class="input" type="number" min="1" max="100" value="${S.myBudgetEok}" />
+                </label>
+              </div>
+              <div class="gis-row" style="margin-top:4px">
+                <span class="gis-label">⚡ 빠른 예산:</span>
+                ${[5, 8, 12, 20].map((b) => `<button type="button" class="toggle-pill ${S.myBudgetEok === b ? 'on' : ''}" data-re-bud="${b}">${b}억 이하</button>`).join('')}
+                <button type="button" class="toggle-pill ${S.reOnlyFit ? 'on-emerald' : ''}" id="btnReSheetFit">✓ 예산·가점 적합 단지만 표시</button>
+              </div>
+            </div>
+            <div class="nx-sheet-foot">
+              <button type="button" class="btn btn-sm" id="btnReSheetReset" style="flex:1">🔄 기본값</button>
+              <button type="button" class="btn btn-primary btn-sm" id="btnReSheetApply" style="flex:2">✅ 조건 적용</button>
+            </div>
+          </div>
+        </div>` : ''}
 
       <div id="reBody"></div>
     </div>
   `;
 
+  const toggleReFilter = (forceVal) => {
+    S.reFilterOpen = typeof forceVal === 'boolean' ? forceVal : !S.reFilterOpen;
+    $('reFilterPanelWrap')?.classList.toggle('open', S.reFilterOpen);
+    $('reFilterPanel')?.classList.toggle('collapsed', !S.reFilterOpen);
+    const b = $('btnReFilterToggle');
+    if (b) { b.classList.toggle('btn-primary', S.reFilterOpen); b.innerHTML = b.innerHTML.replace(/[▴▾]/, S.reFilterOpen ? '▴' : '▾'); }
+  };
+  $('btnReFilterToggle')?.addEventListener('click', () => toggleReFilter());
+  $('btnReFilterClose')?.addEventListener('click', () => toggleReFilter(false));
+  $('reFilterScrim')?.addEventListener('click', () => toggleReFilter(false));
+  $('btnReSheetApply')?.addEventListener('click', () => { toggleReFilter(false); renderRealEstateTab(); });
+  $('btnReSheetReset')?.addEventListener('click', () => { S.myScore = 55; S.myBudgetEok = 8; S.reOnlyFit = false; S.reQ = ''; if (window.innerWidth <= 820) S.reFilterOpen = false; renderRealEstateTab(); });
+  $('btnReOnlyFit')?.addEventListener('click', () => { S.reOnlyFit = !S.reOnlyFit; renderRealEstateTab(); });
+  $('btnReSheetFit')?.addEventListener('click', () => { S.reOnlyFit = !S.reOnlyFit; renderRealEstateTab(); });
+  $('btnReClearFit')?.addEventListener('click', () => { S.reOnlyFit = false; renderRealEstateTab(); });
+  $('mainStage').querySelectorAll('[data-re-bud]').forEach((b) => {
+    b.addEventListener('click', () => { S.myBudgetEok = Number(b.dataset.reBud); renderRealEstateTab(); });
+  });
+
   $('mainStage').querySelectorAll('[data-re-sub]').forEach((b) => {
     b.addEventListener('click', () => { S.reSub = b.dataset.reSub; renderRealEstateTab(); });
   });
   let t = null;
-  $('fReQ').addEventListener('input', (e) => { clearTimeout(t); t = setTimeout(() => { S.reQ = e.target.value; renderReSubBody(); }, 180); });
-  $('fMyScore').addEventListener('change', (e) => { S.myScore = Number(e.target.value) || 0; renderReSubBody(); });
-  $('fMyBudget').addEventListener('change', (e) => { S.myBudgetEok = Number(e.target.value) || 0; renderReSubBody(); });
-  $('btnReRefresh').addEventListener('click', refreshLiveRealEstate);
+  $('fReQ')?.addEventListener('input', (e) => { clearTimeout(t); t = setTimeout(() => { S.reQ = e.target.value; renderReSubBody(); }, 180); });
+  $('fMyScore')?.addEventListener('change', (e) => { S.myScore = Number(e.target.value) || 0; renderRealEstateTab(); });
+  $('fMyBudget')?.addEventListener('change', (e) => { S.myBudgetEok = Number(e.target.value) || 0; renderRealEstateTab(); });
+  $('btnReRefresh')?.addEventListener('click', refreshLiveRealEstate);
 
   renderReSubBody();
 }
@@ -9499,6 +9774,12 @@ function renderReSubBody() {
       if (S.reSub === 'apt' && l.kind !== 'apt') return false;
       if (S.reSub === 'remndr' && l.kind === 'apt') return false;
       if (q && !`${l.name} ${l.addr} ${l.area} ${l.builder}`.toLowerCase().includes(q)) return false;
+      if (S.reOnlyFit) {
+        const minEok = l.minPriceMan ? l.minPriceMan / 10000 : (l.maxPriceMan ? l.maxPriceMan / 10000 : 0);
+        const cut = l.minScore || l.avgScore || 0;
+        if (minEok && minEok > S.myBudgetEok) return false;
+        if (cut && S.myScore < cut) return false;
+      }
       return true;
     }).slice(0, 60);
 
@@ -9756,24 +10037,27 @@ function renderHubTab() {
   const totalValMan = pipeFiltered.reduce((a, p) => a + (Number(p.valueMan) || 0), 0);
 
   $('mainStage').innerHTML = `
-    <!-- 1. 10-API DIAGNOSTIC BOARD -->
+    <!-- 1. 10-API DIAGNOSTIC BOARD (Collapsible v37) -->
     <div class="card" style="margin-bottom:16px">
       <div class="card-head">
         <div>
           <h2 class="card-title">🩺 통합 10종 공공·GIS API 실시간 연결 진단</h2>
           <p class="card-sub">암호화 볼트 내장 키 자동 적용 · 공공데이터: <span class="mono">${esc(maskKey(dataGoRaw))}</span> · 브이월드: <span class="mono">${esc(maskKey(vworld))}</span></p>
         </div>
-        <button id="btnRunDiag10" class="btn btn-primary" type="button">🩺 전체 10종 API 실시간 진단 실행</button>
+        <div style="display:flex;gap:6px;flex-wrap:wrap">
+          <button id="btnRunDiag10" class="btn btn-primary btn-sm" type="button">🩺 10종 진단 실행</button>
+          <button id="btnHubDiagToggle" class="btn btn-sm" type="button">${S.hubDiagOpen ? '접기 ▴' : '펼치기 ▾'}</button>
+        </div>
       </div>
 
-      <div id="diagBoard" class="diag-grid">
+      <div id="diagBoard" class="diag-grid nx-collapsible-panel ${S.hubDiagOpen ? '' : 'collapsed'}">
         ${S.diagResults.length ? S.diagResults.map((d) => `
           <div class="diag-card ${d.ok ? 'ok' : 'err'}">
             <div class="diag-title">${d.ok ? '🟢' : '🔴'} ${esc(d.name)}</div>
             <div class="diag-status">${esc(d.status)}</div>
             <div class="diag-detail">${esc(d.detail)}</div>
           </div>`).join('') : `<div style="grid-column:1/-1;padding:14px;border-radius:10px;background:var(--surface-2);color:var(--muted);font-size:13px">
-            상단 <b>[🩺 전체 10종 API 실시간 진단 실행]</b>을 누르면 브이월드(2) · 나라장터(2) · K-apt(1) · 청약홈(3) · 소상공인(1) · 지자체착공(1) 연결 상태를 즉시 검증합니다.
+            상단 <b>[🩺 10종 진단 실행]</b>을 누르면 브이월드(2) · 나라장터(2) · K-apt(1) · 청약홈(3) · 소상공인(1) · 지자체착공(1) 연결 상태를 즉시 검증합니다.
           </div>`}
       </div>
     </div>
@@ -9791,7 +10075,7 @@ function renderHubTab() {
         </div>
       </div>
 
-      <div class="chips" style="margin-bottom:12px">
+      <div class="chips nx-swipe-chips" style="margin-bottom:12px">
         <button class="chip ${!S.pipeStageFilter ? 'active' : ''}" data-ps="">전체 (${S.pipeline.length})</button>
         ${stages.map((st) => `<button class="chip ${S.pipeStageFilter === st ? 'active' : ''}" data-ps="${st}">${st} (${S.pipeline.filter((p) => p.stage === st).length})</button>`).join('')}
       </div>
@@ -9841,7 +10125,7 @@ function renderHubTab() {
       </div>`;
     })()}
 
-    <!-- 4. SELLER MASTER TAX & ACCOUNTING QUICK LAUNCHPAD (Master Mode Only!) -->
+    <!-- 4. SELLER MASTER TAX & ACCOUNTING QUICK LAUNCHPAD (Master Mode Only · Collapsible v37) -->
     ${!S.isBuyerMode ? `
       <div class="card" id="hubTaxLinksCard" style="margin-top:14px">
         <div class="card-head">
@@ -9849,9 +10133,12 @@ function renderHubTab() {
             <h2 class="card-title">🏛️ 세무 · 국세청 · 정산 실무 바로가기 (관리자 전용)</h2>
             <p class="card-sub">전자세금계산서 발급 · 사업자 휴폐업 조회 · 완납증명 · 카드매출 정산 · API 중계 포털 원클릭 실행</p>
           </div>
-          <button id="btnHubOpenTaxCenter" class="btn btn-primary btn-sm" type="button">🧾 세금계산서·API 콘솔 열기</button>
+          <div style="display:flex;gap:6px;flex-wrap:wrap">
+            <button id="btnHubOpenTaxCenter" class="btn btn-primary btn-sm" type="button">🧾 세금계산서·API 콘솔</button>
+            <button id="btnHubTaxToggle" class="btn btn-sm" type="button">${S.hubTaxOpen ? '접기 ▴' : '펼치기 ▾'}</button>
+          </div>
         </div>
-        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(195px,1fr));gap:9px">
+        <div id="hubTaxLinksBody" class="nx-collapsible-panel ${S.hubTaxOpen ? '' : 'collapsed'}" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(195px,1fr));gap:9px">
           ${TAX_QUICK_LINKS.map((lk) => `
             <a class="domain-box" href="${lk.url}" target="_blank" rel="noopener" style="text-decoration:none">
               <h4 style="color:${lk.color}">${lk.icon} ${esc(lk.name)} ↗</h4>
@@ -9863,8 +10150,25 @@ function renderHubTab() {
   `;
 
   $('btnHubOpenTaxCenter')?.addEventListener('click', () => openAdminSalesModal('tax'));
+  $('btnHubDiagToggle')?.addEventListener('click', () => {
+    S.hubDiagOpen = !S.hubDiagOpen;
+    $('diagBoard')?.classList.toggle('collapsed', !S.hubDiagOpen);
+    const b = $('btnHubDiagToggle');
+    if (b) b.textContent = S.hubDiagOpen ? '접기 ▴' : '펼치기 ▾';
+  });
+  $('btnHubTaxToggle')?.addEventListener('click', () => {
+    S.hubTaxOpen = !S.hubTaxOpen;
+    $('hubTaxLinksBody')?.classList.toggle('collapsed', !S.hubTaxOpen);
+    const b = $('btnHubTaxToggle');
+    if (b) b.textContent = S.hubTaxOpen ? '접기 ▴' : '펼치기 ▾';
+  });
 
-  $('btnRunDiag10').addEventListener('click', runFull10ApiDiag);
+  $('btnRunDiag10').addEventListener('click', () => {
+    S.hubDiagOpen = true;
+    $('diagBoard')?.classList.remove('collapsed');
+    if ($('btnHubDiagToggle')) $('btnHubDiagToggle').textContent = '접기 ▴';
+    runFull10ApiDiag();
+  });
   $('mainStage').querySelectorAll('[data-ps]').forEach((b) => {
     b.addEventListener('click', () => { S.pipeStageFilter = b.dataset.ps; renderHubTab(); });
   });
